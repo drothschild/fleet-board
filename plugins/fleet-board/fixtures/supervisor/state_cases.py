@@ -215,6 +215,14 @@ class Lifecycle(unittest.TestCase):
         s.reserve(3, [''])
         self.assertEqual(s.reservations[3], [''])
 
+    def test_reserve_reads_a_missing_repo_as_the_home_repo(self):
+        s = self.state
+        self.assertIsNone(s.reserve(1, ['src/a.py']))   # no repo: the home repo
+        self.assertEqual(s.reserve(2, ['src/a.py'], repo='acme/toy', home_repo='acme/toy'), 1)
+        self.assertIsNone(s.reserve(3, ['src/a.py'], repo='acme/other', home_repo='acme/toy'))
+        # unknown home repo: a missing repo still matches every repo
+        self.assertEqual(s.reserve(4, ['src/a.py'], repo='acme/zed'), 1)
+
     def test_begin_rejects_an_unknown_kind(self):
         with self.assertRaises(ValueError):
             self.state.begin(action(1, kind='bogus'))

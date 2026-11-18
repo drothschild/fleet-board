@@ -23,13 +23,16 @@
 #       origin's copy of <start-branch> instead of origin/HEAD; when that is missing the
 #       call exits 1 with "fleet-board: origin/<start-branch> does not exist" and adds no
 #       worktree and no branch. When the branch already exists the argument is ignored.
-#   worktree.sh review <n> <pr> [<stage>]
+#   worktree.sh review <n> <pr> [<stage>] [<base-branch>]
 #       Fetches the PR head (into refs/fleet-board/pull/<pr>) and puts a
 #       detached worktree <base>/<n>-review on it, creating it (and running
 #       worktrees.setup once) or checking the new head out in it. With
 #       worktrees.mutate_on_copy, also refreshes <base>/<n>-review-copy, a
 #       cp -R of the checkout without .git. Prints
 #       {"path":..,"copy":..|null,"sha":<head>,"base":<merge-base origin/main head>}.
+#       With a <base-branch> (fleet/<n>-<slug>, the parent branch of a stacked card; given
+#       after <stage> when both are), "base" is the merge-base of origin's copy of that
+#       branch and the head instead; when origin has no such branch the call exits 1.
 #       With a <stage> name ([a-z][a-z0-9_]*, not "copy") the checkout is <base>/<n>-review-<stage> and the
 #       copy <base>/<n>-review-<stage>-copy, so reviewers of one card that run together never share one.
 #       Before preparing its checkout, review removes the card's <n>-review-<stage> checkouts and
@@ -60,7 +63,7 @@ set -uo pipefail
 unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path)
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
-usage() { fb_die 2 "usage: worktree.sh create <n> <branch> <path> [<start-branch>] | review <n> <pr> [<stage>] | remove <n> [<worktree-path>]"; }
+usage() { fb_die 2 "usage: worktree.sh create <n> <branch> <path> [<start-branch>] | review <n> <pr> [<stage>] [<base-branch>] | remove <n> [<worktree-path>]"; }
 
 [ $# -ge 2 ] || usage
 CMD="$1"
@@ -71,12 +74,21 @@ case "$CMD" in
     if [ $# -eq 5 ]; then
       [[ "$5" =~ ^fleet/[0-9]+-[a-z0-9-]{1,40}$ ]] || fb_die 2 "start branch must match fleet/<n>-<slug>, got: $5"
     fi ;;
-  review) [ $# -eq 3 ] || [ $# -eq 4 ] || usage; fb_valid_number "$3" || fb_die 2 "PR number must be numeric, got: $3"
-    if [ $# -eq 4 ]; then
-      case "$4" in
-        copy|[!a-z]*|*[!a-z0-9_]*|"") fb_die 2 "stage name must match [a-z][a-z0-9_]* and not be copy, got: $4" ;;
-      esac
-    fi ;;
+  review) [ $# -ge 3 ] && [ $# -le 5 ] || usage; fb_valid_number "$3" || fb_die 2 "PR number must be numeric, got: $3"
+    # the arguments after the PR: a base branch (fleet/<n>-<slug>) and/or a stage name, each at most once
+    STAGE=""; BASE_BRANCH=""
+    for a in "${@:4}"; do
+      if [[ "$a" =~ ^fleet/[0-9]+-[a-z0-9-]{1,40}$ ]]; then
+        [ -z "$BASE_BRANCH" ] || usage
+        BASE_BRANCH="$a"
+      else
+        [ -z "$STAGE" ] || usage
+        case "$a" in
+          copy|[!a-z]*|*[!a-z0-9_]*|"") fb_die 2 "stage name must match [a-z][a-z0-9_]* and not be copy, got: $a" ;;
+        esac
+        STAGE="$a"
+      fi
+    done ;;
   remove) [ $# -eq 2 ] || [ $# -eq 3 ] || usage ;;
   *) usage ;;
 esac
@@ -187,9 +199,9 @@ case "$CMD" in
     PR="$3"
     RV="$BASE/$N-review"
     RC="$BASE/$N-review-copy"
-    if [ $# -eq 4 ]; then
-      RV="$BASE/$N-review-$4"
-      RC="$BASE/$N-review-$4-copy"
+    if [ -n "$STAGE" ]; then
+      RV="$BASE/$N-review-$STAGE"
+      RC="$BASE/$N-review-$STAGE-copy"
     fi
     REF="refs/fleet-board/pull/$PR"
     g fetch -q origin >&2 || fb_die 1 "git fetch origin failed"
@@ -230,7 +242,11 @@ case "$CMD" in
         || fb_die 1 "cannot copy $RV to $RC"
       COPY="$RC"
     fi
-    MB="$(g merge-base origin/main "$SHA")" || fb_die 1 "cannot compute merge-base origin/main $SHA"
+    if [ -n "$BASE_BRANCH" ]; then
+      MB="$(g merge-base "refs/remotes/origin/$BASE_BRANCH" "$SHA")" || fb_die 1 "cannot compute merge-base origin/$BASE_BRANCH $SHA"
+    else
+      MB="$(g merge-base origin/main "$SHA")" || fb_die 1 "cannot compute merge-base origin/main $SHA"
+    fi
     fb_mark_active "$N"
     jq -nc --arg p "$RV" --arg c "$COPY" --arg s "$SHA" --arg b "$MB" \
       '{path: $p, copy: (if $c == "null" then null else $c end), sha: $s, base: $b}'

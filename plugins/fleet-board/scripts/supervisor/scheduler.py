@@ -14,7 +14,7 @@ from . import scopes
 
 _ACTION_CLASS = {
     'continue_implementor': 0, 'fix': 0, 'review': 0, 'review_stage': 0,
-    'start_review': 1, 'unblock': 1, 'update_branch': 1, 'advance_stage': 1, 'move_to_review': 1, 'to_human_qa': 1,
+    'start_review': 1, 'unblock': 1, 'update_branch': 1, 'land': 1, 'advance_stage': 1, 'move_to_review': 1, 'to_human_qa': 1,
     'mark_ready': 1, 'verify_main': 1, 'finish': 1, 'block': 1, 'file_pending': 1, 'merge': 1,
     'after_merge': 1, 'merge_refusal': 1,
     'start': 2,
@@ -28,7 +28,7 @@ _WORK_CLASS = 1
 # changes only main and the merging card's own branch and worktree. A red-checks re-run or a
 # checks_failed record touches only the card's own PR and note. They take a slot and wait for their
 # own card, but neither wait on another card's scope nor block one, so a writer never holds them up.
-SCOPE_FREE_ACTIONS = frozenset({'start_review', 'review', 'review_stage', 'update_branch', 'after_merge', 'merge_refusal', 'merge',
+SCOPE_FREE_ACTIONS = frozenset({'start_review', 'review', 'review_stage', 'update_branch', 'land', 'after_merge', 'merge_refusal', 'merge',
                                'rerun_checks', 'checks_failed'})
 # The review actions a card may run together: they read the PR and write nothing a sibling reads, so one card's
 # `review`, `review_stage` and `start_review` rows share its slot rules. Every other action of a card runs alone.
@@ -343,6 +343,7 @@ class Scheduler:
         last_launch = limits.get('last_launch_at', self._last_launch)
         # supervisor.scope_ignore: paths every PR touches (version manifests) never overlap
         ignore = limits.get('scope_ignore') or []
+        home_repo = limits.get('home_repo') or None   # a missing repo on a claim is this repo
         for c in ordered:
             number = c.get('number')
             provider = c.get('provider') or 'default'
@@ -351,9 +352,9 @@ class Scheduler:
             retry_at = limits.get('retry_at', {}).get(str(number))
             if retry_at is not None and now < retry_at:
                 waits.append({'number': number, 'reason': 'retry backoff', 'until': retry_at}); continue
-            # Script actions (except update_branch/merge) run synchronously in the driver and
+            # Script actions (except update_branch/land/merge) run synchronously in the driver and
             # hold no claim: no rate wait, caps or scope checks, and they occupy nothing.
-            free = provider == _SCRIPTS and c.get('action') not in ('update_branch', 'merge')
+            free = provider == _SCRIPTS and c.get('action') not in ('update_branch', 'land', 'merge')
             read_only = c.get('action') in SCOPE_FREE_ACTIONS
             rate_wait = limits.get('rate_limit_wait', {})
             rate_until = rate_wait.get(provider) if isinstance(rate_wait, dict) else rate_wait
@@ -387,7 +388,7 @@ class Scheduler:
             exempt = _ancestors(c)   # a stacked child's start is not held by its ancestors' scope
             reserved = None if free or read_only else next((x for x in reservations if str(x.get('card', x.get('number'))) != str(number)
                              and str(x.get('card', x.get('number'))) not in exempt
-                             and scopes.same_repo(c.get('repo'), x.get('repo'))
+                             and scopes.same_repo(c.get('repo'), x.get('repo'), home_repo)
                              and scopes.overlap(paths, scopes.drop_ignored(x.get('paths'), ignore))), None)
             if reserved:
                 waits.append({'number': number, 'reason': 'scope reserved by #' + str(reserved.get('card', reserved.get('number')))})
@@ -395,7 +396,7 @@ class Scheduler:
             conflict = next((x for x in occupied if (same_card(x, number) and not _share_card(c, x))
                              or (not free and not read_only and x.get('action') not in SCOPE_FREE_ACTIONS
                                  and str(x.get('number')) not in exempt
-                                 and scopes.same_repo(c.get('repo'), x.get('repo'))
+                                 and scopes.same_repo(c.get('repo'), x.get('repo'), home_repo)
                                  and scopes.overlap(paths, scopes.drop_ignored(x.get('paths'), ignore)))), None)
             if conflict:
                 waits.append({'number': number, 'reason': 'scope or card conflict'}); continue

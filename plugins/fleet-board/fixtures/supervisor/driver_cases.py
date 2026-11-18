@@ -316,6 +316,52 @@ def test_update_branch_conflict_counts_once_and_never_blocks(base):
     assert b.card()['state'] == 'in_review' and 'board-move.sh' not in b.scripts_called()
 
 
+def test_land_runs_worktree_then_stack_land(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'action_failures': 2, 'last_action_error': 'older'})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['stack-land.sh'] = ok()
+    assert begin(b, 'land', state='in_review').kind == 'done'
+    assert b.scripts_called() == ['worktree.sh', 'stack-land.sh'], b.calls
+    assert b.calls[0] == ('worktree.sh', 'create', '12', BRANCH, b.worktree)
+    assert ('stack-land.sh', '12', '34', BRANCH, b.worktree) in b.calls
+    note = b.note()
+    assert note['action_failures'] == 0 and note['last_action_error'] is None
+    assert b.card()['state'] == 'in_review' and 'board-move.sh' not in b.scripts_called()
+
+
+def test_land_without_a_pr_passes_a_dash(base):
+    b = board_for(base, 'in_progress')
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['stack-land.sh'] = ok()
+    assert begin(b, 'land', state='in_progress', pr=None).kind == 'done'
+    assert ('stack-land.sh', '12', '-', BRANCH, b.worktree) in b.calls, b.calls
+
+
+def test_land_exits_3_and_4_are_not_failures(base):
+    for rc in (3, 4):
+        sub = Path(base) / ('rc%d' % rc)
+        sub.mkdir()
+        b = board_for(sub, 'in_review')
+        b.put_note({'action_failures': 1, 'last_action_error': 'older'})
+        b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+        b.stubs['stack-land.sh'] = fail_with('waiting or attention\n', rc=rc)
+        assert begin(b, 'land', state='in_review').kind == 'done'
+        note = b.note()
+        assert note['action_failures'] == 1 and note['last_action_error'] == 'older', (rc, note)
+        assert b.card()['state'] == 'in_review' and 'board-move.sh' not in b.scripts_called()
+
+
+def test_land_exit_1_counts_one_failure(base):
+    b = board_for(base, 'in_review')
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['stack-land.sh'] = fail_with('git push origin fleet/12 was rejected\n', rc=1)
+    assert begin(b, 'land', state='in_review').kind == 'done'
+    note = b.note()
+    assert note['action_failures'] == 1 and note['last_action_error'].startswith('git push'), note
+    assert b.card()['state'] == 'in_review' and 'board-move.sh' not in b.scripts_called()
+
+
 LAST = {'round': 1, 'sha': 'abc', 'critical': 1, 'important': 1,
         'findings': [{'severity': 'Critical', 'text': 'crashes'}, {'severity': 'Minor', 'text': 'nit'},
                      {'severity': 'Important', 'text': 'leaks'}]}
@@ -737,6 +783,29 @@ def test_continue_implementor_counts_the_attempt_first(base):
         [c for c in b.calls if c[0] == 'worktree.sh'][0]), 'the attempt is counted before worktree.sh create'
     assert '"implementor_attempts": 2' in b.prompt(), b.prompt()
     assert run_role(b, started).progressed is True
+
+
+def test_review_of_a_stacked_card_passes_stack_base_to_worktree_review(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree,
+                'stack': {'parent': 7, 'base': 'fleet/7-parent-card', 'start': START_SHA, 'attention': None}})
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'reviewer-findings'})
+    started = begin(b, 'review', state='in_review', round=1)
+    assert started.kind == 'session' and started.action.role == 'reviewer'
+    assert ('worktree.sh', 'review', '12', '34', 'fleet/7-parent-card') in b.calls, b.calls
+    assert ('worktree.sh', 'review', '12', '34') not in b.calls, b.calls
+
+
+def test_review_of_an_unstacked_card_passes_no_base_to_worktree_review(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree})
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'reviewer-findings'})
+    assert begin(b, 'review', state='in_review', round=1).kind == 'session'
+    assert ('worktree.sh', 'review', '12', '34') in b.calls, b.calls
 
 
 def test_reviewer_findings_record_last_review(base):

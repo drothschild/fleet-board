@@ -100,8 +100,12 @@ no file here. The gate's residual bypasses and false positives are listed in the
   automatic merge only that way. Only the top-level `version` and `plugins[].version` may
   change, each to semver strictly above the old value (a merge: the three-way result, or above both sides);
   every other `"version"` must equal the three-way result, and no key may be repeated
-  (`scripts/review-drift.sh <reviewed-sha> <head-sha>` prints `reviewed` or `unreviewed`;
-  a failed check reads as unreviewed). `update-branch.sh` keeps `last_review` as it is.
+  (`scripts/review-drift.sh <reviewed-sha> <head-sha> [--landing <parent_head>:<squash>]` prints `reviewed` or
+  `unreviewed`; a failed check reads as unreviewed). With `--landing` (the pair from the note's `landed`; `tick-plan.sh`
+  and the gate pass it) two more kinds of merge count: the bridge commit (second parent the squash, the squash on the
+  default branch, `parent_head` an ancestor of its first parent, its tree equal to `stack-bridge.sh tree <repo>
+  <parent_head> <first parent> <squash>`) and a clean merge whose second parent is an ancestor of `parent_head`;
+  a malformed pair counts as none. `update-branch.sh` keeps `last_review` as it is.
 - **Premise check** (`premise_check.enabled`, default false; `models.checker`, default sonnet).
   With it on, a Ready card that would plan a non-stacked `start` (acceptance, lint clean, no unmet
   dependency) asks `premise.sh moved <n>` and plans `check_premise` instead when it returns
@@ -118,7 +122,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   paths hold new starts, while existing work can continue. Selected starts reserve
   scope in ascending card-number order; a waiting card reserves nothing. Normalized
   directory scopes cover descendants with path-boundary matching. `start_review`, `review`,
-  `review_stage`, `update_branch`, `after_merge`, `merge_refusal`, `merge`, `rerun_checks` and `checks_failed` (`scheduler.SCOPE_FREE_ACTIONS`) reserve no scope and are never
+  `review_stage`, `update_branch`, `land`, `after_merge`, `merge_refusal`, `merge`, `rerun_checks` and `checks_failed` (`scheduler.SCOPE_FREE_ACTIONS`) reserve no scope and are never
   scope-checked against other cards; they still take a slot and one action per card, except that one card's
   reviewer actions (`scheduler.REVIEWER_ACTIONS`: `start_review`, `review`, `review_stage`) run together, one per
   reviewer (the evidence reviewer, one per stage): the scheduler holds a running reviewer's own row, and holds
@@ -154,13 +158,51 @@ no file here. The gate's residual bypasses and false positives are listed in the
   whose note has `stack` runs `gh pr edit <pr> --repo <repo> --base <stack.base>` before `review-stages.sh
   route`, and a failed edit fails the action with `route` not called. A row with `stack` null and a card without
   `stack` behave as before.
+- **Stacked child follows its parent** (rows for a card whose note has `stack`, stacking on or off; with
+  `stacking.enabled` off nothing else changes). `tick-plan.sh`, for a card in in_progress, a review column or
+  merging: (1) parent card wont_do, or the parent's PR CLOSED: skip, `stacked on #<parent>, which was closed
+  without merging; a person decides`, before every row except an invalid note; (2) `stack.attention` set: skip,
+  `landing needs attention: <attention>; a person decides`; (3) PR open and origin's copy of `stack.base` exists
+  but its head is not an ancestor of the PR head (`git merge-base --is-ancestor`, after a fetch of the base
+  throttled to one per 60 s per branch): update_branch, `parent branch <stack.base> moved`, planned after the
+  CONFLICTING row; (4) review clean and current with no stage left, where an unstacked card plans
+  to_human_qa, mark_ready or merge: wait, `waits for #<parent> to merge`; (5) merging: skip, `waits for
+  #<parent> to merge`. A failed parent lookup is a failed lookup (the card is skipped). A stacked card with no
+  review yet is still planned review. `review-drift.sh <reviewed-sha> <head-sha> [--also-base <ref>]`: a clean
+  merge whose second parent is an ancestor of the ref counts as a clean merge of the default branch (its
+  subject need only say merge); a ref that does not resolve after one fetch prints unreviewed. `tick-plan.sh`
+  and the gate pass `--also-base origin/<stack.base>` for a card whose note has `stack`.
+  `worktree.sh review <n> <pr> [<stage>] [<base-branch>]`: a `fleet/<n>-<slug>` argument makes `base` the
+  merge-base of origin's copy of that branch and the head (exit 1 when origin lacks it); the driver passes
+  `stack.base` for a card with `stack`. Suites: `tests/test-stack-plan.sh`, `test-review-drift.sh`,
+  `test-worktree.sh`, `test-gate.sh`, `driver_cases.py`.
 - **Stack bridge** (`scripts/stack-bridge.sh tree|commit`, pure git, never pushes). `tree <repo>
   <parent-head> <ours> <theirs>` prints the `git merge-tree --write-tree --merge-base` tree;
   `commit <worktree> <parent-head> <squash-sha>` builds a merge commit (parents HEAD, squash;
   `git commit-tree`) and moves the branch with `git merge --ff-only`, printing the new head. Exit 0 ok,
   3 conflict (paths on stdout), 4 git older than 2.40, 1 other failure (parent head not an
   ancestor of HEAD, changes to tracked files), 2 usage; on 3 or 4 nothing changes. A squash already in
-  HEAD prints HEAD and adds no commit. Nothing calls it yet.
+  HEAD prints HEAD and adds no commit. `stack-land.sh` calls it.
+- **Stack landing** (`scripts/stack-land.sh <n> <pr-or-dash> <branch> <worktree>`; never rebases, never
+  force-pushes). Exit 0 landed (or nothing to do: no `stack` in the note), 3 wait (nothing changed), 4 attention
+  (nothing pushed, `stack.attention` set, one comment on the card), 1 failure, 2 usage. Steps: the parent's PR
+  (`gh pr view --json state,headRefOid,mergeCommit`) not MERGED, or the squash not an ancestor of the default branch
+  (`origin/HEAD`, else `origin/main`) after `git fetch origin` and a fetch of `refs/pull/<parent pr>/head`: 3; a merge
+  commit on the first-parent chain down to `stack.start` whose second parent is neither an ancestor of the parent's
+  final head nor on the default branch: 4 (`the child followed commits of #<parent> that never merged`); the final
+  head not in HEAD: `git merge --no-edit` it (a conflict aborts it: 4, `merging the final head of #<parent> conflicts
+  in <files>`); `stack-bridge.sh commit` (its 3: 4 `landing on <default> conflicts in <files>`, its 4: 4 `stacking
+  needs git 2.40 or later`, the branch put back); a plain push, a fetch and a check that origin has the head (a
+  rejected push resets the branch with `git reset --keep` to the head before the merge: 1); with a PR `gh pr edit <pr>
+  --repo <repo> --base <default>`; the note gets `stack` null and `landed` `{parent, parent_head, squash, sha}`
+  (`sha` the bridge commit); with a PR `update-branch.sh` with the same four arguments, whose code is the exit.
+  The plan row `land` (reason `#<parent> merged; land on <default>`) is planned, with `stacking.enabled`, for an
+  in_progress or review-state card whose note has `stack` with no `attention` when the parent card's state is done,
+  before the conflict, fix, update_branch, start_review and review rows (a stale `conflicted_files` does not stop it).
+  `land` is a script action that takes a slot, reserves no scope and is never run synchronously in the driver
+  (`scheduler`, `driver.SCRIPT_ACTIONS`, `loop._begin`, as `update_branch`): the driver runs `worktree.sh create`
+  then `stack-land.sh`; exits 3 and 4 are not action failures, any other non-zero exit counts one. Suite:
+  `tests/test-stack-land.sh`.
 - **Stacking display** (no new note field). `status.sh` appends ` · stacked on #<stack.parent>` to a card's
   line when its note has `stack`, then ` · landing needs attention: <stack.attention>` when that is a string; a
   card without `stack` prints as before. The board server's card summary and detail carry `stacked_on` (the
@@ -255,7 +297,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   moves a card out of human_qa. G2: `gh pr merge` blocked under `merge.policy: human`;
   under `auto` only explicit, non-draft, green, non-`--admin`, and, for a `fleet/<n>-*`
   branch, a head whose commits after the note's `last_review.sha` are all clean merges of
-  main (`review-drift.sh`; otherwise blocked as unreviewed), and, for a `fleet/<n>-*` branch, no
+  main (`review-drift.sh`, given `--landing` from the note's `landed` when set; otherwise blocked as unreviewed), and, for a `fleet/<n>-*` branch, no
   closing keyword before an issue reference in the title, body or a commit message
   (`pr-closing-check.sh --json`, also run by `merge-reviewed.sh` before every merge, keyed
   form after `pending_merge` so the lane classifies it `refused`), and a PR base that is

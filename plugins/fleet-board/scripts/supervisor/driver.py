@@ -79,7 +79,7 @@ Started = namedtuple('Started', 'kind action')
 Outcome = namedtuple('Outcome', 'card progressed redispatch provider_failure')
 
 SCRIPT_ACTIONS = frozenset((
-    'advance_stage', 'move_to_review', 'update_branch', 'block', 'to_human_qa', 'mark_ready', 'verify_main', 'finish', 'unblock',
+    'advance_stage', 'move_to_review', 'update_branch', 'land', 'block', 'to_human_qa', 'mark_ready', 'verify_main', 'finish', 'unblock',
     'file_pending', 'rerun_checks', 'checks_failed', 'skip_no_acceptance', 'skip_card_lint', 'wait', 'skip',
 ))
 ROLE_ACTIONS = frozenset(('start', 'continue_implementor', 'start_review', 'review', 'review_stage', 'fix',
@@ -95,7 +95,7 @@ PR_FILES_LIMIT = 100   # gh pr view --json files lists at most this many: a full
 _CONFLICT = re.compile(r'conflict', re.I)
 _SCRIPT_RUNNERS = ('stage-review', 'evidence-review')
 _UNCOUNTED = frozenset(('wait', 'skip'))
-_FLAGS = frozenset(('--all', '--qa-summary', '--role', '--commits-since-review', '--mode'))
+_FLAGS = frozenset(('--all', '--qa-summary', '--role', '--commits-since-review', '--mode', '-'))
 _FIXED_BEFORE = ('backlog', 'ready', 'in_progress', 'in_review')
 _MERGING = ('merging',)
 _FIXED_AFTER = ('human_qa', 'blocked', 'done', 'wont_do')
@@ -974,6 +974,13 @@ class CardDriver:
             return self._script_args(c, run, pr, previous, findings, None if stale else report, accepted)
         # A stage reviewer gets its own checkout, so reviewers of one card running together never share one
         extra = (stage,) if name == 'review_stage' and stage else ()
+        # A stacked card is reviewed against its parent branch: worktree.sh prints the merge-base with it
+        stack = note.get('stack')
+        if isinstance(stack, dict):
+            sbase = stack.get('base')
+            if not isinstance(sbase, str) or not _BRANCH.fullmatch(sbase):
+                raise _Invalid('stack', stack)
+            extra += (sbase,)
         data = _json(c.step('worktree.sh', 'review', c.n, pr, *extra).stdout)
         if not (isinstance(data, dict) and isinstance(data.get('path'), str) and os.path.isabs(data['path'])
                 and isinstance(data.get('sha'), str) and _SHA.fullmatch(data['sha'])):
@@ -1415,6 +1422,22 @@ class CardDriver:
         pr = c.pr(c.note().get('pr') if c.row.get('pr') is None else None)
         c.step('worktree.sh', 'create', c.n, branch, worktree)
         c.step('update-branch.sh', c.n, pr, branch, worktree)
+        c.merge_soft(dict(_RESET))
+
+    def _do_land(self, c):
+        # stack-land.sh: exit 3 (the parent has not landed on the default branch yet) and 4 (it set stack.attention
+        # and commented) are answers, not failures; any other non-zero exit counts one failure
+        branch, worktree = c.branch(), c.worktree()
+        fallback = c.note().get('pr') if c.row.get('pr') is None else None
+        pr = '-' if c.row.get('pr') is None and fallback is None else c.pr(fallback)
+        c.step('worktree.sh', 'create', c.n, branch, worktree)
+        result = c.soft('stack-land.sh', c.n, pr, branch, worktree)
+        if result.timed_out:
+            raise _Fail('stack-land.sh timed out')
+        if result.rc in (3, 4):
+            return
+        if result.rc != 0:
+            raise _Fail(_first_line(result.stderr) or 'stack-land.sh exited %d' % result.rc)
         c.merge_soft(dict(_RESET))
 
     def _do_block(self, c):

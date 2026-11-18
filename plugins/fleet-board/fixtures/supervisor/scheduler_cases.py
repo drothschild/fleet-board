@@ -219,12 +219,17 @@ def run():
     test_script_actions_ignore_rate_limit_and_global_cap()
     test_script_action_still_waits_for_its_own_active_card()
     test_update_branch_skips_scope_but_takes_capacity()
+    test_land_skips_scope_but_takes_capacity()
     test_read_only_actions_ignore_other_cards_scope()
     test_a_read_only_claim_does_not_block_a_writer()
     test_a_read_only_action_still_waits_for_capacity_and_its_own_card()
     test_has_work_tolerates_mixed_dependency_types()
     test_scope_ignore_drops_version_manifests()
     test_scope_ignore_validated_in_limits()
+    test_a_missing_repo_on_an_active_claim_means_the_home_repo()
+    test_two_claims_with_no_repo_on_the_same_path_conflict()
+    test_without_a_home_repo_a_missing_repo_still_matches_every_repo()
+    test_a_missing_repo_on_a_reservation_means_the_home_repo()
     test_scope_ignore_one_side_wholly_ignored()
     test_scope_ignore_cleans_the_path_side()
     test_glob_segments_and_jq_parity()
@@ -249,7 +254,7 @@ def admit_one(scheduler, row, **kw):
 def test_every_planned_action_is_classified():
     from supervisor.scheduler import _ACTION_CLASS
     expected = {0: ['continue_implementor', 'fix', 'review', 'review_stage'],
-                1: ['start_review', 'unblock', 'update_branch', 'advance_stage', 'to_human_qa', 'mark_ready',
+                1: ['start_review', 'unblock', 'update_branch', 'land', 'advance_stage', 'to_human_qa', 'mark_ready',
                     'verify_main', 'finish', 'block', 'file_pending', 'merge', 'after_merge', 'merge_refusal',
                     'move_to_review'],
                 2: ['start']}
@@ -420,6 +425,21 @@ def test_update_branch_skips_scope_but_takes_capacity():
     assert capped['waits'][0]['reason'] == 'global capacity'
     ok = Scheduler(clock=lambda: 0).admit([candidate(3, 'update_branch', 'scripts', paths=['x'])], active=active, limits=LIMITS)
     assert [x['number'] for x in ok['admitted']] == [3] and len(ok['active']) == 2
+
+
+def test_land_skips_scope_but_takes_capacity():
+    # land (stack-land.sh) writes only the child's own branch: like update_branch it reserves no scope,
+    # takes a slot and waits at global capacity
+    held = [{'card': 1, 'paths': ['src/a.py']}]
+    active = [{'number': 1, 'provider': 'claude', 'paths': ['src/a.py'], 'action': 'fix'}]
+    row = candidate(2, 'land', 'scripts', paths=['src/a.py'])
+    result = Scheduler(clock=lambda: 0).admit([row], active=active, reservations=held, limits=LIMITS)
+    assert [x['number'] for x in result['admitted']] == [2], result['waits']
+    assert [x['number'] for x in result['active']] == [1, 2], 'it still occupies a slot'
+    assert result['active'][1]['action'] == 'land'
+    capped = Scheduler(clock=lambda: 0).admit([candidate(3, 'land', 'scripts', paths=['x'])],
+        active=active, limits={'global': 1, 'providers': {'*': 1}, 'per_card': 1})
+    assert capped['admitted'] == [] and capped['waits'][0]['reason'] == 'global capacity', capped
 
 
 def test_read_only_actions_ignore_other_cards_scope():
@@ -659,6 +679,46 @@ def test_an_after_merge_still_takes_a_provider_slot():
         limits={'global': 1, 'providers': {'*': 1}, 'per_card': 1},
         active=[{'number': 9, 'provider': 'claude', 'paths': ['z']}], lane_free=True)
     assert r['admitted'] == [] and r['waits'][0]['reason'] == 'global capacity', r
+
+
+def _repo_row(number, repo, action='start'):
+    return dict(candidate(number, action, paths=['src/a.py']), repo=repo)
+
+
+def test_a_missing_repo_on_an_active_claim_means_the_home_repo():
+    home = dict(LIMITS, home_repo='acme/toy')
+    held = [{'number': 9, 'provider': 'claude', 'paths': ['src/a.py']}]
+    other = Scheduler(clock=lambda: 0).admit([_repo_row(1, 'acme/other')], active=held, limits=home)
+    assert [x['number'] for x in other['admitted']] == [1], other['waits']
+    same = Scheduler(clock=lambda: 0).admit([_repo_row(1, 'acme/toy')], active=held, limits=home)
+    assert same['admitted'] == [] and same['waits'][0]['reason'] == 'scope or card conflict', same
+    upper = Scheduler(clock=lambda: 0).admit([_repo_row(1, 'ACME/Toy')], active=held, limits=home)
+    assert upper['admitted'] == [] and upper['waits'][0]['reason'] == 'scope or card conflict', upper
+
+
+def test_two_claims_with_no_repo_on_the_same_path_conflict():
+    home = dict(LIMITS, home_repo='acme/toy')
+    held = [{'number': 9, 'provider': 'claude', 'paths': ['src/a.py']}]
+    for limits in (home, LIMITS):
+        r = Scheduler(clock=lambda: 0).admit([_repo_row(1, None)], active=held, limits=limits)
+        assert r['admitted'] == [] and r['waits'][0]['reason'] == 'scope or card conflict', r
+
+
+def test_without_a_home_repo_a_missing_repo_still_matches_every_repo():
+    held = [{'number': 9, 'provider': 'claude', 'paths': ['src/a.py']}]
+    for home in (None, ''):
+        limits = dict(LIMITS) if home is None else dict(LIMITS, home_repo=home)
+        r = Scheduler(clock=lambda: 0).admit([_repo_row(1, 'acme/other')], active=held, limits=limits)
+        assert r['admitted'] == [] and r['waits'][0]['reason'] == 'scope or card conflict', r
+
+
+def test_a_missing_repo_on_a_reservation_means_the_home_repo():
+    home = dict(LIMITS, home_repo='acme/toy')
+    held = [{'card': 9, 'paths': ['src/a.py']}]
+    other = Scheduler(clock=lambda: 0).admit([_repo_row(1, 'acme/other')], reservations=held, limits=home)
+    assert [x['number'] for x in other['admitted']] == [1], other['waits']
+    same = Scheduler(clock=lambda: 0).admit([_repo_row(1, 'acme/toy')], reservations=held, limits=home)
+    assert same['admitted'] == [] and same['waits'][0]['reason'] == 'scope reserved by #9', same
 
 
 if __name__ == '__main__':

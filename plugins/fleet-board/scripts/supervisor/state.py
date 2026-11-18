@@ -58,6 +58,7 @@ class State:
         self._also = {}         # card -> its further running reviewer actions (see REVIEWER_ACTIONS)
         self._retired = {}      # card -> {marker, pgids} of the card's reviewers that already ended
         self.reservations = {}
+        self.reservation_repos = {}   # card -> repo of its reservation ('' or absent: the home repo)
         self.lane = None
         self.provider_health = {}
         self.holds = {}   # card number (str) -> {reason, source, until}: why the last cycle held each card back
@@ -206,26 +207,34 @@ class State:
             markers.clear(marker, action.pgid, also=(retired or {}).get('pgids') or ())
         return action
 
-    def reserve(self, card, paths, ignore=None, exempt=()):
+    def reserve(self, card, paths, ignore=None, exempt=(), repo=None, home_repo=None):
         """Reserve `paths` for `card`; they must already be `scopes.normalize()` output.
 
         `ignore` is `supervisor.scope_ignore`: matching paths are dropped from both sides
         before the overlap check, as the scheduler does. Owners in `exempt` (a stacked
-        child's ancestors) are not overlap-checked."""
+        child's ancestors) are not overlap-checked. A missing `repo` (the card's, or a held
+        reservation's) is `home_repo`; with no `home_repo` it matches every repo."""
         with self._lock:
             mine = scopes.drop_ignored(paths, ignore)
             for owner, held in self.reservations.items():
-                if owner != card and owner not in exempt and scopes.overlap(mine, scopes.drop_ignored(held, ignore)):
+                if owner != card and owner not in exempt \
+                        and scopes.same_repo(repo, self.reservation_repos.get(owner), home_repo) \
+                        and scopes.overlap(mine, scopes.drop_ignored(held, ignore)):
                     return owner
             held = set(self.reservations.get(card, ())) | set(paths)
             # Union like the store did; '' (whole repo) absorbs everything.
             self.reservations[card] = [''] if '' in held else sorted(held)
+            if repo:
+                self.reservation_repos[card] = repo
+            else:
+                self.reservation_repos.pop(card, None)
             self._bump()
             return None
 
     def release(self, card):
         with self._lock:
             self.reservations.pop(card, None)
+            self.reservation_repos.pop(card, None)
             self._bump()
 
     def set_health(self, provider, entry):
