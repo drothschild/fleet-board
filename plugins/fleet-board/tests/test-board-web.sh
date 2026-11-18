@@ -1949,6 +1949,53 @@ api GET /api/cards/2
 assert_body "detail payload: stacked_on is null for an unstacked card" '.stacked_on|tojson' null
 stop_server
 
+# --- premise proposal: payload keys and the three premise routes ---
+PR_REPO="$(new_repo "$LOCAL_YML")"
+mkdir -p "$PR_REPO/.fleet-board/cards" "$PR_REPO/.fleet-board/active"
+echo 10 > "$PR_REPO/.fleet-board/next"
+PR_HEAD="0123456789abcdef0123456789abcdef01234567"
+REPO="$PR_REPO" seed_card 1 blocked "Rewrite me" "b"
+jq --arg h "$PR_HEAD" '.proposal = {kind: "rewrite", scope: "- src/a.sh", acceptance: ["a works"], summary: "tighten", head: $h, at: "2026-01-01T00:00:00Z"}' "$PR_REPO/.fleet-board/cards/1.json" > "$TMP/pr1.json" && mv "$TMP/pr1.json" "$PR_REPO/.fleet-board/cards/1.json"
+REPO="$PR_REPO" seed_card 2 blocked "Already built" "b"
+jq --arg h "$PR_HEAD" '.proposal = {kind: "close", evidence: [{item: 1, command: "ls", output: "x"}], head: $h, at: "2026-01-01T00:00:00Z"}' "$PR_REPO/.fleet-board/cards/2.json" > "$TMP/pr2.json" && mv "$TMP/pr2.json" "$PR_REPO/.fleet-board/cards/2.json"
+REPO="$PR_REPO" seed_card 3 blocked "Malformed proposal" "b"
+jq '.proposal = {kind: "rewrite", scope: 7}' "$PR_REPO/.fleet-board/cards/3.json" > "$TMP/pr3.json" && mv "$TMP/pr3.json" "$PR_REPO/.fleet-board/cards/3.json"
+REPO="$PR_REPO" seed_card 4 ready "No proposal" "b"
+PR_SCRIPTS="$TMP/pr-scripts"
+cp -R "$SCRIPTS" "$PR_SCRIPTS"
+PR_LOG="$TMP/premise-calls.log"
+: > "$PR_LOG"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nif [ "$2" = 7 ]; then echo "card #7 has no close proposal to confirm" >&2; exit 1; fi\nexit 0\n' "$PR_LOG" > "$PR_SCRIPTS/premise-settle.sh"
+SERVER_PY="$PR_SCRIPTS/board-web.py" SCRIPTS="$PR_SCRIPTS" start_server "$PR_REPO"
+api GET /api/cards/1
+assert_body "GET /api/cards/<n> carries the rewrite proposal" '.proposal.kind' rewrite
+assert_body "GET /api/cards/<n> carries premise (null when unset)" 'has("premise")' true
+api GET /api/cards/2
+assert_body "GET /api/cards/<n> carries the close proposal" '.proposal.kind' close
+api GET /api/cards/3
+assert_body "a card with a malformed proposal reports proposal null" '.proposal|tojson' null
+api GET /api/cards/4
+assert_body "a card with no proposal reports proposal null" '.proposal|tojson' null
+api GET /api/board
+assert_body "board summary proposal_kind is rewrite" '.cards[]|select(.number==1)|.proposal_kind' rewrite
+assert_body "board summary proposal_kind is close" '.cards[]|select(.number==2)|.proposal_kind' close
+assert_body "board summary proposal_kind is null for a malformed proposal" '.cards[]|select(.number==3)|.proposal_kind|tojson' null
+assert_body "board summary proposal_kind is null for no proposal" '.cards[]|select(.number==4)|.proposal_kind|tojson' null
+api POST /api/cards/1/premise/approve '{}'
+assert_code 200
+api POST /api/cards/2/premise/confirm '{}'
+assert_code 200
+api POST /api/cards/1/premise/reject '{}'
+assert_code 200
+if [ "$(cat "$PR_LOG")" = "$(printf 'approve 1\nconfirm 2\nreject 1')" ]; then pass "each premise route runs its premise-settle.sh verb once"; else fail "each premise route runs its premise-settle.sh verb once" "log: $(cat "$PR_LOG")"; fi
+REPO="$PR_REPO" seed_card 7 blocked "Settle fails" "b"
+api POST /api/cards/7/premise/confirm '{}'
+assert_code 409
+assert_body "a premise verb that exits non-zero gives its stderr in the 409" '.error' '*has no close proposal to confirm*'
+api POST /api/cards/99/premise/approve '{}'
+assert_code 404
+stop_server
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
