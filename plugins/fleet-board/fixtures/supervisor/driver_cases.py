@@ -316,6 +316,52 @@ def test_update_branch_conflict_counts_once_and_never_blocks(base):
     assert b.card()['state'] == 'in_review' and 'board-move.sh' not in b.scripts_called()
 
 
+def test_land_runs_worktree_then_stack_land(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'action_failures': 2, 'last_action_error': 'older'})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['stack-land.sh'] = ok()
+    assert begin(b, 'land', state='in_review').kind == 'done'
+    assert b.scripts_called() == ['worktree.sh', 'stack-land.sh'], b.calls
+    assert b.calls[0] == ('worktree.sh', 'create', '12', BRANCH, b.worktree)
+    assert ('stack-land.sh', '12', '34', BRANCH, b.worktree) in b.calls
+    note = b.note()
+    assert note['action_failures'] == 0 and note['last_action_error'] is None
+    assert b.card()['state'] == 'in_review' and 'board-move.sh' not in b.scripts_called()
+
+
+def test_land_without_a_pr_passes_a_dash(base):
+    b = board_for(base, 'in_progress')
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['stack-land.sh'] = ok()
+    assert begin(b, 'land', state='in_progress', pr=None).kind == 'done'
+    assert ('stack-land.sh', '12', '-', BRANCH, b.worktree) in b.calls, b.calls
+
+
+def test_land_exits_3_and_4_are_not_failures(base):
+    for rc in (3, 4):
+        sub = Path(base) / ('rc%d' % rc)
+        sub.mkdir()
+        b = board_for(sub, 'in_review')
+        b.put_note({'action_failures': 1, 'last_action_error': 'older'})
+        b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+        b.stubs['stack-land.sh'] = fail_with('waiting or attention\n', rc=rc)
+        assert begin(b, 'land', state='in_review').kind == 'done'
+        note = b.note()
+        assert note['action_failures'] == 1 and note['last_action_error'] == 'older', (rc, note)
+        assert b.card()['state'] == 'in_review' and 'board-move.sh' not in b.scripts_called()
+
+
+def test_land_exit_1_counts_one_failure(base):
+    b = board_for(base, 'in_review')
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['stack-land.sh'] = fail_with('git push origin fleet/12 was rejected\n', rc=1)
+    assert begin(b, 'land', state='in_review').kind == 'done'
+    note = b.note()
+    assert note['action_failures'] == 1 and note['last_action_error'].startswith('git push'), note
+    assert b.card()['state'] == 'in_review' and 'board-move.sh' not in b.scripts_called()
+
+
 LAST = {'round': 1, 'sha': 'abc', 'critical': 1, 'important': 1,
         'findings': [{'severity': 'Critical', 'text': 'crashes'}, {'severity': 'Minor', 'text': 'nit'},
                      {'severity': 'Important', 'text': 'leaks'}]}

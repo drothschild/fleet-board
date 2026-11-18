@@ -747,7 +747,7 @@ check_pr() {
 # moved past the note's last_review.sha by anything but clean merges of main
 # (review-drift.sh): such a head has not been reviewed
 check_reviewed() {
-  local ref="$1" repo="$2" name oid n from
+  local ref="$1" repo="$2" name oid n from landing
   local args=(pr view "$ref")
   [ -n "$repo" ] && args+=(-R "$repo")
   args+=(--json headRefName,headRefOid)
@@ -763,11 +763,16 @@ check_reviewed() {
   from="$(jq -r '.last_review.sha // "" | strings' <<<"$LOOKUP_OUT" 2>/dev/null)" \
     || block "could not verify the manager note of card #$n; blocking to be safe"
   [ -n "$from" ] && [ -n "$oid" ] || return 0
-  # A stacked card also counts clean merges of its parent branch (origin's copy of stack.base)
-  local also=() sbase
+  # a stacked child that landed: the note's landed pair lets review-drift.sh count the landing's commits;
+  # a stacked card also counts clean merges of its parent branch (origin's copy of stack.base)
+  local also=() sbase landing
+  landing="$(jq -r 'if (.landed | type) == "object" and (.landed.parent_head | type) == "string" and (.landed.squash | type) == "string"
+                    then "\(.landed.parent_head):\(.landed.squash)" else "" end' <<<"$LOOKUP_OUT" 2>/dev/null)" \
+    || block "could not verify the manager note of card #$n; blocking to be safe"
+  [ -z "$landing" ] || also=(--landing "$landing")
   sbase="$(jq -r '.stack.base // "" | strings' <<<"$LOOKUP_OUT" 2>/dev/null)" \
     || block "could not verify the manager note of card #$n; blocking to be safe"
-  [ -z "$sbase" ] || also=(--also-base "origin/$sbase")
+  [ -z "$sbase" ] || also+=(--also-base "origin/$sbase")
   lookup "the commits of PR $ref since its last review" bash "$S/review-drift.sh" "$from" "$oid" ${also[@]+"${also[@]}"}
   [ "$LOOKUP_OUT" = reviewed ] \
     || block "PR $ref head ${oid:0:7} has commits after the last review at ${from:0:7} that are not clean merges of main; review it before merging"

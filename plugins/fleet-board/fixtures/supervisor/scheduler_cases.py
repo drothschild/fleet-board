@@ -219,6 +219,7 @@ def run():
     test_script_actions_ignore_rate_limit_and_global_cap()
     test_script_action_still_waits_for_its_own_active_card()
     test_update_branch_skips_scope_but_takes_capacity()
+    test_land_skips_scope_but_takes_capacity()
     test_read_only_actions_ignore_other_cards_scope()
     test_a_read_only_claim_does_not_block_a_writer()
     test_a_read_only_action_still_waits_for_capacity_and_its_own_card()
@@ -249,7 +250,7 @@ def admit_one(scheduler, row, **kw):
 def test_every_planned_action_is_classified():
     from supervisor.scheduler import _ACTION_CLASS
     expected = {0: ['continue_implementor', 'fix', 'review', 'review_stage'],
-                1: ['start_review', 'unblock', 'update_branch', 'advance_stage', 'to_human_qa', 'mark_ready',
+                1: ['start_review', 'unblock', 'update_branch', 'land', 'advance_stage', 'to_human_qa', 'mark_ready',
                     'verify_main', 'finish', 'block', 'file_pending', 'merge', 'after_merge', 'merge_refusal',
                     'move_to_review'],
                 2: ['start']}
@@ -420,6 +421,21 @@ def test_update_branch_skips_scope_but_takes_capacity():
     assert capped['waits'][0]['reason'] == 'global capacity'
     ok = Scheduler(clock=lambda: 0).admit([candidate(3, 'update_branch', 'scripts', paths=['x'])], active=active, limits=LIMITS)
     assert [x['number'] for x in ok['admitted']] == [3] and len(ok['active']) == 2
+
+
+def test_land_skips_scope_but_takes_capacity():
+    # land (stack-land.sh) writes only the child's own branch: like update_branch it reserves no scope,
+    # takes a slot and waits at global capacity
+    held = [{'card': 1, 'paths': ['src/a.py']}]
+    active = [{'number': 1, 'provider': 'claude', 'paths': ['src/a.py'], 'action': 'fix'}]
+    row = candidate(2, 'land', 'scripts', paths=['src/a.py'])
+    result = Scheduler(clock=lambda: 0).admit([row], active=active, reservations=held, limits=LIMITS)
+    assert [x['number'] for x in result['admitted']] == [2], result['waits']
+    assert [x['number'] for x in result['active']] == [1, 2], 'it still occupies a slot'
+    assert result['active'][1]['action'] == 'land'
+    capped = Scheduler(clock=lambda: 0).admit([candidate(3, 'land', 'scripts', paths=['x'])],
+        active=active, limits={'global': 1, 'providers': {'*': 1}, 'per_card': 1})
+    assert capped['admitted'] == [] and capped['waits'][0]['reason'] == 'global capacity', capped
 
 
 def test_read_only_actions_ignore_other_cards_scope():
