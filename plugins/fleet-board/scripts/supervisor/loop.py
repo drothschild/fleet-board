@@ -584,12 +584,30 @@ class Supervisor:
             self._last_attention = attention
             if attention:
                 self.state.event('attention', cards=[{'number': n, 'reason': r} for n, r in attention])
+        self._trace_unadmitted(rows, result, limit_waits)
         for row in result['admitted']:
             # A begin can be slow: apply a pause that arrived meanwhile before launching the next row.
             self._drain_commands()
             if self.state.mode != 'running' or self._stop_mode:
                 break
             self._begin(row)
+
+    def _trace_unadmitted(self, rows, result, limit_waits):
+        """A planned role or script action that was not admitted this cycle leaves a `not_admitted` event naming the
+        card, the action and the reason (once per change), so an ATTENTION badge is never the only trace."""
+        actions = {r.get('number'): r.get('action') for r in rows}
+        now = {}
+        for w in result['waits'] + limit_waits:
+            if w.get('reason') != ACTIVE_CLAIM_REASON:
+                now[w.get('number')] = w.get('reason')
+        for a in result['attention']:
+            now[a.get('number')] = a.get('reason')
+        before = getattr(self, '_last_unadmitted', {})
+        for number, reason in now.items():
+            action = actions.get(number)
+            if action and before.get(number) != (action, reason):
+                self.state.event('not_admitted', card=number, action=action, reason=_clean(reason))
+        self._last_unadmitted = {n: (actions.get(n), r) for n, r in now.items()}
 
     def _pass_done(self, began):
         """A board-wide pass just ended: record it for the status, and hold the next one back for the longer of
