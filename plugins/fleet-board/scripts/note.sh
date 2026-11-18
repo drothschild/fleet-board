@@ -169,6 +169,11 @@ invalid_field() {
               and (.important | . == null or (type == "number" and . == floor and . >= 0))
               and (.findings | . == null or type == "array")))))
           | not) then "review_passes"
+    # finding_rounds: per reviewer ("evidence" or a stage name), the rounds in which it reported Critical or Important findings
+    elif (.finding_rounds | . == null or (type == "object" and all(to_entries[];
+            (.key | test("\\A[a-z][a-z0-9_]*\\z")) and (.value | type == "object")
+            and (.value.count | type == "number" and . == floor and . >= 0)
+            and (.value.last_round | type == "number" and . == floor and . >= 0))) | not) then "finding_rounds"
     elif (.blocked_from | . == null or . == "ready" or . == "in_progress" or . == "in_review" or . == "merging"
             or (type == "string" and test("\\Areview_[a-z][a-z0-9_]*\\z")) | not) then "blocked_from"
     elif (.accepted | . == null or (type == "object" and (.login | type == "string" and clean and length > 0)
