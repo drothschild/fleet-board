@@ -21,7 +21,7 @@ FIX="$TMP/fix"; mkdir -p "$FIX"
 printf 'exit 0\n' > "$FIX/test-clean-room.sh"
 
 out="$(bash "$RUNNER" "$FIX/test-*.sh" 2>&1)"; rc=$?
-printf '%s\n' "$out" | grep -q 'test-clean-room.sh.*PASS' \
+printf '%s\n' "$out" | grep -c 'test-clean-room.sh.*PASS' >/dev/null \
   && pass "runner runs and reports a passing test-clean-room.sh" \
   || fail "runner output lacks 'test-clean-room.sh ... PASS': $out"
 [ "$rc" -eq 0 ] && pass "runner exits 0 for a passing test-clean-room.sh" \
@@ -31,7 +31,7 @@ printf 'exit 4\n' > "$FIX/test-clean-room.sh"
 out="$(bash "$RUNNER" "$FIX/test-*.sh" 2>&1)"; rc=$?
 [ "$rc" -ne 0 ] && pass "runner fails when test-clean-room.sh fails" \
   || fail "runner exited 0 although test-clean-room.sh fails"
-printf '%s\n' "$out" | grep -q 'test-clean-room.sh.*FAIL' \
+printf '%s\n' "$out" | grep -c 'test-clean-room.sh.*FAIL' >/dev/null \
   && pass "runner reports a failing test-clean-room.sh" \
   || fail "runner output lacks 'test-clean-room.sh ... FAIL': $out"
 

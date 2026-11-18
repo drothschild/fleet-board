@@ -194,7 +194,7 @@ else
     want="$(printf '%s' "$line" | awk '{print $1}')"
     got="$(sha256_of "$f")"
     if [ "$want" = "$got" ]; then
-      if printf '%s' "$line" | grep -q '# exception:'; then
+      if printf '%s' "$line" | grep -c '# exception:' >/dev/null; then
         pass "$rel: hash matches manifest (named exception)"
       else
         pass "$rel: hash matches manifest"

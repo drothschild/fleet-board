@@ -14,7 +14,7 @@ fail() { printf 'not ok - %s\n  %s\n' "$1" "$2"; FAILS=$((FAILS + 1)); }
 argv_lines="$(grep -n -- '--agent fleet-board:merger' "$TARGET" | grep -v '^[0-9]*:[[:space:]]*#')"
 if [ -z "$argv_lines" ]; then
   fail "behavioral-merger.sh builds a claude argv with --agent fleet-board:merger" "no such line"
-elif printf '%s\n' "$argv_lines" | grep -q -- '--bare'; then
+elif printf '%s\n' "$argv_lines" | grep -c -- '--bare' >/dev/null; then
   fail "the merger claude argv does not pass --bare" "$argv_lines"
 else
   pass "the merger claude argv does not pass --bare"

@@ -19,13 +19,13 @@ fail() { FAIL=$((FAIL + 1)); printf '  FAIL %s\n' "$1"; printf '       %s\n' "$2
 
 echo "Case: markup and CSS"
 MODAL_TAG="$(tr '\n' ' ' < "$STATIC/index.html" | grep -o '<[a-z]* [^>]*id="planner-modal"[^>]*>' | head -1)"
-if printf '%s' "$MODAL_TAG" | grep -q 'role="dialog"' && printf '%s' "$MODAL_TAG" | grep -q 'aria-modal="true"'; then
+if printf '%s' "$MODAL_TAG" | grep -c 'role="dialog"' >/dev/null && printf '%s' "$MODAL_TAG" | grep -c 'aria-modal="true"' >/dev/null; then
   pass "The planner popup container has role=dialog and aria-modal=true"
 else
   fail "The planner popup container has role=dialog and aria-modal=true" "tag: $MODAL_TAG"
 fi
 RULE="$(tr '\n' ' ' < "$STATIC/board.css" | grep -o '\.pl-panel *{[^}]*}' | head -1)"
-if printf '%s' "$RULE" | grep -q 'position: *fixed' && printf '%s' "$RULE" | grep -Eq 'width: *[0-9]+(\.[0-9]+)?(vw|%)' \
+if printf '%s' "$RULE" | grep -c 'position: *fixed' >/dev/null && printf '%s' "$RULE" | grep -Ec 'width: *[0-9]+(\.[0-9]+)?(vw|%)' >/dev/null \
   && printf '%s' "$RULE" | grep -Eo 'width: *[0-9.]+(vw|%)' | head -1 | grep -Eo '[0-9.]+' | awk '{exit !($1 > 0 && $1 < 100)}'; then
   pass "board.css gives the popup container position: fixed and a width below 100vw"
 else
@@ -301,13 +301,13 @@ case "$OUT3" in *"ok   "*|*"FAIL "*) ;; *) fail "idle close driver produced resu
 echo "Case: chat view docks as a drawer"
 CSSFLAT="$(tr '\n' ' ' < "$STATIC/board.css")"
 CHATRULE="$(printf '%s' "$CSSFLAT" | grep -o '\.pl-modal\[data-view="chat"\] \.pl-panel *{[^}]*}' | head -1)"
-if printf '%s' "$CHATRULE" | grep -Eq 'width: *570px' && printf '%s' "$CHATRULE" | grep -Eq 'right: *0' && printf '%s' "$CHATRULE" | grep -Eq 'transform: *none'; then
+if printf '%s' "$CHATRULE" | grep -Ec 'width: *570px' >/dev/null && printf '%s' "$CHATRULE" | grep -Ec 'right: *0' >/dev/null && printf '%s' "$CHATRULE" | grep -Ec 'transform: *none' >/dev/null; then
   pass "board.css has a .pl-modal[data-view=\"chat\"] .pl-panel rule with width: 570px, right: 0 and transform: none"
 else
   fail "board.css has a .pl-modal[data-view=\"chat\"] .pl-panel rule with width: 570px, right: 0 and transform: none" "rule: $CHATRULE"
 fi
 MEDIA="$(printf '%s' "$CSSFLAT" | grep -o '@media (max-width: 720px) {[^@]*\.pl-modal\[data-view="chat"\] \.pl-panel *{[^}]*}' | head -1 | grep -o '\.pl-modal\[data-view="chat"\] \.pl-panel *{[^}]*}')"
-if printf '%s' "$MEDIA" | grep -Eq 'width: *100vw'; then
+if printf '%s' "$MEDIA" | grep -Ec 'width: *100vw' >/dev/null; then
   pass "Inside the max-width: 720px media block, the chat-view .pl-panel rule sets width: 100vw"
 else
   fail "Inside the max-width: 720px media block, the chat-view .pl-panel rule sets width: 100vw" "media: $MEDIA"

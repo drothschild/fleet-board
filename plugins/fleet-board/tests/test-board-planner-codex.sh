@@ -124,8 +124,8 @@ restart_same_repo() { # $1 = conversation id; restarts the server on the current
   [ -n "$PORT" ] || { echo "server did not start: $(cat "$TMP/server.err")"; exit 1; }
 }
 argv_of() { sed -n "${1}p" "$ARGV_LOG" | tr '\037' '\n'; }
-has_pair() { printf '%s\n' "$1" | grep -A1 -x -e "$2" | grep -qx -e "$3"; }
-has_arg() { printf '%s\n' "$1" | grep -qx -e "$2"; }
+has_pair() { printf '%s\n' "$1" | grep -A1 -x -e "$2" | grep -cx -e "$3" >/dev/null; }
+has_arg() { printf '%s\n' "$1" | grep -cx -e "$2" >/dev/null; }
 
 PDIR="$TMP/logs/web/acme-toy/planner"
 
@@ -140,7 +140,7 @@ if [ "$(printf '%s\n' "$a1" | sed -n '1,4p' | tr '\n' ' ')" = "exec --json -s re
 if has_pair "$a1" -m gpt-test; then pass "first turn passes -m <model>"; else fail "first turn passes -m <model>" "$a1"; fi
 persona_line="$(grep -m1 '^You are the planner' "$SCRIPTS/../skills/planner/references/persona.md")"
 case "$a1" in *"developer_instructions="*"$persona_line"*) pass "first turn passes -c developer_instructions=<persona>" ;; *) fail "first turn passes -c developer_instructions=<persona>" "$a1" ;; esac
-if printf '%s\n' "$a1" | grep -A1 -x -e '-o' | tail -1 | grep -q 'reply-'; then pass "first turn passes -o <file>"; else fail "first turn passes -o <file>" "$a1"; fi
+if printf '%s\n' "$a1" | grep -A1 -x -e '-o' | tail -1 | grep -c 'reply-' >/dev/null; then pass "first turn passes -o <file>"; else fail "first turn passes -o <file>" "$a1"; fi
 case "$(printf '%s\n' "$a1" | tail -2)" in *"first question"*) pass "prompt is the last argument" ;; *) fail "prompt is the last argument" "$a1" ;; esac
 
 echo "Case: the thread_id from thread.started is saved in meta.json"
@@ -159,7 +159,7 @@ a2="$(argv_of 2)"
 if [ "$(printf '%s\n' "$a2" | sed -n '1,3p' | tr '\n' ' ')" = "exec resume --json " ]; then pass "later turn starts exec resume --json"; else fail "later turn starts exec resume --json" "$a2"; fi
 if has_pair "$a2" -c 'sandbox_mode="read-only"'; then pass "later turn passes -c sandbox_mode=\"read-only\""; else fail "later turn passes -c sandbox_mode=\"read-only\"" "$a2"; fi
 if has_pair "$a2" -m gpt-test; then pass "later turn passes -m <model>"; else fail "later turn passes -m <model>" "$a2"; fi
-if printf '%s\n' "$a2" | grep -A1 -x -e '-o' | tail -1 | grep -q 'reply-'; then pass "later turn passes -o <file>"; else fail "later turn passes -o <file>" "$a2"; fi
+if printf '%s\n' "$a2" | grep -A1 -x -e '-o' | tail -1 | grep -c 'reply-' >/dev/null; then pass "later turn passes -o <file>"; else fail "later turn passes -o <file>" "$a2"; fi
 if [ "$(printf '%s\n' "$a2" | grep -A2 -x -e '-o' | sed -n 3p)" = "thr-1" ]; then pass "later turn passes the thread_id before the prompt"; else fail "later turn passes the thread_id before the prompt" "$a2"; fi
 if has_arg "$a2" '-s'; then fail "resume has no -s flag" "$a2"; else pass "resume has no -s flag"; fi
 

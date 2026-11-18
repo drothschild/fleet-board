@@ -371,7 +371,7 @@ run_check "$SCRIPT" 12 7
 assert_eq "env-unset-root: ok true" "$(jqc .ok)" "true"
 
 # the typecheck runs without them too
-setup_case '! env | grep -q ^FLEET_ROOT='
+setup_case '! env | grep -c ^FLEET_ROOT= >/dev/null'
 run_check "$SCRIPT" 12 7
 assert_eq "env-typecheck: FLEET_ROOT unset in typecheck, ok true" "$(jqc .ok)" "true"
 unset FLEET_BOARD_DOMAIN

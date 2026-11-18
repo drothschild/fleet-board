@@ -100,7 +100,7 @@ commit_file() {
 line_count() { if [ -f "$1" ]; then wc -l < "$1" | tr -d ' '; else echo 0; fi; }
 
 # Whether `git worktree list` in the repo names the path
-wt_listed() { git -C "$REPO" worktree list --porcelain | grep -qxF "worktree $1"; }
+wt_listed() { git -C "$REPO" worktree list --porcelain | grep -cxF "worktree $1" >/dev/null; }
 
 # setup_case <mutate_on_copy true|false> [local]  (the second argument is kept
 # for the callers; every board is local)
