@@ -104,10 +104,24 @@ class StuckCase(unittest.TestCase):
 class Kinds(StuckCase):
     def test_in_progress_card_without_a_live_session_is_in_flight(self):
         self.b.seed(12, 'in_progress')
+        self.b.put_note({'branch': dc.BRANCH}, 12)
         found = stuck.find(self.root)
         self.assertEqual([(s.card, s.kind) for s in found], [(12, 'in_flight')])
         self.assertTrue(found[0].detail)
         self.assertEqual(self.kinds(live_cards={12}), [], 'a card the running supervisor owns is not stuck')
+
+    def test_a_card_in_in_progress_whose_note_has_no_branch_worktree_pr_or_attempts_is_not_returned(self):
+        self.b.seed(12, 'in_progress')
+        self.b.seed(13, 'in_progress')
+        self.b.put_note({'stuck': {'kind': 'in_flight', 'detail': 'd', 'at': 't'}}, 13)
+        self.assertEqual(self.kinds(), [])
+
+    def test_a_card_in_in_progress_whose_note_records_any_one_start_is_still_returned_as_in_flight(self):
+        for n, patch in ((12, {'branch': dc.BRANCH}), (13, {'worktree': str(self.root / '.fw' / 'w')}),
+                         (14, {'pr': 34}), (15, {'implementor_attempts': 1})):
+            self.b.seed(n, 'in_progress')
+            self.b.put_note(patch, n)
+        self.assertEqual(self.kinds(), [(n, 'in_flight') for n in (12, 13, 14, 15)])
 
     def test_a_clean_board_finds_nothing(self):
         self.b.seed(12, 'ready')
@@ -163,11 +177,13 @@ class Kinds(StuckCase):
 
     def test_a_card_can_be_stuck_in_more_than_one_way(self):
         self.b.seed(12, 'in_progress')
+        self.b.put_note({'branch': dc.BRANCH}, 12)
         self.marker(12)
         self.assertEqual(self.kinds(), [(12, 'in_flight'), (12, 'marker')])
 
     def test_an_unreadable_note_is_its_own_finding_and_does_not_fail_the_check(self):
         self.b.seed(12, 'in_progress')
+        self.b.put_note({'branch': dc.BRANCH}, 12)
         self.b.seed(13, 'ready')
 
         def run(root, name, *args, **kw):
@@ -185,6 +201,7 @@ class Kinds(StuckCase):
 
     def test_find_is_read_only(self):
         self.b.seed(12, 'in_progress')
+        self.b.put_note({'branch': dc.BRANCH}, 12)
         self.b.seed(13, 'merging')
         self.b.put_note({'pending_merge': {'operation_key': 'k', 'pr': 3, 'head_sha': 'a'}}, 13)
         self.b.seed(14, 'in_review')
@@ -387,6 +404,7 @@ class CliEnv(StuckCase):
 class Start(CliEnv):
     def test_start_refuses_with_stuck_cards_exit_4(self):
         self.b.seed(12, 'in_progress')
+        self.b.put_note({'branch': dc.BRANCH}, 12)
         self.marker(12)
         rc, out, err = self.invoke('start')
         if rc == 1 and 'cannot bind' in err:
@@ -415,6 +433,7 @@ class Start(CliEnv):
 
     def test_ignore_stuck_skips_them(self):
         self.b.seed(12, 'in_progress')
+        self.b.put_note({'branch': dc.BRANCH}, 12)
         captured = {}
 
         class FakeSupervisor:
@@ -477,9 +496,38 @@ class Start(CliEnv):
         self.assertEqual(rc, 0, err)
         self.assertEqual(set(captured['sup'].ignored), set())
 
+    def test_start_with_a_hand_moved_in_progress_card_and_no_other_stuck_card_does_not_exit_4(self):
+        self.b.seed(12, 'in_progress')
+        class FakeSupervisor:
+            def __init__(self, root, **kw):
+                self.ignored = {}
+                self.on_signal = lambda *a: None
+
+            def handle(self, command):
+                return {}
+
+            def run(self):
+                return 0
+
+        class FakeService:
+            def __init__(self, *a, **kw):
+                pass
+
+            def serve(self):
+                return {'owner': True}
+
+            def close(self):
+                pass
+
+        with mock.patch.object(cli.loop, 'Supervisor', FakeSupervisor), mock.patch.object(cli, 'Service', FakeService):
+            rc, out, err = self.invoke('start')
+        self.assertEqual(rc, 0, err)
+
     def test_stuck_with_a_running_supervisor_reads_the_board_itself(self):
         self.b.seed(12, 'in_progress')
+        self.b.put_note({'branch': dc.BRANCH}, 12)
         self.b.seed(13, 'in_progress')
+        self.b.put_note({'branch': dc.BRANCH}, 13)
         requests = []
 
         def transport(request):
@@ -498,6 +546,7 @@ class Start(CliEnv):
 
     def test_the_stuck_command_lists_and_releases_without_a_supervisor(self):
         self.b.seed(12, 'in_progress')
+        self.b.put_note({'branch': dc.BRANCH}, 12)
         rc, out, err = self.invoke('stuck', '--json')
         self.assertEqual(rc, 0, err)
         rows = json.loads(out)
@@ -525,6 +574,7 @@ class Record(StuckCase):
 
     def test_notes_are_written_for_cards_without_a_lock(self):
         self.b.seed(12, 'in_progress')
+        self.b.put_note({'branch': dc.BRANCH}, 12)
         self.assertEqual(stuck.record(self.root, stuck.find(self.root)), [])
         self.assertEqual(self.b.note(12)['stuck']['kind'], 'in_flight')
 
@@ -555,6 +605,7 @@ class Ignored(StuckCase):
 
     def test_an_ignored_card_is_never_offered_to_the_scheduler(self):
         self.b.seed(12, 'in_progress')
+        self.b.put_note({'branch': dc.BRANCH}, 12)
         self.b.put_note({'stuck': {'kind': 'in_flight', 'detail': 'd', 'at': 't'}})
         sup = self.make({12: 'in_progress'})
         sup._cycle()
@@ -563,6 +614,7 @@ class Ignored(StuckCase):
 
     def test_an_ignored_card_is_offered_again_once_released(self):
         self.b.seed(12, 'in_progress')
+        self.b.put_note({'branch': dc.BRANCH}, 12)
         self.b.put_note({'stuck': {'kind': 'in_flight', 'detail': 'd', 'at': 't'}})
         sup = self.make({12: 'in_progress'})
         stuck.release(self.root, 12)
@@ -572,6 +624,7 @@ class Ignored(StuckCase):
 
     def test_an_ignored_card_stays_ignored_while_its_finding_stands_even_without_a_note(self):
         self.b.seed(12, 'in_progress')          # no stuck note: the note write may have failed
+        self.b.put_note({'branch': dc.BRANCH}, 12)
         sup = self.make({12: 'in_progress'})
         sup._cycle()
         self.assertEqual(sup.ignored, {12: 'in_progress'})
@@ -616,6 +669,7 @@ class Wave5Fixes(StuckCase):
 
     def test_an_in_flight_card_whose_marker_group_is_alive_also_reports_live_orphan(self):
         self.b.seed(12, 'in_progress')
+        self.b.put_note({'branch': dc.BRANCH}, 12)
         self.owned_marker(12, self.group())
         self.assertEqual(self.kinds(), [(12, 'in_flight'), (12, 'live_orphan')])
         with self.assertRaises(ValueError):
@@ -816,6 +870,7 @@ class RunLock(CliEnv):
 
     def test_listing_warns_that_a_running_run_may_own_listed_cards(self):
         self.b.seed(12, 'in_progress')
+        self.b.put_note({'branch': dc.BRANCH}, 12)
         self.hold_lock(os.getpid())
         out, err = io.StringIO(), io.StringIO()
         rc = cli.main(['stuck'], env=os.environ, stdout=out, stderr=err, transport=self.no_supervisor)
@@ -833,6 +888,7 @@ class RunLock(CliEnv):
 
     def test_release_proceeds_when_the_lock_holder_is_the_supervisor_that_answered(self):
         self.b.seed(12, 'in_progress')
+        self.b.put_note({'branch': dc.BRANCH}, 12)
         self.hold_lock(os.getpid())
         out, err = io.StringIO(), io.StringIO()
         rc = cli.main(['stuck', '--release', '12'], env=os.environ, stdout=out, stderr=err,
@@ -842,6 +898,7 @@ class RunLock(CliEnv):
 
     def test_a_lock_naming_a_dead_process_does_not_block_release(self):
         self.b.seed(12, 'in_progress')
+        self.b.put_note({'branch': dc.BRANCH}, 12)
         path = Path(service.default_run_lock_path(self.root))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('%d\nThu Jan  1 00:00:00 1970\n' % dead_pid())
@@ -884,4 +941,6 @@ class SiblingReviewerMarkerTests(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main()
+    # FLEET_TEST_ONLY=<name> runs that one test method (commands.test_case); a name that matches nothing runs none
+    only = os.environ.get('FLEET_TEST_ONLY')
+    unittest.main(argv=[sys.argv[0]] + (['-k', '*.' + only] if only else []))

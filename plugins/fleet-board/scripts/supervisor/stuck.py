@@ -93,6 +93,12 @@ def _note(root, card, run):
     return note if isinstance(note, dict) else {}
 
 
+def _started(note):
+    """True when the note records a start (a branch, worktree, pr or a non-zero implementor_attempts; note.sh defaults the count to 0). A card a person moved
+    to In progress by hand has none, so no session was lost; the planner starts it as continue_implementor."""
+    return bool(note.get('branch') or note.get('worktree') or note.get('pr') or note.get('implementor_attempts'))
+
+
 def _merge_in_flight(note):
     """A merge was in flight at the crash: pending_merge is set and nothing records how it ended."""
     return isinstance(note.get('pending_merge'), dict) and not any(note.get(k) for k in MERGE_RECORDS)
@@ -229,7 +235,7 @@ def find(root, live_cards=frozenset(), run=scripts.run, run_argv=scripts.run_arg
                                           run_argv)
                 if current and pending.get('head_sha') and current not in (pending.get('head_sha'), pending.get('bumped_head')):
                     note = dict(note, pending_merge=None)   # a stale marker for an earlier head: not in flight
-            if state == 'in_progress' and not note.get('cancelled'):   # a cancel returned it here on purpose
+            if state == 'in_progress' and not note.get('cancelled') and _started(note):   # a cancel returned it here on purpose
                 found.append(Stuck(card, 'in_flight', 'in progress, and no supervisor session owns it'))
             elif state == 'merging' and _merge_in_flight(note):
                 found.append(Stuck(card, 'in_flight', 'in merging with a merge in flight (pending_merge for PR %s) '

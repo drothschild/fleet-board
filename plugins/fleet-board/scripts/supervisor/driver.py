@@ -80,7 +80,7 @@ Outcome = namedtuple('Outcome', 'card progressed redispatch provider_failure')
 
 SCRIPT_ACTIONS = frozenset((
     'advance_stage', 'move_to_review', 'update_branch', 'block', 'to_human_qa', 'mark_ready', 'verify_main', 'finish', 'unblock',
-    'file_pending', 'skip_no_acceptance', 'skip_card_lint', 'wait', 'skip',
+    'file_pending', 'rerun_checks', 'checks_failed', 'skip_no_acceptance', 'skip_card_lint', 'wait', 'skip',
 ))
 ROLE_ACTIONS = frozenset(('start', 'continue_implementor', 'start_review', 'review', 'review_stage', 'fix',
                           'after_merge', 'merge_refusal'))
@@ -1853,6 +1853,55 @@ class CardDriver:
         # The refusal is the evidence record now (stage None, so the planner judges on it); earlier per-reviewer
         # records are cleared (note.sh merge is a deep merge, so a replacement map would keep them)
         c.merge(dict(left, state='in_review', last_review=review, reviews=None, stage=None, reviewed_stages=[]))
+
+    _RUN_ID = re.compile(r'/actions/runs/([0-9]+)(?:/|$)')
+
+    @staticmethod
+    def _red_checks(c):
+        out = []
+        for chk in c.row.get('red_checks') or []:
+            if isinstance(chk, dict) and isinstance(chk.get('name'), str) and chk['name']:
+                url = chk.get('detailsUrl')
+                out.append((chk['name'], url if isinstance(url, str) else None))
+        return out
+
+    def _do_rerun_checks(self, c):
+        """Re-run each red check's workflow run (failed jobs only), once per head, and record it in the note."""
+        head, checks = c.row.get('head_sha'), self._red_checks(c)
+        if not isinstance(head, str) or not head or not checks:
+            raise _Invalid('red_checks', c.row.get('red_checks'))
+        errors, seen = [], set()
+        for name, url in checks:
+            match = self._RUN_ID.search(url or '')
+            if not match:
+                errors.append('no run id in the details URL of %s' % name)
+                continue
+            run_id = match.group(1)
+            if run_id in seen:
+                continue
+            seen.add(run_id)
+            result = self.gh(self.root, 'run', 'rerun', run_id, '--failed', '--repo', c.repo())
+            if result.timed_out or result.rc != 0:
+                errors.append('gh run rerun %s failed: %s' % (run_id, 'timed out' if result.timed_out
+                                                              else _first_line(result.stderr) or 'exit %d' % result.rc))
+        c.merge({'checks_rerun': {'sha': head, 'checks': [n for n, _ in checks], 'at': _iso(self.clock())}})
+        if errors:
+            raise _Fail('; '.join(errors))
+
+    def _do_checks_failed(self, c):
+        """The re-run did not help: record the red checks as one Important finding, so the planner plans fix."""
+        head, checks, note = c.row.get('head_sha'), self._red_checks(c), c.note()
+        if not isinstance(head, str) or not head or not checks:
+            raise _Invalid('red_checks', c.row.get('red_checks'))
+        last = note.get('last_review') if isinstance(note.get('last_review'), dict) else {}
+        rounds = note.get('round') if _posint(note.get('round')) else 1
+        findings = [{'severity': 'Important',
+                     'text': 'CI failed at %s: %s (%s)' % (head[:7], name, url or 'no details URL')}
+                    for name, url in checks]
+        review = dict(last, round=max(rounds, last.get('round') if _posint(last.get('round')) else 0),
+                      sha=head, critical=0, important=1, stage=None, agent=None, provider=None,
+                      findings=findings)
+        c.merge(dict(_RESET, last_review=review, reviews=None, stage=None, reviewed_stages=[]))
 
     def _do_unblock(self, c):
         c.move('ready')

@@ -74,8 +74,13 @@ no file here. The gate's residual bypasses and false positives are listed in the
   a different PR. An unparsable note leaves `pr_url` unchanged and warns.
 - **Tick plan** (`scripts/tick-plan.sh`). Prints one JSON plan: an action per card from a
   single jq decision table (start, continue_implementor, start_review, review, fix,
-  mark_ready, merge, verify_main, finish, after_merge, merge_refusal, to_human_qa, file_pending, block, unblock,
-  skip, skip_no_acceptance, skip_card_lint, wait, advance_stage, review_stage, check_premise). Precedence: failed lookup, invalid note, file_pending,
+  mark_ready, merge, verify_main, finish, after_merge, merge_refusal, rerun_checks, checks_failed, to_human_qa, file_pending, block, unblock,
+  skip, skip_no_acceptance, skip_card_lint, wait, advance_stage, review_stage, check_premise). A clean, current review in In Review
+  with `merge.policy: auto`, a non-draft PR, no human QA need, no pending check and a red check that
+  `merge.ignore_checks` does not cover plans `rerun_checks` (no `checks_rerun` for the PR head: the driver runs
+  `gh run rerun <id> --failed` per red check and notes `checks_rerun {sha, checks, at}`) or, with `checks_rerun.sha`
+  at the head, `checks_failed` (the driver records the red checks as one Important finding in `last_review`, so the
+  planner plans `fix`). Neither starts an agent. Precedence: failed lookup, invalid note, file_pending,
   the `action_failures` rules, then the table. `action_failures` bound: at `max_rounds`
   consecutive no-progress actions the card is blocked; at `2*max_rounds` (or `max_rounds`
   for a blocked card awaiting unblock) it is skipped for a person, who clears it with
@@ -113,7 +118,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   paths hold new starts, while existing work can continue. Selected starts reserve
   scope in ascending card-number order; a waiting card reserves nothing. Normalized
   directory scopes cover descendants with path-boundary matching. `start_review`, `review`,
-  `review_stage`, `update_branch`, `after_merge`, `merge_refusal` and `merge` (`scheduler.SCOPE_FREE_ACTIONS`) reserve no scope and are never
+  `review_stage`, `update_branch`, `after_merge`, `merge_refusal`, `merge`, `rerun_checks` and `checks_failed` (`scheduler.SCOPE_FREE_ACTIONS`) reserve no scope and are never
   scope-checked against other cards; they still take a slot and one action per card, except that one card's
   reviewer actions (`scheduler.REVIEWER_ACTIONS`: `start_review`, `review`, `review_stage`) run together, one per
   reviewer (the evidence reviewer, one per stage): the scheduler holds a running reviewer's own row, and holds

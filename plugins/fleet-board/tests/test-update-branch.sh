@@ -493,7 +493,7 @@ RG_SCRIPTS=""
 real_scripts() { # a copy of scripts/ with note.sh and board-comment.sh logging to $RG/log
   RG_SCRIPTS="$(mktemp -d)"; CLEANUP_DIRS+=("$RG_SCRIPTS")
   cp -R "$SCRIPT_DIR/../scripts/." "$RG_SCRIPTS/"
-  printf '#!/usr/bin/env bash\nprintf "note %%s %%s\\n" "$1" "$(cat "$3")" >> "$RG_LOG"\nexit "${RG_NOTE_RC:-0}"\n' > "$RG_SCRIPTS/note.sh"
+  printf '#!/usr/bin/env bash\n[ "$1" = get ] && { printf "%%s\\n" "${RG_NOTE_JSON:-null}"; exit 0; }\nprintf "note %%s %%s\\n" "$1" "$(cat "$3")" >> "$RG_LOG"\nexit "${RG_NOTE_RC:-0}"\n' > "$RG_SCRIPTS/note.sh"
   printf '#!/usr/bin/env bash\nprintf "comment %%s\\n" "$1" >> "$RG_LOG"\n' > "$RG_SCRIPTS/board-comment.sh"
   mkdir -p "$RG_SCRIPTS/.bin"
   printf '#!/usr/bin/env bash\necho main\n' > "$RG_SCRIPTS/.bin/gh"
@@ -806,6 +806,43 @@ real_run
 assert_exit "ahead of origin: exit 0" 0
 assert_eq "ahead of origin: local keeps its commit" "$(git -C "$RG/wt" merge-base --is-ancestor "$LOCAL_SHA" HEAD && echo yes || echo no)" yes
 assert_eq "ahead of origin: the commit is pushed" "$(rg_remote)" "$(rg_local)"
+
+# Stacked card: the parent branch (note.stack.base) is merged along with the base
+STACK_NOTE='{"stack":{"parent":11,"base":"fleet/11-parent","start":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","attention":null}}'
+rg_parent() { # <file> <content>: a commit on origin/fleet/11-parent, pushed from seed
+  rg_git -C "$RG/seed" checkout -q -B parent origin/main
+  echo "$2" > "$RG/seed/$1"
+  rg_git -C "$RG/seed" add -A; rg_git -C "$RG/seed" commit -q -m "parent $2"
+  rg_git -C "$RG/seed" push -q -f origin HEAD:refs/heads/fleet/11-parent
+}
+
+real_setup
+rg_parent src/parent.txt "from the parent"
+RG_NOTE_JSON="$STACK_NOTE"; export RG_NOTE_JSON
+real_run
+assert_exit "stacked, parent branch moved: exit 0" 0
+assert_eq "stacked, parent branch moved: the parent's file is merged in" "$(cat "$RG/wt/src/parent.txt" 2>/dev/null)" "from the parent"
+assert_eq "stacked, parent branch moved: the remote equals local" "$(rg_remote)" "$(rg_local)"
+assert_eq "stacked, parent branch moved: a clean tree" "$(git -C "$RG/wt" status --porcelain | wc -l | tr -d ' ')" 0
+
+real_setup
+rg_parent src/parent.txt "from the parent"
+RG_NOTE_JSON='{}'; export RG_NOTE_JSON
+real_run
+assert_exit "not stacked: exit 0" 0
+assert_eq "not stacked: the parent's file is not merged in" "$([ -e "$RG/wt/src/parent.txt" ] && echo yes || echo no)" no
+
+real_setup
+rg_parent src/x.txt "parent edit of x"
+rg_branch 0.1.0 1.0.0
+RG_NOTE_JSON="$STACK_NOTE"; export RG_NOTE_JSON
+BEFORE_SHA="$(rg_remote)"
+real_run
+assert_exit "stacked, parent branch conflicts: exit 1" 1
+assert_eq "stacked, parent branch conflicts: the comment is posted" "$(grep -c '^comment' "$RG_LOG")" 1
+assert_eq "stacked, parent branch conflicts: the remote is unchanged" "$(rg_remote)" "$BEFORE_SHA"
+assert_eq "stacked, parent branch conflicts: the worktree is clean" "$(git -C "$RG/wt" status --porcelain | wc -l | tr -d ' ')" 0
+unset RG_NOTE_JSON
 
 PATH="$ORIG_PATH"
 

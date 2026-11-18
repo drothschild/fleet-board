@@ -1145,6 +1145,10 @@ IGNORE_CHECKS_JQ="$(cat "$FLEET_SCRIPTS/ignore-checks.jq")" || fb_die 1 "cannot 
 jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERSION_FILE" --argjson settle "$SETTLE" --argjson candidates "$CANDIDATES" --argjson no_start "$([ -n "$ONE_CARD" ] && echo true || echo false)" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" --argjson unset "$UNSET" --argjson closed_pending "$CLOSED_PENDING" --arg today "$TODAY" "$IGNORE_CHECKS_JQ$PATH_GLOB_JQ"'
   # One shared rule (ignore-checks.jq) for every merge decision: the review rows and the merging row
   def green: .statusCheckRollup | ic_green($cfg.merge.ignore_checks; $today);
+  # The red checks nothing ignores (name, detailsUrl), and whether any uncovered check is still pending
+  def red_checks: [(.statusCheckRollup // [])[] | select(ic_red and ic_cover($cfg.merge.ignore_checks; $today) == null)
+                   | {name: ic_name, detailsUrl: (.detailsUrl // .targetUrl // null)}];
+  def any_pending: any((.statusCheckRollup // [])[]; ic_pending and ic_cover($cfg.merge.ignore_checks; $today) == null);
   def scope_key: sub("^(\\./)+"; "") | sub("/+$"; "");
   def overlap($left; $right):
     first($left[] as $a | $right[] as $b
@@ -1344,6 +1348,13 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
           elif $c.needs_human_qa != false then act("skip"; "human-QA need unknown")
           elif $c.pr_info.isDraft then act("mark_ready"; "no Critical/Important findings; PR is a draft")
           elif $cfg.merge.policy == "auto" and ($c.pr_info | green) then act("merge"; "clean review, green checks, merge.policy auto")
+          elif $cfg.merge.policy == "auto" and ($c.pr_info | any_pending | not) and ($c.pr_info | red_checks | length) > 0
+               and (($c.pr_info.headRefOid // "") | type == "string" and test("^[0-9a-f]{40}$")) then
+            ($c.pr_info | red_checks | map(.name) | join(", ")) as $names
+            | ($c.pr_info.headRefOid // "") as $h
+            | if ($n.checks_rerun.sha // null) != null and ($h | type) == "string" and $h != "" and $n.checks_rerun.sha == $h
+              then act("checks_failed"; "PR #\($c.pr) checks still red at \($h[0:7]) after a re-run (\($names))")
+              else act("rerun_checks"; "PR #\($c.pr) checks failed at \($h[0:7]) (\($names)); re-running the failed jobs once") end
           else act("wait"; "waiting for a human merge or green checks") end
         elif $c.state == "blocked" then
           # A card a merger attention blocked waits for a person, whatever its blocking PR does
@@ -1437,6 +1448,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
        findings: (if $d.action == "fix" and conflict_files($n) != []
                   then [conflict_files($n)[] | {severity: "Important", text: "merge conflict in \(.)"}]
                   else null end),
+       # rerun_checks / checks_failed: the red checks the driver re-runs or reports
+       red_checks: (if $d.action == "rerun_checks" or $d.action == "checks_failed" then ($c.pr_info | red_checks) else null end),
        drift: ($c.drift // null),
        # advance_stage: the stage being entered; a stage column: its stage
        stage: (if $d.action == "advance_stage"
