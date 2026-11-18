@@ -159,6 +159,19 @@ run_lint
 check "path outside ## Creates exits 1" "$RC" "1"
 has "path outside ## Creates is flagged with the path" "$OUT" "src/gone.js is not on main"
 hasnt "## Creates path still not flagged beside a flagged one" "$OUT" "src/fresh.js"
+echo "# missing-file: a ## Creates path counts card-wide and for dependents"
+newset; card 1 "## Acceptance\n- \`src/fresh.js\` exists\n\n## Scope\n- \`src/fresh.js\`\n\n## Creates\n- \`src/fresh.js\`\n"
+run_lint
+check "a path under ## Creates is not flagged in the card's Scope or Acceptance" "$RC" "0"
+hasnt "the card's own ## Creates path is not named in the output" "$OUT" "src/fresh.js"
+newset
+card 1 "$GOOD\n## Creates\n- \`src/fresh.js\`\n"
+card 2 "## Acceptance\n- \`src/fresh.js\` keeps its first line\n\n## Scope\n- \`src/fresh.js\`\n\n## Depends on\n- #1\n"
+card 3 "## Acceptance\n- \`src/fresh.js\` is removed\n"
+run_lint
+has "a card that does not depend on the creator is still flagged" "$OUT" "#3: missing-file: src/fresh.js"
+check "a card depending on the creator is not flagged" "$(printf '%s\n' "$OUT" | grep -c '^#2: missing-file')" "0"
+check "the creating card itself is not flagged" "$(printf '%s\n' "$OUT" | grep -c '^#1: missing-file')" "0"
 check "lint.sh has no create/new/add word-list skip" "$(grep -cE 'create\|new\|add' "$SCRIPT")" "0"
 check "lint.sh missing-file check names no create/new/adds word list" "$(grep -cE '\(create|\|new\||adds\?' "$SCRIPT")" "0"
 
