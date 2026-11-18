@@ -1540,9 +1540,15 @@ reviewed_head_case() {
   git -C "$REPO" commit -q -am "change on main"
   m="$(git -C "$REPO" rev-parse HEAD)"
   # mainline is the base branch: publish it as origin/main, as GitHub would have it
-  git -C "$REPO" update-ref refs/remotes/origin/main "$m"
+  # parent kinds: the merged commit is the head of the parent branch, not of main
+  case "$kind" in
+    parent*) git -C "$REPO" update-ref refs/remotes/origin/main "$b0"; git -C "$REPO" update-ref refs/remotes/origin/fleet/11-parent "$m" ;;
+    *) git -C "$REPO" update-ref refs/remotes/origin/main "$m" ;;
+  esac
   git -C "$REPO" checkout -q fleet/12-add-subtract
-  if [ "$kind" = clean ]; then
+  if [ "$kind" = parent ] || [ "$kind" = parent-unstacked ]; then
+    git -C "$REPO" merge -q --no-edit -m "Merge origin/fleet/11-parent into fleet/12-add-subtract" mainline
+  elif [ "$kind" = clean ]; then
     git -C "$REPO" merge -q --no-edit -m "Merge branch 'main' into fleet/12-add-subtract" mainline
   else
     git -C "$REPO" merge -q --no-edit mainline >/dev/null 2>&1
@@ -1554,10 +1560,11 @@ reviewed_head_case() {
     '{commits: [{sha: $m, parents: [{sha: $b}], commit: {message: "change on main"}},
                 {sha: $h, parents: [{sha: $r}, {sha: $m}], commit: {message: "Merge branch main into fleet/12-add-subtract"}}]}' > "$dir/compare.json"
   jq -n --arg h "$h" '{headRefName: "fleet/12-add-subtract", headRefOid: $h}' > "$dir/head.json"
-  jq -n --arg r "$r" '[{id: 555, user: {login: "fleet-bot"},
+  jq -n --arg r "$r" --arg kind "$kind" '[{id: 555, user: {login: "fleet-bot"},
     body: ("<!-- fleet-board:manager-note -->\n### fleet-board manager note\nState: in_review · Round: 1\n\n```json\n"
       + ({state: "in_review", branch: "fleet/12-add-subtract", pr: 4, round: 1,
-          last_review: {round: 1, sha: $r, critical: 0, important: 0, findings: []}} | tojson)
+          last_review: {round: 1, sha: $r, critical: 0, important: 0, findings: []}}
+         + (if $kind == "parent" then {stack: {parent: 11, base: "fleet/11-parent", start: ("a" * 40), attention: null}} else {} end) | tojson)
       + "\n```\n"), created_at: "2026-09-28T00:01:00Z"}]' > "$dir/comments.json"
   # the note is a comment on the local card 12, by the local login
   jq --slurpfile cs "$dir/comments.json" '.comments = [$cs[0][] | {id, author: .user.login, body, created_at}] | .next_comment_id = 556' \
@@ -1577,6 +1584,14 @@ assert_blocked "merge-only-reviewed: gh pr merge blocked under auto for a confli
 reviewed_head_case clean
 run_hook bash.json "gh pr merge 4 --squash"
 assert_silent_allow "merge-only-reviewed: gh pr merge allowed for a clean merge of main after last_review"
+
+reviewed_head_case parent
+run_hook bash.json "gh pr merge 4 --squash"
+assert_silent_allow "merge-only-reviewed: a stacked card's clean merge of its parent branch is allowed (drift lookup passes --also-base)"
+
+reviewed_head_case parent-unstacked
+run_hook bash.json "gh pr merge 4 --squash"
+assert_blocked "merge-only-reviewed: the same merge on a card with no stack is blocked" "review"
 
 # ---------------------------------------------------------------------------
 # review stage columns under the existing rules: a move to a stage column is
