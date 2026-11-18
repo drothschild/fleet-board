@@ -172,6 +172,21 @@ run_lint
 has "a card that does not depend on the creator is still flagged" "$OUT" "#3: missing-file: src/fresh.js"
 check "a card depending on the creator is not flagged" "$(printf '%s\n' "$OUT" | grep -c '^#2: missing-file')" "0"
 check "the creating card itself is not flagged" "$(printf '%s\n' "$OUT" | grep -c '^#1: missing-file')" "0"
+newset
+card 1 "$GOOD\n## Creates\n- \`src/fresh.js\`\n"
+card 2 "$GOOD\n## Depends on\n- #1\n"
+card 3 "## Acceptance\n- \`src/fresh.js\` is removed\n\n## Depends on\n- #2\n"
+run_lint
+check "a card two dependencies away from the creator is not flagged" "$(printf '%s\n' "$OUT" | grep -c '^#3: missing-file')" "0"
+newset
+card 3 "$GOOD\n## Creates\n- \`src/fresh.js\`\n"
+card 2 "$GOOD\n## Depends on\n- #3\n"
+card 1 "## Acceptance\n- \`src/fresh.js\` is removed\n\n## Depends on\n- #2\n"
+run_lint
+check "a chain is followed whichever card is linted first" "$(printf '%s\n' "$OUT" | grep -c '^#1: missing-file')" "0"
+newset; card 1 "## Acceptance\n- \`src/fresh.js\` exists\n\n## CREATES\n- \`src/fresh.js\`\n\n## Scope\n- \`src/fresh.js\`\n"
+run_lint
+check "the ## Creates heading is matched without regard to case, card-wide too" "$RC" "0"
 check "lint.sh has no create/new/add word-list skip" "$(grep -cE 'create\|new\|add' "$SCRIPT")" "0"
 check "lint.sh missing-file check names no create/new/adds word list" "$(grep -cE '\(create|\|new\||adds\?' "$SCRIPT")" "0"
 
