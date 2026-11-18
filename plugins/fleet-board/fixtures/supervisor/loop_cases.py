@@ -1017,6 +1017,20 @@ class PlanGap(LoopCase):
         self.assertLessEqual(abs(plan['ended_at'] - self.clock()), 2)
 
 
+class HomeRepo(LoopCase):
+    def test_board_repo_reaches_the_limits_as_home_repo(self):
+        self.assertEqual(self.sup._limits(dict(self.b.config, board={'repo': 'acme/toy'}))['home_repo'], 'acme/toy')
+
+    def test_home_repo_reaches_the_reservation(self):
+        self.sup.config = dict(self.b.config, board={'repo': 'acme/toy'})
+        seen = []
+        row = dict(number=12, action='fix', provider='claude', declared_paths=['src/a.py'], actual_paths=[], repo='acme/other')
+        with mock.patch.object(self.sup.state, 'reserve', side_effect=lambda n, p, **kw: seen.append(kw) or 99):
+            self.sup._begin(row)
+        self.assertEqual(seen[0].get('home_repo'), 'acme/toy')
+        self.assertEqual(seen[0].get('repo'), 'acme/other')
+
+
 class ScopeIgnore(LoopCase):
     def test_scope_ignore_reaches_the_scheduler_and_the_reservation(self):
         config = dict(self.b.config, supervisor=dict(SUP, scope_ignore=['plugins/*/.claude-plugin/plugin.json']))
