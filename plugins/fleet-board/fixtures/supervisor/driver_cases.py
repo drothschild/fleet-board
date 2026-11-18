@@ -2100,6 +2100,15 @@ def test_a_stage_report_with_findings_counts_one_finding_round_per_card_round(ba
     assert note['finding_rounds']['security'] == {'count': 2, 'last_round': 3}, note.get('finding_rounds')
 
 
+def test_an_advisory_stage_report_with_findings_is_not_counted(base):
+    b, stage = provider_stage_board(base, 0, '')
+    stage = dict(stage, advisory=True, max_rounds=1)
+    b.put_note({'state': 'in_review', 'stage': None, 'round': 2, 'last_review': LAST_REVIEW,
+                'reviews': {'evidence': LAST_REVIEW}})
+    note = _security_report(b, stage, 2, 'stage-reviewer-findings')
+    assert 'security' not in (note.get('finding_rounds') or {}), note.get('finding_rounds')
+
+
 if __name__ == '__main__':
     base = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp()
     names = sorted(n for n in dict(globals()) if n.startswith('test_'))
