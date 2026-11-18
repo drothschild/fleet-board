@@ -155,7 +155,8 @@ case "$VERB" in
       [ -d "$d" ] || continue
       i="$(basename "$d")"
       fl_epic_exists "$i" || continue
-      OUTS="$OUTS$(epic_view "$i" || fb_die 1 "cannot read the cards in $(fl_cards_dir)")
+      V="$(epic_view "$i")" || fb_die 1 "cannot read the cards in $(fl_cards_dir)"
+      OUTS="$OUTS$V
 "
     done
     printf '%s' "$OUTS" | jq -sc --argjson all "$ALL" '
