@@ -330,6 +330,35 @@ def test_land_runs_worktree_then_stack_land(base):
     assert b.card()['state'] == 'in_review' and 'board-move.sh' not in b.scripts_called()
 
 
+def test_a_landing_clears_a_stale_conflicted_files(base):
+    # #476 (2026-11-18): a conflict recorded before the parent merged survived a clean landing, so the
+    # planner sent a fixer for a conflict that no longer existed and the card blocked itself
+    b = board_for(base, 'in_review')
+    b.put_note({'conflicted_files': ['plugins/x/scripts.py']})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['stack-land.sh'] = ok()
+    assert begin(b, 'land', state='in_review').kind == 'done'
+    assert not b.note().get('conflicted_files'), b.note()
+
+
+def test_a_clean_update_branch_clears_a_stale_conflicted_files(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'conflicted_files': ['plugins/x/scripts.py']})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['update-branch.sh'] = ok()
+    assert begin(b, 'update_branch', state='in_review').kind == 'done'
+    assert not b.note().get('conflicted_files'), b.note()
+
+
+def test_a_landing_that_waits_keeps_conflicted_files(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'conflicted_files': ['plugins/x/scripts.py']})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['stack-land.sh'] = fail_with('parent not landed yet\n', rc=3)
+    assert begin(b, 'land', state='in_review').kind == 'done'
+    assert b.note().get('conflicted_files') == ['plugins/x/scripts.py'], b.note()
+
+
 def test_land_without_a_pr_passes_a_dash(base):
     b = board_for(base, 'in_progress')
     b.stubs['worktree.sh'] = ok(b.worktree + '\n')
