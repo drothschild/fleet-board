@@ -67,7 +67,7 @@ run_case "gh: API rate limit exceeded for user" ok
 if [ "$RC" -ne 0 ]; then pass "rate limit: exits non-zero"; else fail "rate limit: exits non-zero" "exit $RC"; fi
 case "$ERR" in *"API rate limit exceeded"*) pass "rate limit: original error kept" ;; *) fail "rate limit: original error kept" "$ERR" ;; esac
 case "$ERR" in *"resets at 2026-01-01T00:00:00Z"*) pass "rate limit: prints resets at the reply's reset time" ;; *) fail "rate limit: prints resets at the reply's reset time" "$ERR" ;; esac
-if printf '%s\n' "$ERR" | grep -Eq 'resets at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
+if printf '%s\n' "$ERR" | grep -Ec 'resets at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' >/dev/null; then
   pass "rate limit: the time is UTC ISO 8601 (pattern)"
 else fail "rate limit: the time is UTC ISO 8601 (pattern)" "$ERR"; fi
 if [ -z "$OUT" ]; then pass "rate limit: no plan printed"; else fail "rate limit: no plan printed" "$OUT"; fi

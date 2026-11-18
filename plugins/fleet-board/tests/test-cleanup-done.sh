@@ -168,7 +168,7 @@ setup_case() {
   cd "$REPO"
 }
 
-wt_listed() { git -C "$REPO" worktree list --porcelain | grep -qxF "worktree $1"; }
+wt_listed() { git -C "$REPO" worktree list --porcelain | grep -cxF "worktree $1" >/dev/null; }
 
 echo "Test: cleanup-done.sh"
 echo ""

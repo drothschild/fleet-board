@@ -36,7 +36,7 @@ if [ -f "$AGENT" ]; then pass "agents/blast-radius-reviewer.md exists"; else fai
 has "agent frontmatter name" "$AGENT" "name: blast-radius-reviewer"
 has "agent posts through board-comment.sh" "$AGENT" "board-comment.sh"
 has "agent checks with parse-report.sh --role stage-reviewer" "$AGENT" "--role stage-reviewer"
-if [ -f "$AGENT" ] && grep -qE '^tools:' "$AGENT" && ! grep -E '^tools:' "$AGENT" | grep -q 'Edit'; then
+if [ -f "$AGENT" ] && grep -qE '^tools:' "$AGENT" && ! grep -E '^tools:' "$AGENT" | grep -c 'Edit' >/dev/null; then
   pass "agent tools do not include Edit"
 else
   fail "agent tools do not include Edit" "tools line allows editing tracked files"

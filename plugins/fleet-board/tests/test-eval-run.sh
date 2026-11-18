@@ -64,7 +64,7 @@ fi
 while IFS="$(printf '\t')" read -r id _rest; do
   [ -z "$id" ] && continue
   case "$id" in \#*) continue ;; esac
-  if printf '%s\n' "$LAST_OUT" | grep -q "$id"; then pass "dry run names defect $id"; else fail "dry run names defect $id" "absent"; fi
+  if printf '%s\n' "$LAST_OUT" | grep -c "$id" >/dev/null; then pass "dry run names defect $id"; else fail "dry run names defect $id" "absent"; fi
 done < "$CAT"
 
 # --- flags -----------------------------------------------------------------

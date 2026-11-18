@@ -595,7 +595,7 @@ finalize
 run_merge --card 12 --operation-key op-12 --pr 34 --head abc1234
 assert_exit "keyed merge: exit 0" 0
 assert_eq "keyed merge: only the exact PR/head merged" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 1
-if jq -r '.comments[].body' "$REPO/.fleet-board/cards/12.json" 2>/dev/null | grep -q 'op-12'; then pass "keyed merge: operation identity persisted in the manager note"; else fail "keyed merge: operation identity persisted in the manager note" "no note write carried the operation key"; fi
+if jq -r '.comments[].body' "$REPO/.fleet-board/cards/12.json" 2>/dev/null | grep -c 'op-12' >/dev/null; then pass "keyed merge: operation identity persisted in the manager note"; else fail "keyed merge: operation identity persisted in the manager note" "no note write carried the operation key"; fi
 
 setup_case auto
 KEYED_NOTE="$(jq -c --arg key op-12 '.merge_operation={operation_key:$key,pr:34,head_sha:"abc1234",main_check:{commit:"def5678",ok:true,results:[]}} | .main_check={commit:"def5678",ok:true,results:[]}' <<<"$CLEAN")"
