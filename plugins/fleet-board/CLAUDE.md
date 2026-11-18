@@ -120,7 +120,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `scripts/supervisor/defaults/premise-check-prompt.md`. Its final reply is checked with `parse-report.sh --role
   checker --mode check`; the driver posts an accepted report and `_settle_premise` acts on it. `go` stamps
   `premise.sh stamp <n> --by check --sha <head worktree.sh printed>` and records note `premise_check`
-  `{head, verdict, at}`; any other verdict is, for now, a failed check. An empty reply, a twice-rejected report
+  `{head, verdict, at}`. `needs` (`_premise_needs`) reads the named card with `board-read.sh`: when it is in flight (`ready`, `in_progress`, `in_review`, any `review_*`, `merging`, `human_qa`), not already in `blocked_by`, and neither it nor a card it depends on (any depth) depends on this card, the driver runs `premise.sh add-dep <n> <m>`, comments `Premise check: needs #<m>, which is <state>. Added as a dependency.` and leaves the card Ready with no stamp. Otherwise (`backlog`, `done`, `wont_do`, missing, the card itself, already listed, or a cycle) `_premise_question` moves the card to Blocked, writes the note `blocked_from: ready` with `action_failures` 0, and comments `Waiting for a person: the premise check could not settle this card.` plus the reason. Any other verdict is, for now, a failed check. An empty reply, a twice-rejected report
   and any other failure count one `action_failures` with the error `premise check failed: <first line>; move the
   card to Ready to start it without a check`. A digest of the card's state, body, acceptance and `blocked_by`
   is kept at launch and compared at the end: a change drops the verdict (one `premise` event, no stamp, no move,

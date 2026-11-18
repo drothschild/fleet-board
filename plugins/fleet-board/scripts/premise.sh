@@ -5,6 +5,7 @@
 #   premise.sh stamp <n> --by create|edit|move|check|approve [--sha <40-hex>]
 #   premise.sh show <n>
 #   premise.sh moved <n>
+#   premise.sh add-dep <n> <m>
 #
 # stamp writes the card's premise {sha, at, by}; the sha is --sha, else the local
 # head of the default branch. show prints the stored premise, or null when it is
@@ -17,13 +18,16 @@
 # moved true, "premise stamp commit is unknown". Otherwise "ground moved: <path>" for the
 # first changed file under a card path.
 #
+# add-dep appends <m> to card <n>'s blocked_by when absent, keeping the rest; <m> equal to <n>
+# or a missing card exits 2.
+#
 # Exit codes: 0 done, 1 moved: the card cannot be read, 2 usage, 3 the card (or the default
 # head) cannot be read.
 set -uo pipefail
 unset CDPATH
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
-USAGE="usage: premise.sh stamp <n> --by <by> [--sha <40-hex>] | premise.sh show <n> | premise.sh moved <n>"
+USAGE="usage: premise.sh stamp <n> --by <by> [--sha <40-hex>] | premise.sh show <n> | premise.sh moved <n> | premise.sh add-dep <n> <m>"
 [ $# -ge 2 ] || fb_die 2 "$USAGE"
 VERB="$1"; N="$2"; shift 2
 fb_valid_number "$N" || fb_die 2 "card number must be numeric, got: $N"
@@ -48,12 +52,31 @@ case "$VERB" in
       printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{40}$' || fb_die 2 "--sha must be 40 lowercase hex characters, got: $SHA"
     fi
     ;;
+  add-dep)
+    [ $# -eq 1 ] || fb_die 2 "$USAGE"
+    DEP="$1"
+    fb_valid_number "$DEP" || fb_die 2 "card number must be numeric, got: $DEP"
+    [ "$DEP" != "$N" ] || fb_die 2 "add-dep names #$DEP, the card itself"
+    ;;
   show|moved) [ $# -eq 0 ] || fb_die 2 "$USAGE" ;;
   *) fb_die 2 "$USAGE" ;;
 esac
 
 fb_load_config
 . "$FB_SCRIPTS/adapters/local/local-lib.sh"
+
+if [ "$VERB" = add-dep ]; then
+  [ -f "$(fl_card_file "$DEP")" ] || fb_die 2 "add-dep names #$DEP, which does not exist in $(fl_cards_dir)"
+  [ -f "$(fl_card_file "$N")" ] || fb_die 3 "card #$N not found in $(fl_cards_dir)"
+  fb_lock "$N"
+  TMP="$(mktemp)" || fb_die 1 "cannot create a temporary file"
+  trap 'rm -f "$TMP"; fb_lock_release "$FB_LOCK"' EXIT
+  CARD="$(fl_read_card "$N")" || exit 3
+  jq --argjson m "$DEP" '.blocked_by = ((.blocked_by // []) | if index($m) then . else . + [$m] end)' <<<"$CARD" > "$TMP" \
+    || fb_die 1 "cannot update card #$N"
+  fl_write_card "$N" "$TMP" || exit 1
+  exit 0
+fi
 
 if [ "$VERB" = moved ]; then
   CARD="$(fl_read_card "$N")" || exit 1
