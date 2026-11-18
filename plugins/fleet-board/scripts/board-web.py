@@ -1099,6 +1099,29 @@ def card_reviewers(cfg: dict, card: dict, note) -> list:
     return out
 
 
+def card_proposal(card: dict):
+    """The card's premise proposal when it is well formed, else None (a malformed one is hidden, not shown)."""
+    p = card.get("proposal")
+    if not isinstance(p, dict):
+        return None
+
+    def text(v):
+        return isinstance(v, str) and v != ""
+
+    if p.get("kind") == "rewrite":
+        acc = p.get("acceptance")
+        if (text(p.get("scope")) and isinstance(acc, list) and acc and all(text(a) for a in acc)
+                and isinstance(p.get("summary"), str)):
+            return p
+    elif p.get("kind") == "close":
+        ev = p.get("evidence")
+        if isinstance(ev, list) and ev and all(
+                isinstance(e, dict) and is_int(e.get("item")) and isinstance(e.get("command"), str)
+                and isinstance(e.get("output"), str) for e in ev):
+            return p
+    return None
+
+
 def card_summary(cfg: dict, dir: Path, card: dict, owned: set, state_of: dict, known_states=None, status=None) -> dict:
     """state_of: number -> state for every card read in this request, so
     `blocked` (any blocker missing or not done) costs no extra read."""
@@ -1123,6 +1146,7 @@ def card_summary(cfg: dict, dir: Path, card: dict, owned: set, state_of: dict, k
         "stack_attention": card_stack(note)[1],
         "reviewers": card_reviewers(cfg, card, note),
         "repo": card_repo(cfg, card) or None,
+        "proposal_kind": (card_proposal(card) or {}).get("kind"),
     }
 
 
@@ -1143,6 +1167,8 @@ def card_detail(cfg: dict, dir: Path, n: int) -> dict:
     out["pr_url"] = card_pr_url(cfg, card, note)
     out["worktree"] = card_worktree(note)
     out["hold"] = card_hold(n)
+    out["proposal"] = card_proposal(card)
+    out["premise"] = card.get("premise") if isinstance(card.get("premise"), dict) else None
     out["stacked_on"], out["stack_attention"] = card_stack(note)
     return out
 
@@ -1466,6 +1492,17 @@ def accept_card(params, body):
     read_card(dir, n)
     board_write(["bash", script("accept.sh"), str(n)])
     return 200, card_detail(cfg, dir, n)
+
+
+def premise_card(verb):
+    """A route that runs premise-settle.sh <verb> <n>; a non-zero exit is a 409 carrying its stderr."""
+    def handler(params, body):
+        cfg, dir = ctx()
+        n = params["n"]
+        read_card(dir, n)
+        board_write(["bash", script("premise-settle.sh"), verb, str(n)])
+        return 200, card_detail(cfg, dir, n)
+    return handler
 
 
 def move_card(params, body):
@@ -2024,6 +2061,9 @@ ROUTES = [
     ("PATCH", r"/api/cards/(?P<n>\d+)", edit_card),
     ("POST", r"/api/cards/(?P<n>\d+)/move", move_card),
     ("POST", r"/api/cards/(?P<n>\d+)/accept", accept_card),
+    ("POST", r"/api/cards/(?P<n>\d+)/premise/approve", premise_card("approve")),
+    ("POST", r"/api/cards/(?P<n>\d+)/premise/confirm", premise_card("confirm")),
+    ("POST", r"/api/cards/(?P<n>\d+)/premise/reject", premise_card("reject")),
     ("POST", r"/api/cards/(?P<n>\d+)/comments", comment_card),
     ("POST", r"/api/cards/(?P<n>\d+)/terminal", open_terminal),
     ("GET", r"/api/supervisor", get_supervisor),
