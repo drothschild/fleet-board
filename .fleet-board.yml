@@ -2,16 +2,34 @@
 board:
   repo: "drothschild/fleet-board"
   states: { in_progress: "In progress", in_review: "In review", human_qa: "Requires Human QA" }
+test_paths: ["plugins/fleet-board/tests/test-*.sh"]
 commands:
   test_one: "bash {file}"
   # One named test per mutant: the supervisor suites (driver, merging, loop, stuck) honour FLEET_TEST_ONLY;
   # in any other suite the selection shows zero or many tests and the reviewer runs the file
   test_case: "FLEET_TEST_ONLY={name} bash {file}"
   lint: "bash plugins/fleet-board/tests/test-version-bumped.sh"
+stacking:
+  enabled: true
 merge:
   policy: "auto"
+limits:
+  concurrency: 20
+models:
+  reviewer: opus
+# The built-in stages run one after another (advance_stage -> review_<name>) until parallel
+# review (cards 284 and 285) lands; card 394 removes these two entries then.
+# Needs plugin 0.29.69 or newer: older config.sh rejects a stage with no agent or provider.
+review:
+  stages:
+    - name: documentation
+      enabled: false
+    - name: blast_radius
+      enabled: false
 supervisor:
   version_bump: merge
   version_bump_paths: ["plugins/**"]
+  # A reviewer running test-tick-plan.sh (and its mutants) can go well past 15 minutes without output
+  progress_timeout_seconds: 1800
   scope_ignore: [".claude-plugin/marketplace.json", "plugins/*/.claude-plugin/plugin.json"]
   version_files: [".claude-plugin/marketplace.json", "plugins/*/.claude-plugin/plugin.json"]
