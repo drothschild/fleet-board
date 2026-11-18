@@ -523,6 +523,7 @@ class Supervisor:
         return {'global': lim.get('concurrency', 6), 'providers': dict(sup.get('provider_concurrency') or {}),
                 'per_card': 1, 'aging_seconds': sup.get('aging_seconds', 900),
                 'scope_ignore': list(sup.get('scope_ignore') or []),
+                'home_repo': (config.get('board') or {}).get('repo') or '',
                 'max_rate_wait': lim.get('rate_limit_max_wait', 3600),
                 'rate_limit_wait': {name: health['until'] for name, health in
                                     self.state.provider_health.items() if 'until' in health}}
@@ -819,8 +820,9 @@ class Supervisor:
             ancestors = stack.get('ancestors') if isinstance(stack, dict) else None
             exempt = tuple(a for a in ancestors if isinstance(a, int)) if isinstance(ancestors, list) else ()
             # only a stacked child passes `exempt`: every other call is the one it always was
-            held = self.state.reserve(number, scope, ignore=ignore, exempt=exempt) if exempt \
-                else self.state.reserve(number, scope, ignore=ignore)
+            repos = dict(repo=row.get('repo'), home_repo=self._repo())
+            held = self.state.reserve(number, scope, ignore=ignore, exempt=exempt, **repos) if exempt \
+                else self.state.reserve(number, scope, ignore=ignore, **repos)
             if held is not None:
                 return
             reserved = True

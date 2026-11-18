@@ -203,6 +203,13 @@ no file here. The gate's residual bypasses and false positives are listed in the
   (`scheduler`, `driver.SCRIPT_ACTIONS`, `loop._begin`, as `update_branch`): the driver runs `worktree.sh create`
   then `stack-land.sh`; exits 3 and 4 are not action failures, any other non-zero exit counts one. Suite:
   `tests/test-stack-land.sh`.
+- **Stacking display** (no new note field). `status.sh` appends ` · stacked on #<stack.parent>` to a card's
+  line when its note has `stack`, then ` · landing needs attention: <stack.attention>` when that is a string; a
+  card without `stack` prints as before. The board server's card summary and detail carry `stacked_on` (the
+  parent number or null) and `stack_attention` (string or null) from the note's `stack`; the drawer's
+  `dr-stack` line shows `stacked on #<parent>` and the attention text, hidden when `stacked_on` is null.
+  README "Stacked pull requests" documents the feature and the three stops (checked by
+  `tests/test-readme-claims.sh`).
 - **Version files** (`supervisor.version_files`, default `[]`, `scripts/versions.jq`,
   `scripts/version-lib.sh`). Off when empty. `update-branch.sh` resolves conflicts in
   matching JSON files whose hunks hold only pairwise-identical `"version"` lines, each

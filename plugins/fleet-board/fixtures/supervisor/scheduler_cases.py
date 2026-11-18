@@ -226,6 +226,10 @@ def run():
     test_has_work_tolerates_mixed_dependency_types()
     test_scope_ignore_drops_version_manifests()
     test_scope_ignore_validated_in_limits()
+    test_a_missing_repo_on_an_active_claim_means_the_home_repo()
+    test_two_claims_with_no_repo_on_the_same_path_conflict()
+    test_without_a_home_repo_a_missing_repo_still_matches_every_repo()
+    test_a_missing_repo_on_a_reservation_means_the_home_repo()
     test_scope_ignore_one_side_wholly_ignored()
     test_scope_ignore_cleans_the_path_side()
     test_glob_segments_and_jq_parity()
@@ -675,6 +679,46 @@ def test_an_after_merge_still_takes_a_provider_slot():
         limits={'global': 1, 'providers': {'*': 1}, 'per_card': 1},
         active=[{'number': 9, 'provider': 'claude', 'paths': ['z']}], lane_free=True)
     assert r['admitted'] == [] and r['waits'][0]['reason'] == 'global capacity', r
+
+
+def _repo_row(number, repo, action='start'):
+    return dict(candidate(number, action, paths=['src/a.py']), repo=repo)
+
+
+def test_a_missing_repo_on_an_active_claim_means_the_home_repo():
+    home = dict(LIMITS, home_repo='acme/toy')
+    held = [{'number': 9, 'provider': 'claude', 'paths': ['src/a.py']}]
+    other = Scheduler(clock=lambda: 0).admit([_repo_row(1, 'acme/other')], active=held, limits=home)
+    assert [x['number'] for x in other['admitted']] == [1], other['waits']
+    same = Scheduler(clock=lambda: 0).admit([_repo_row(1, 'acme/toy')], active=held, limits=home)
+    assert same['admitted'] == [] and same['waits'][0]['reason'] == 'scope or card conflict', same
+    upper = Scheduler(clock=lambda: 0).admit([_repo_row(1, 'ACME/Toy')], active=held, limits=home)
+    assert upper['admitted'] == [] and upper['waits'][0]['reason'] == 'scope or card conflict', upper
+
+
+def test_two_claims_with_no_repo_on_the_same_path_conflict():
+    home = dict(LIMITS, home_repo='acme/toy')
+    held = [{'number': 9, 'provider': 'claude', 'paths': ['src/a.py']}]
+    for limits in (home, LIMITS):
+        r = Scheduler(clock=lambda: 0).admit([_repo_row(1, None)], active=held, limits=limits)
+        assert r['admitted'] == [] and r['waits'][0]['reason'] == 'scope or card conflict', r
+
+
+def test_without_a_home_repo_a_missing_repo_still_matches_every_repo():
+    held = [{'number': 9, 'provider': 'claude', 'paths': ['src/a.py']}]
+    for home in (None, ''):
+        limits = dict(LIMITS) if home is None else dict(LIMITS, home_repo=home)
+        r = Scheduler(clock=lambda: 0).admit([_repo_row(1, 'acme/other')], active=held, limits=limits)
+        assert r['admitted'] == [] and r['waits'][0]['reason'] == 'scope or card conflict', r
+
+
+def test_a_missing_repo_on_a_reservation_means_the_home_repo():
+    home = dict(LIMITS, home_repo='acme/toy')
+    held = [{'card': 9, 'paths': ['src/a.py']}]
+    other = Scheduler(clock=lambda: 0).admit([_repo_row(1, 'acme/other')], reservations=held, limits=home)
+    assert [x['number'] for x in other['admitted']] == [1], other['waits']
+    same = Scheduler(clock=lambda: 0).admit([_repo_row(1, 'acme/toy')], reservations=held, limits=home)
+    assert same['admitted'] == [] and same['waits'][0]['reason'] == 'scope reserved by #9', same
 
 
 if __name__ == '__main__':
