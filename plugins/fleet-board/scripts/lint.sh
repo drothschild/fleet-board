@@ -28,8 +28,12 @@
 #                          branch of the card's own repo (with --bodies, the
 #                          <dir>/<id>.repo file names it). Lines under a
 #                          "## Creates" heading are skipped: they name files
-#                          the card makes. A path that the open PR (pr_url) of a
-#                          card in the linted card's blocked_by adds is not flagged.
+#                          the card makes. A path named there is not flagged
+#                          anywhere else in that card, nor in a card that depends
+#                          on it, directly or through other cards in the set (the
+#                          heading is matched without regard to case). A path that
+#                          the open PR (pr_url) of a card in the linted card's
+#                          blocked_by adds is not flagged.
 #
 # Exit codes: 0 pass, 1 lint failed, 2 usage error, 3 a card could not be read.
 
@@ -152,6 +156,13 @@ for id in ${IDS[@]+"${IDS[@]}"}; do
     s && /^[-*][ \t]+/ { l = $0; sub(/^[-*][ \t]+/, "", l); sub(/[ \t].*$/, "", l); print l }
   ' "$F"; fi)
 
+done
+
+# missing-file runs in its own pass, after every card's dependency edges are known, so a ## Creates path can be
+# followed through a chain of dependencies
+for id in ${IDS[@]+"${IDS[@]}"}; do
+  F="$WORK/$id.md"
+
   # missing-file: in the card's own repo. A card whose repo differs from the
   # board repo (<dir>/<id>.repo, written by import-plan.sh) is checked on that
   # repo's default branch through gh; any other card on this checkout's.
@@ -185,10 +196,21 @@ $(jq -r 'select(.state == "OPEN") | .files[]?.path' <<<"$view" 2>/dev/null)"
     [ -n "$DEP_FILES" ] && grep -Fxq -- "$1" <<<"$DEP_FILES"
   }
   if [ "$FILECHECK" -eq 1 ]; then
-    # the paths this card creates, and those a card it depends on creates: named under "## Creates", they
-    # are not missing wherever the card mentions them
-    CREATED="$(for f in "$F" $(awk -v id="$id" '$1 == id { print "'"$WORK"'/" $2 ".md" }' "$EDGES"); do
-      [ -f "$f" ] && awk '/^##[ \t]+[Cc]reates[ \t]*$/ { s = 1; next } /^##/ { s = 0 } s' "$f" | grep -Eo '`[^`]+`' | tr -d '`'
+    # the paths this card creates, and those any card it depends on, directly or through others, creates:
+    # named under "## Creates" (the heading matched without regard to case), they are not missing wherever
+    # this card mentions them
+    DEPS=""; todo="$id"
+    while [ -n "$todo" ]; do
+      next=""
+      for n in $todo; do
+        for d in $(awk -v n="$n" '$1 == n { print $2 }' "$EDGES"); do
+          case " $DEPS " in *" $d "*) ;; *) DEPS="$DEPS $d"; next="$next $d" ;; esac
+        done
+      done
+      todo="$next"
+    done
+    CREATED="$(for k in $id $DEPS; do
+      [ -f "$WORK/$k.md" ] && awk 'tolower($0) ~ /^##[ \t]+creates[ \t]*$/ { s = 1; next } /^##/ { s = 0 } s' "$WORK/$k.md" | grep -Eo '`[^`]+`' | tr -d '`'
     done)"
     inc=0
     while IFS= read -r line; do
