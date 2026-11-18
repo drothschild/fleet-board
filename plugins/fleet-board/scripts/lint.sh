@@ -185,6 +185,11 @@ $(jq -r 'select(.state == "OPEN") | .files[]?.path' <<<"$view" 2>/dev/null)"
     [ -n "$DEP_FILES" ] && grep -Fxq -- "$1" <<<"$DEP_FILES"
   }
   if [ "$FILECHECK" -eq 1 ]; then
+    # the paths this card creates, and those a card it depends on creates: named under "## Creates", they
+    # are not missing wherever the card mentions them
+    CREATED="$(for f in "$F" $(awk -v id="$id" '$1 == id { print "'"$WORK"'/" $2 ".md" }' "$EDGES"); do
+      [ -f "$f" ] && awk '/^##[ \t]+[Cc]reates[ \t]*$/ { s = 1; next } /^##/ { s = 0 } s' "$f" | grep -Eo '`[^`]+`' | tr -d '`'
+    done)"
     inc=0
     while IFS= read -r line; do
       case "$line" in
@@ -196,6 +201,7 @@ $(jq -r 'select(.state == "OPEN") | .files[]?.path' <<<"$view" 2>/dev/null)"
         grep -Eq '^[A-Za-z0-9_.@-][A-Za-z0-9_./@-]*/[A-Za-z0-9_.-]+\.[A-Za-z0-9]+$' <<<"$p" || continue
         case "$p" in http*|*..*) continue ;; esac
         rbranch || continue
+        [ -n "$CREATED" ] && grep -Fxq -- "$p" <<<"$CREATED" && continue
         dep_pr_adds "$p" && continue
         where="$rbr"; [ "$remote" -eq 1 ] && where="$rbr of $crepo"
         if [ "$remote" -eq 1 ]; then
