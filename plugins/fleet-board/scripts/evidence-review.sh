@@ -130,7 +130,7 @@ if [ "$ROUND" -ge 2 ] && [ -n "$FINDINGS_FILE" ]; then
     | if length == 0 then "(none)" else join("\n") end' "$FINDINGS_FILE")" ||
     die "cannot read findings file $FINDINGS_FILE" 2
 fi
-CONFIG="$(jq '{commands: (.commands | {test_one, typecheck, lint}),
+CONFIG="$(jq '{commands: (.commands | {test_one, test_case, typecheck, lint}),
   review: (.review | {mutation, verify_claim}), test_paths}' <<<"$FLEET_CFG")" || die "cannot prepare prompt config"
 MUTATION="$(fb_cfg review.mutation)"
 

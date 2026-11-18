@@ -1663,6 +1663,46 @@ def test_the_evidence_and_a_stage_report_of_one_card_both_reach_note_reviews(bas
     assert b.state.actions_for(12) == [], b.state.active
 
 
+def test_a_stage_report_carrying_pass_is_recorded_in_review_passes_beside_reviews(base):
+    # A review_stage row planned for pass 2 of required_passes: the report lands in note.review_passes[stage]
+    # at the reviewed head, and note.reviews[stage] still holds the latest record
+    head = 'a' * 40
+    b = board_for(base, 'in_review')
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'Look for token leaks.',
+             'provider': None, 'required_passes': 3}
+    first = {'pass': 1, 'round': 1, 'sha': head, 'critical': 0, 'important': 0, 'findings': []}
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'stage': None, 'branch': BRANCH,
+                'worktree': b.worktree, 'last_review': LAST_REVIEW, 'review_passes': {'security': [first]}})
+    b.stubs['worktree.sh'] = lambda *a: ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': head, 'base': 'bace000'})
+                                           if a[0] == 'review' else b.worktree + '\n')
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'stage-reviewer-ok', 'sleep': 1})
+    started = begin(b, 'review_stage', state='in_review', stage=stage, round=1, head_sha=head, **{'pass': 2})
+    assert started.kind == 'session', [e['payload'] for e in b.state.events]
+    b.driver.finish(started.action, wait_for(started))
+    note = b.note()
+    passes = note['review_passes']['security']
+    assert [p['pass'] for p in passes] == [1, 2], passes
+    assert passes[0] == first, passes
+    assert passes[1]['sha'] == head and passes[1]['round'] == 1 and passes[1]['critical'] == 0, passes
+    assert note['reviews']['security']['sha'] == head, note['reviews']
+    assert note['reviews']['security']['pass'] == 2, note['reviews']
+
+
+def test_a_stage_report_without_pass_leaves_review_passes_alone(base):
+    b = board_for(base, 'in_review')
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'Look for token leaks.',
+             'provider': None}
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'stage': None, 'branch': BRANCH,
+                'worktree': b.worktree, 'last_review': LAST_REVIEW})
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'stage-reviewer-ok', 'sleep': 1})
+    started = begin(b, 'review_stage', state='in_review', stage=stage, round=1)
+    b.driver.finish(started.action, wait_for(started))
+    assert 'review_passes' not in b.note() or b.note()['review_passes'] in (None, {}), b.note()
+
+
 def test_exit_2_from_the_checker_pauses_the_supervisor(base):
     b = board_for(base)
     started = started_implementor(b)
@@ -2122,9 +2162,61 @@ def test_an_unhandled_verdict_is_a_failed_check(base):
     assert not stamps(b), b.calls
 
 
+HEAD40 = 'abc1234' + '0' * 33
+RED = [{'name': 'test-suite', 'detailsUrl': 'https://github.com/acme/toy/actions/runs/123/job/456'}]
+
+
+def test_rerun_checks_reruns_the_failed_run_and_records_it_in_the_note(base):
+    b = board_for(base, 'in_review')
+    begin(b, 'rerun_checks', state='in_review', head_sha=HEAD40, red_checks=RED)
+    assert ('run', 'rerun', '123', '--failed', '--repo', 'acme/toy') in b.gh_calls, b.gh_calls
+    rerun = b.note()['checks_rerun']
+    assert rerun['sha'] == HEAD40 and rerun['checks'] == ['test-suite'] and rerun['at'], rerun
+    assert b.note()['action_failures'] == 0
+
+
+def test_rerun_checks_with_an_unreadable_run_id_still_records_the_re_run(base):
+    b = board_for(base, 'in_review')
+    begin(b, 'rerun_checks', state='in_review', head_sha=HEAD40,
+          red_checks=[{'name': 'ext/ci', 'detailsUrl': 'https://ci.example.com/build/9'}])
+    assert not [c for c in b.gh_calls if c[:2] == ('run', 'rerun')], b.gh_calls
+    assert b.note()['checks_rerun']['checks'] == ['ext/ci'], b.note()
+    assert [e for e in b.state.events if e['type'] == 'action_failed'], list(b.state.events)
+
+
+def test_checks_failed_hands_the_failure_to_the_fixer_as_an_important_finding(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'state': 'in_review', 'pr': 34, 'round': 1, 'last_review': LAST_REVIEW | {'important': 0, 'critical': 0},
+                'reviews': {'evidence': {'round': 1, 'sha': 'abc1234'}}, 'reviewed_stages': ['security']})
+    begin(b, 'checks_failed', state='in_review', head_sha=HEAD40, red_checks=RED)
+    note = b.note()
+    last = note['last_review']
+    assert last['sha'] == HEAD40 and last['important'] == 1 and last['critical'] == 0, last
+    assert last['stage'] is None and last['round'] == 1, last
+    assert len(last['findings']) == 1 and last['findings'][0]['severity'] == 'Important', last
+    text = last['findings'][0]['text']
+    assert text.startswith('CI failed at abc1234:') and 'test-suite' in text and RED[0]['detailsUrl'] in text, text
+    assert not note.get('reviews') and note['reviewed_stages'] == [], note
+    assert note['state'] == 'in_review'
+
+
+def test_rerun_checks_and_checks_failed_reserve_no_scope(base):
+    from supervisor import scheduler
+    assert {'rerun_checks', 'checks_failed'} <= scheduler.SCOPE_FREE_ACTIONS, scheduler.SCOPE_FREE_ACTIONS
+
+
 if __name__ == '__main__':
     base = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp()
     names = sorted(n for n in dict(globals()) if n.startswith('test_'))
+    # FLEET_TEST_ONLY=<name> runs that one test (commands.test_case); a name that matches nothing runs none
+    only = os.environ.get('FLEET_TEST_ONLY')
+    if only:
+        names = [n for n in names if n == only]
+        # Announce the filter, and fail when it selects nothing (as unittest does), so a stray variable never
+        # makes the suite look green while running nothing
+        sys.stderr.write('FLEET_TEST_ONLY=%s: %d test(s) selected\n' % (only, len(names)))
+        if not names:
+            sys.exit(5)
     failed = 0
     for name in names:
         sub = tempfile.mkdtemp(dir=base)

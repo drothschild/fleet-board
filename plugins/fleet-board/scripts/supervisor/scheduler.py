@@ -25,10 +25,11 @@ _IGNORED = ('skip', 'skip_no_acceptance', 'skip_card_lint', 'wait')
 _WORK_CLASS = 1
 # Actions that change no file another card works on: a review (start_review is its first round) or a
 # stage review reads the PR, a branch update merges the base into the card's own branch, and a merge
-# changes only main and the merging card's own branch and worktree. They take a slot and wait for their
+# changes only main and the merging card's own branch and worktree. A red-checks re-run or a
+# checks_failed record touches only the card's own PR and note. They take a slot and wait for their
 # own card, but neither wait on another card's scope nor block one, so a writer never holds them up.
 SCOPE_FREE_ACTIONS = frozenset({'start_review', 'review', 'review_stage', 'update_branch', 'after_merge', 'merge_refusal', 'merge',
-                               'check_premise'})
+                               'rerun_checks', 'checks_failed', 'check_premise'})
 # The review actions a card may run together: they read the PR and write nothing a sibling reads, so one card's
 # `review`, `review_stage` and `start_review` rows share its slot rules. Every other action of a card runs alone.
 REVIEWER_ACTIONS = frozenset({'start_review', 'review', 'review_stage'})
