@@ -496,7 +496,7 @@ real_scripts() { # a copy of scripts/ with note.sh and board-comment.sh logging 
   printf '#!/usr/bin/env bash\n[ "$1" = get ] && { printf "%%s\\n" "${RG_NOTE_JSON:-null}"; exit 0; }\nprintf "note %%s %%s\\n" "$1" "$(cat "$3")" >> "$RG_LOG"\nexit "${RG_NOTE_RC:-0}"\n' > "$RG_SCRIPTS/note.sh"
   printf '#!/usr/bin/env bash\nprintf "comment %%s\\n" "$1" >> "$RG_LOG"\n' > "$RG_SCRIPTS/board-comment.sh"
   mkdir -p "$RG_SCRIPTS/.bin"
-  printf '#!/usr/bin/env bash\necho main\n' > "$RG_SCRIPTS/.bin/gh"
+  printf '#!/usr/bin/env bash\nprintf "gh %%s\\n" "$*" >> "${RG_LOG:-/dev/null}"\necho main\n' > "$RG_SCRIPTS/.bin/gh"
   chmod +x "$RG_SCRIPTS/.bin/gh"
 }
 rg_plugin() { printf '{\n  "name": "%s",\n  "version": "%s",\n  "description": "d"\n}\n' "$2" "$3" > "$1"; }
@@ -842,6 +842,29 @@ assert_exit "stacked, parent branch conflicts: exit 1" 1
 assert_eq "stacked, parent branch conflicts: the comment is posted" "$(grep -c '^comment' "$RG_LOG")" 1
 assert_eq "stacked, parent branch conflicts: the remote is unchanged" "$(rg_remote)" "$BEFORE_SHA"
 assert_eq "stacked, parent branch conflicts: the worktree is clean" "$(git -C "$RG/wt" status --porcelain | wc -l | tr -d ' ')" 0
+assert_eq "stacked, parent branch conflicts: the error names the parent branch it failed to merge" "$(printf '%s' "$LAST_ERR" | grep -c 'merge of origin/fleet/11-parent into')" 1
+assert_eq "stacked, parent branch conflicts: the error does not blame the default branch" "$(printf '%s' "$LAST_ERR" | grep -c 'merge of origin/main into')" 0
+
+# A stacked card whose PR still targets the default branch (it reached review without start_review)
+# is retargeted to its parent branch, so the fixer, which merges the PR's base, merges the same branch
+real_setup
+rg_parent src/parent.txt "from the parent"
+RG_NOTE_JSON="$STACK_NOTE"; export RG_NOTE_JSON
+real_run
+assert_exit "stacked, PR targets main: exit 0" 0
+assert_eq "stacked, PR targets main: the PR is retargeted to the parent branch" "$(grep -c '^gh pr edit 34 --repo acme/toy --base fleet/11-parent$' "$RG_LOG")" 1
+
+real_setup
+RG_NOTE_JSON='{}'; export RG_NOTE_JSON
+real_run
+assert_exit "not stacked, PR targets main: exit 0" 0
+assert_eq "not stacked: the PR is not retargeted" "$(grep -c '^gh pr edit' "$RG_LOG")" 0
+
+real_setup
+RG_NOTE_JSON='{"stack":{"parent":11,"base":"fleet/11-gone","start":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","attention":null}}'; export RG_NOTE_JSON
+real_run
+assert_exit "stacked, parent branch missing on origin: exit 0" 0
+assert_eq "stacked, parent branch missing on origin: the PR is not retargeted" "$(grep -c '^gh pr edit' "$RG_LOG")" 0
 unset RG_NOTE_JSON
 
 PATH="$ORIG_PATH"
