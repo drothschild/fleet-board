@@ -538,6 +538,13 @@ stack_lookup() {
 # card_input <state> <n> <title-json>: prints one JSON object holding every
 # input the decision needs. The first failed lookup is recorded in
 # lookup_failed and no further lookups are made for the card.
+# rs_run <review-stages.sh args>: review-stages.sh in the checkout of the card's repo (CARD_DIR, set
+# by card_input for a card of another repo), so its stages and PR lookups are that repo's.
+rs_run() {
+  if [ -n "${CARD_DIR:-}" ]; then (cd "$CARD_DIR" && bash "$FLEET_SCRIPTS/review-stages.sh" "$@")
+  else bash "$FLEET_SCRIPTS/review-stages.sh" "$@"; fi
+}
+
 card_input() {
   local st="$1" n="$2" title="$3"
   local failed="" read="" note='{}' has_acc=false marker=false pr=null info=null invalid="" outside="" mergeable=null
@@ -547,6 +554,7 @@ card_input() {
   local lint='[]' lint_gate=false lint_marker=null lint_commented=false lint_out lint_rc digest
   local stage=null next_stage=null nxt done_stages review_col=false matched next_labels
   local have_matched=false parallel='[]' stage_findings='[]'
+  local CARD_DIR="" card_cfg HAS_STAGES="$HAS_STAGES"
   local fields c_labels c_rev c_acc c_marker c_scope c_repo="" c_nodeps=false nf note_branch='' note_accepted=false
 
   # A review column: in_review, or the column of a configured review stage
@@ -611,6 +619,23 @@ card_input() {
     fi
   fi
 
+  # A card of another repo (card.repo, listed in board.repos): its PR lookups go to that repo and its
+  # review stages come from that repo's config. FLEET_REPO and FLEET_CFG are shadowed for the rest of
+  # this card's lookups (a local of card_input; rs_run reads the repo's own config in its checkout).
+  if [ -z "$failed" ] && [ -n "$c_repo" ] \
+     && [ "$(printf '%s' "$c_repo" | tr 'A-Z' 'a-z')" != "$(printf '%s' "$FLEET_REPO" | tr 'A-Z' 'a-z')" ]; then
+    CARD_DIR="$(jq -r --arg r "$c_repo" '[(.board.repos // [])[] | select((.repo | ascii_downcase) == ($r | ascii_downcase)) | .path][0] // empty' <<<"$FLEET_CFG")"
+    if [ -z "$CARD_DIR" ]; then
+      failed="repo $c_repo is not listed in board.repos"
+    elif ! card_cfg="$(bash "$FLEET_SCRIPTS/config.sh" --dir "$CARD_DIR")"; then
+      failed="config of repo $c_repo ($CARD_DIR)"; CARD_DIR=""
+    else
+      local FLEET_REPO="$c_repo" FLEET_CFG="$card_cfg"
+      HAS_STAGES=false
+      [ -n "$(fb_stage_states)" ] && HAS_STAGES=true
+    fi
+  fi
+
   # The card's own PR: known from the note, or discovered from its branch
   if [ -z "$failed" ] && [ -z "$invalid" ] && { [ "$st" = in_progress ] || [ "$st" = merging ] || [ "$review_col" = true ] || { [ "$CANDIDATES" = true ] && [ "$st" = human_qa ]; }; }; then
     branch="$note_branch"
@@ -654,7 +679,7 @@ card_input() {
     if [ -z "$failed" ] && [ "$st" = in_review ] && [ "$HAS_STAGES" = true ] && [ "$info" != null ] \
        && [ "$(jq -r '.state' <<<"$info")" = OPEN ]; then
       labels="$(jq -c '[(.labels // [])[] | strings]' <<<"$read" 2>/dev/null)" || labels='[]'
-      if ! matched="$(bash "$FLEET_SCRIPTS/review-stages.sh" match "$pr")"; then
+      if ! matched="$(rs_run match "$pr")"; then
         failed="review-stages.sh match $pr"
       elif ! parallel="$(jq -cn --argjson cfg "$FLEET_CFG" --argjson m "$matched" --argjson l "$labels" --argjson note "$note" --argjson info "$info" \
              '($note.last_review // null) as $lr
@@ -753,14 +778,14 @@ card_input() {
       # counts.
       if [ "$HAS_STAGES" = false ]; then
         :
-      elif [ "$have_matched" != true ] && ! matched="$(bash "$FLEET_SCRIPTS/review-stages.sh" match "$pr")"; then
+      elif [ "$have_matched" != true ] && ! matched="$(rs_run match "$pr")"; then
         failed="review-stages.sh match $pr"
       elif ! next_labels="$(jq -c --argjson cfg "$FLEET_CFG" --argjson m "$matched" \
              '(. + [$cfg.review.stages[] | select(.name as $s | $m | index($s) != null) | .label]) | unique' <<<"$labels" 2>/dev/null)"; then
         failed="review-stages.sh match $pr (unexpected answer)"
       elif ! done_stages="$(jq -c --argjson stage "$stage" 'if $stage == null then . else . + [$stage.name] end' <<<"$done_stages")"; then
         failed="note.sh parse $n (unparsable)"
-      elif nxt="$(bash "$FLEET_SCRIPTS/review-stages.sh" next --labels "$next_labels" --after in_review --done "$done_stages" "$n")"; then
+      elif nxt="$(rs_run next --labels "$next_labels" --after in_review --done "$done_stages" "$n")"; then
         if [ -n "$nxt" ]; then
           if [ "$(jq -r --arg s "$nxt" 'any((.review.stages // [])[]; .name == $s)' <<<"$FLEET_CFG")" = true ]; then
             next_stage="$(jq -cn --arg s "$nxt" '$s')"
@@ -817,12 +842,12 @@ card_input() {
                   | select(($cur and $ok) or (($done | index($s)) != null and (($cur and ($ok | not)) | not)))
                   | .name] | unique' <<<"$note" 2>/dev/null)"; then
         failed="note.sh parse $n (unparsable)"
-      elif ! matched="$(bash "$FLEET_SCRIPTS/review-stages.sh" match "$pr")"; then
+      elif ! matched="$(rs_run match "$pr")"; then
         failed="review-stages.sh match $pr"
       elif ! next_labels="$(jq -c --argjson cfg "$FLEET_CFG" --argjson m "$matched" \
              '(. + [$cfg.review.stages[] | select(.name as $s | $m | index($s) != null) | .label]) | unique' <<<"$labels" 2>/dev/null)"; then
         failed="review-stages.sh match $pr (unexpected answer)"
-      elif nxt="$(bash "$FLEET_SCRIPTS/review-stages.sh" next --labels "$next_labels" --after in_review --done "$done_stages" "$n")"; then
+      elif nxt="$(rs_run next --labels "$next_labels" --after in_review --done "$done_stages" "$n")"; then
         if [ -n "$nxt" ]; then
           if [ "$(jq -r --arg s "$nxt" 'any((.review.stages // [])[]; .name == $s)' <<<"$FLEET_CFG")" = true ]; then
             next_stage="$(jq -cn --arg s "$nxt" '$s')"
@@ -978,11 +1003,15 @@ card_input() {
     [ -n "$premise_moved" ] || premise_moved=null
   fi
 
+  # a card of another repo carries that repo's review stages (the final plan reads stages from the row)
+  local card_stages=null
+  if [ -n "$CARD_DIR" ]; then card_stages="$(jq -c '.review.stages // []' <<<"$FLEET_CFG")" || card_stages=null; fi
+
   jq -cn --arg st "$st" --argjson n "$n" --argjson title "$title" --argjson card_labels "$card_labels" --argjson state_revision "$state_revision" --arg failed "$failed" --arg invalid "$invalid" \
     --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
     --argjson has_acc "$has_acc" --argjson lint "$lint" --argjson lint_gate "$lint_gate" --argjson lint_commented "$lint_commented" --argjson lint_marker "$lint_marker" --argjson marker "$marker" --argjson note "$note" \
     --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" --argjson scope "$scope" --arg repo "${c_repo:-}" --argjson stack "$stack" --argjson stack_state "$stack_st" --argjson land "$land" --argjson premise_moved "$premise_moved" \
-    --argjson stage "$stage" --argjson next_stage "$next_stage" --argjson parallel "$parallel" --argjson stage_findings "$stage_findings" \
+    --argjson card_stages "$card_stages" --argjson stage "$stage" --argjson next_stage "$next_stage" --argjson parallel "$parallel" --argjson stage_findings "$stage_findings" \
     '{number: $n, title: $title, state: $st, labels: $card_labels, state_revision:$state_revision,
       lookup_failed: (if $failed == "" then null else $failed end),
       invalid_note: (if $invalid == "" then null else $invalid end),
@@ -992,7 +1021,7 @@ card_input() {
       lint_commented: $lint_commented,
       skip_marker: $marker, note: $note, pr: $pr,
       pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift, scope_paths: $scope, repo: (if $repo == "" then null else $repo end), stack: $stack, stack_state: $stack_state, land: $land, premise_moved: $premise_moved,
-      stage: $stage, next_stage: $next_stage, parallel_stages: $parallel, stage_findings: $stage_findings}'
+      card_stages: $card_stages, stage: $stage, next_stage: $next_stage, parallel_stages: $parallel, stage_findings: $stage_findings}'
 }
 
 if [ "$SETTLE" = true ]; then
@@ -1494,7 +1523,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
        drift: ($c.drift // null),
        # advance_stage: the stage being entered; a stage column: its stage
        stage: (if $d.action == "advance_stage"
-               then first($cfg.review.stages[] | select(.name == $c.next_stage))
+               then first(($c.card_stages // $cfg.review.stages)[] | select(.name == $c.next_stage))
                else ($c.stage // null) end),
        comment_needed: (if $d.action == "skip_no_acceptance" then ($c.skip_marker | not)
                         elif $d.action == "skip_card_lint" then ($c.lint_commented | not)
@@ -1511,7 +1540,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
     # stage), each labelled with its reviewer. While a stage is still to report, the card plans
     # that review, not the fix.
     | ($c.stage_findings // []) as $sf
-    | (if $c.state == "in_review" and ($cfg.review.stages | length) > 0 and $row.action == "fix" and $row.findings == null
+    | (if $c.state == "in_review" and (($c.card_stages // $cfg.review.stages) | length) > 0 and $row.action == "fix" and $row.findings == null
        then [($n.last_review.findings // [])[]? | select(type == "object" and (.severity == "Critical" or .severity == "Important"))
              | {severity, text: (.text // ""), reviewer: "evidence"}] as $efs
             | (if ($efs | length) > 0 then $efs
@@ -1520,7 +1549,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
                       reviewer: "evidence"}] end)
        else [] end) as $evf
     | def stage_rows:
-        $ps[] as $pe | $pe.name as $sn | first($cfg.review.stages[] | select(.name == $sn)) as $sg
+        $ps[] as $pe | $pe.name as $sn | first(($c.card_stages // $cfg.review.stages)[] | select(.name == $sn)) as $sg
         | ($sg.provider != null and any($unset[]; . == $sn)) as $held
         | $row + {key_held: $held, stage: $sg, pass: $pe.pass,
                   action: (if $held then "wait" else "review_stage" end),
@@ -1536,7 +1565,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
                 # a reviewer with findings blocks the card when its own count of finding rounds has reached its limit
                 | ([$all[].reviewer] | unique
                    | map(. as $rn
-                         | (if $rn == "evidence" then $max else (first($cfg.review.stages[] | select(.name == $rn)).max_rounds // $max) end) as $lim
+                         | (if $rn == "evidence" then $max else (first(($c.card_stages // $cfg.review.stages)[] | select(.name == $rn)).max_rounds // $max) end) as $lim
                          | (if $rn == "evidence" then ($n.finding_rounds.evidence.count // $round) else ($n.finding_rounds[$rn].count // 0) end) as $cnt
                          | select($cnt >= $lim)
                          | "\($rn): findings after \($cnt) round\(if $cnt == 1 then "" else "s" end) (max_rounds \($lim))")) as $over
