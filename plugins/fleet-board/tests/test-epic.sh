@@ -132,7 +132,7 @@ eq "progress blocked" "$(jq -r '.children[5].progress' <<<"$OUT")" "blocked"
 eq "progress dropped" "$(jq -r '.children[6].progress' <<<"$OUT")" "dropped"
 eq "progress done" "$(jq -r '.children[7].progress' <<<"$OUT")" "done"
 eq "progress counts" "$(jq -c '.progress' <<<"$OUT")" '{"waiting":0,"ready":0,"in_flight":5,"blocked":1,"done":1,"dropped":1}'
-eq "progress counts sum to children" "$(jq '[.progress[]] | add == (.children | length)' <<<"$OUT")" "true"
+eq "progress counts sum to children" "$(jq '(.children | length) as $c | [.progress[]] | add == $c' <<<"$OUT")" "true"
 
 # --- effective_state ---------------------------------------------------------
 R="$(mkrepo r5)"
