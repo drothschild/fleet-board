@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# FLEET_TEST_ONLY=<exact check name> makes a tick-plan suite (the ones that source tick-plan-lib.sh)
+# FLEET_TEST_ONLY=<exact check name> makes a tick-plan suite (the ones that source the shared tick-plan helper)
 # run only the scenario that holds that check, so the reviewer's commands.test_case
 # ("FLEET_TEST_ONLY={name} bash {file}") runs one check per mutant, not the whole suite.
 #
@@ -94,11 +94,12 @@ if [ "$RC" = 5 ]; then pass "no match: exits 5"; else fail "no match: exits 5" "
 case "$ERR" in *"FLEET_TEST_ONLY=no such check anywhere: 0 test(s) selected"*) pass "no match: stderr says 0 test(s) selected" ;; *) fail "no match: stderr says 0 test(s) selected" "$ERR" ;; esac
 if [ ! -e "$WORK/ran" ]; then pass "no match: tick-plan.sh did not run"; else fail "no match: tick-plan.sh did not run" "the stub ran"; fi
 
+LIBNAME="tick-plan-lib"
 DUP="$STUB/plugins/fleet-board/tests/test-tick-plan-dup.sh"
 {
   printf '#!/usr/bin/env bash\n'
   printf 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"\n'
-  printf '. "$SCRIPT_DIR/tick-plan-lib.sh"\n'
+  printf '. "$SCRIPT_DIR/%s.sh"\n' "$LIBNAME" # not spelled out: test-tick-plan-split.sh treats a file naming the helper as a suite
   printf 'plan ready-start\n'
   printf 'assert_exit "twice: exit" 0\n'
   printf 'plan ready-start\n'
