@@ -190,7 +190,7 @@ Moving the card out of Blocked sets `"merger": null`, `"merge_refusal": null` an
 
 ## Gates
 
-A `PreToolUse` hook blocks any agent command that would move a card out of Human QA, merge a PR under `merge.policy: human`, mark a card Ready without acceptance items, or run `premise-settle.sh approve`, `confirm` or `reject` (only a person decides a premise proposal; a script file that calls `premise-settle.sh`, and a direct POST to the board page's premise routes, are not seen by the gate). It does nothing in repos without `.fleet-board.yml`. It is a text check, so it has blind spots and some false positives; [docs/gates.md](docs/gates.md) lists them, along with how fleet-board behaves alongside other plugins. Branch protection on GitHub remains the backstop for merges.
+A `PreToolUse` hook blocks any agent command that would move a card out of Human QA, merge a PR under `merge.policy: human`, mark a card Ready without acceptance items, or run the premise-proposal script's `approve`, `confirm` or `reject` (only a person decides a premise proposal; a script file that calls that script, and a direct POST to the board page's premise routes, are not seen by the gate). It does nothing in repos without `.fleet-board.yml`. It is a text check, so it has blind spots and some false positives; [docs/gates.md](docs/gates.md) lists them, along with how fleet-board behaves alongside other plugins. Branch protection on GitHub remains the backstop for merges.
 
 ## Stacked pull requests
 
