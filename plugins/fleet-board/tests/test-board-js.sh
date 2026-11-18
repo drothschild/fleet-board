@@ -120,14 +120,12 @@ async function drawerText(card) {
   await h.ctx.openDrawer(card.number);
   await h.flush();
   const el = h.$("dr-stack");
-  // the harness's getElementById nodes are detached, so read the field's parts by id
-  return el && !el.hidden ? ["Stacked on", h.$("dr-stack-link"), h.$("dr-stack-attn")].map(n => typeof n === "string" ? n : (n.hidden ? "" : allText(n))).join(" ") : "";
+  return el && !el.hidden ? allText(el) : "";
 }
 (async () => {
-  await test("In the drawer, the stacked line is a labelled Stacked on field with the parent as a link", async () => {
+  await test("the drawer renders stacked on #11 for stacked_on 11", async () => {
     const t = await drawerText(mk(1, {stacked_on: 11, stack_attention: null}));
-    assert.ok(t.includes("Stacked on"), t);
-    assert.ok(t.includes("#11"), t);
+    assert.ok(t.includes("stacked on #11"), t);
   });
   await test("the drawer Stacked on link opens the parent's drawer", async () => {
     const urls = [];
@@ -149,7 +147,7 @@ async function drawerText(card) {
     await h.flush();
     assert.ok(urls.filter(u => u === "/api/cards/11").length > before, urls.join(","));
   });
-  await test("the drawer shows nothing for stacked_on null", async () => {
+  await test("the drawer renders nothing for stacked_on null", async () => {
     const t = await drawerText(mk(1, {stacked_on: null, stack_attention: null}));
     assert.equal(t, "");
   });

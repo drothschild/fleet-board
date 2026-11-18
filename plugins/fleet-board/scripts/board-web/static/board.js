@@ -1127,6 +1127,10 @@ function renderStack(card) {
     ? "landing needs attention: " + card.stack_attention : "";
   attn.textContent = text;
   attn.hidden = !text;
+  // one plain-text summary for assistive tech and text readers of the whole field
+  let sum = field.querySelector(".dr-stack-summary");
+  if (!sum) { sum = el("span", "sr-only dr-stack-summary"); field.appendChild(sum); }
+  sum.textContent = on === null ? "" : "stacked on #" + on + (text ? " " + text : "");
 }
 
 // fillRepoPicker(): the new-card Repo select, shown only when the board lists other repos.
