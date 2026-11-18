@@ -252,6 +252,13 @@ if ! grep -qxF -- "$LDIR/" "$DIR/.gitignore" 2>/dev/null; then
   fi
   printf '%s/\n' "$LDIR" >> "$DIR/.gitignore" || die 1 "cannot update $DIR/.gitignore"
 fi
+# The config is per board: keep it out of git too, once.
+if ! grep -qxF -- ".fleet-board.yml" "$DIR/.gitignore" 2>/dev/null; then
+  if [ -s "$DIR/.gitignore" ] && [ -n "$(tail -c 1 "$DIR/.gitignore")" ]; then
+    printf '\n' >> "$DIR/.gitignore" || die 1 "cannot update $DIR/.gitignore"
+  fi
+  printf '.fleet-board.yml\n' >> "$DIR/.gitignore" || die 1 "cannot update $DIR/.gitignore"
+fi
 
 # --- Step 7: write ---------------------------------------------------------
 mv -f "$TMP" "$TARGET" || die 1 "cannot write $TARGET"

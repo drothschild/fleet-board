@@ -24,23 +24,39 @@ else
   bad "CLAUDE.md '## Fleet agents: version bump' section lacks merge lane, bump labels, or still tells agents to bump"
 fi
 
+EXAMPLE="$ROOT/.fleet-board.example.yml"
+
+# Card 494: the board's own .fleet-board.yml is local: untracked and ignored; the committed example stands in.
+if [ -z "$(git -C "$ROOT" ls-files -- .fleet-board.yml)" ] && grep -qxF '.fleet-board.yml' "$ROOT/.gitignore"; then
+  ok ".fleet-board.yml is untracked and listed in .gitignore"
+else
+  bad ".fleet-board.yml is still tracked or missing from .gitignore"
+fi
+if [ -f "$EXAMPLE" ]; then ok ".fleet-board.example.yml is committed"; else bad ".fleet-board.example.yml is missing"; fi
+RD="$ROOT/plugins/fleet-board/README.md"
+if grep -q '\.fleet-board\.example\.yml' "$RD" && grep -q 'skip-worktree' "$RD"; then
+  ok "README says how to create the local file and keep a copy on pull"
+else
+  bad "README lacks .fleet-board.example.yml and skip-worktree guidance"
+fi
+
 # Acceptance 2: the repository turns the merge-lane mode on.
-if [ "$(bash "$ROOT/plugins/fleet-board/scripts/config.sh" supervisor.version_bump 2>/dev/null)" = merge ]; then
+if [ "$(FLEET_BOARD_CONFIG="$EXAMPLE" bash "$ROOT/plugins/fleet-board/scripts/config.sh" supervisor.version_bump 2>/dev/null)" = merge ]; then
   ok "supervisor.version_bump is merge"
 else
   bad "supervisor.version_bump is not merge"
 fi
-if grep -q 'version_bump_paths' "$ROOT/.fleet-board.yml" && grep -q 'plugins/\*\*' "$ROOT/.fleet-board.yml"; then
-  ok ".fleet-board.yml sets version_bump_paths to plugins/**"
+if grep -q 'version_bump_paths' "$EXAMPLE" && grep -q 'plugins/\*\*' "$EXAMPLE"; then
+  ok ".fleet-board.example.yml sets version_bump_paths to plugins/**"
 else
-  bad ".fleet-board.yml lacks version_bump_paths plugins/**"
+  bad ".fleet-board.example.yml lacks version_bump_paths plugins/**"
 fi
 
 # Acceptance 3: the check runs before CI through this repo's configured commands.
-if grep -Eq '^[[:space:]]*lint:.*test-version-bumped\.sh' "$ROOT/.fleet-board.yml"; then
-  ok ".fleet-board.yml commands.lint runs test-version-bumped.sh"
+if grep -Eq '^[[:space:]]*lint:.*test-version-bumped\.sh' "$EXAMPLE"; then
+  ok ".fleet-board.example.yml commands.lint runs test-version-bumped.sh"
 else
-  bad ".fleet-board.yml commands.lint does not run test-version-bumped.sh"
+  bad ".fleet-board.example.yml commands.lint does not run test-version-bumped.sh"
 fi
 
 # Acceptance 4: the check can fail. Fixture repo: a branch leaving both manifests alone passes;
