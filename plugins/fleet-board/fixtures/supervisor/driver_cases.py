@@ -2077,6 +2077,29 @@ def test_rerun_checks_and_checks_failed_reserve_no_scope(base):
     assert {'rerun_checks', 'checks_failed'} <= scheduler.SCOPE_FREE_ACTIONS, scheduler.SCOPE_FREE_ACTIONS
 
 
+def _security_report(b, stage, round_, report):
+    out = {'status': 'posted', 'report_file': report_file(b, report), 'parsed': {}, 'provider': 'codex',
+           'model': 'gpt-5', 'input_tokens': 5, 'output_tokens': 6, 'attempts': 1}
+    fake_plugin(b, 0, json.dumps(out))
+    b.put_note({'round': round_})
+    run_role(b, begin(b, 'review_stage', state='in_review', stage=stage, round=round_))
+    return b.note()
+
+
+def test_a_stage_report_with_findings_counts_one_finding_round_per_card_round(base):
+    b, stage = provider_stage_board(base, 0, '')
+    b.put_note({'state': 'in_review', 'stage': None, 'round': 2, 'last_review': LAST_REVIEW,
+                'reviews': {'evidence': LAST_REVIEW}})
+    note = _security_report(b, stage, 2, 'stage-reviewer-findings')
+    assert note['finding_rounds'] == {'security': {'count': 1, 'last_round': 2}}, note.get('finding_rounds')
+    note = _security_report(b, stage, 2, 'stage-reviewer-findings')
+    assert note['finding_rounds']['security'] == {'count': 1, 'last_round': 2}, note.get('finding_rounds')
+    note = _security_report(b, stage, 3, 'stage-reviewer-findings')
+    assert note['finding_rounds']['security'] == {'count': 2, 'last_round': 3}, note.get('finding_rounds')
+    note = _security_report(b, stage, 4, 'stage-reviewer-ok')
+    assert note['finding_rounds']['security'] == {'count': 2, 'last_round': 3}, note.get('finding_rounds')
+
+
 if __name__ == '__main__':
     base = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp()
     names = sorted(n for n in dict(globals()) if n.startswith('test_'))
