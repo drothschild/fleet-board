@@ -201,9 +201,13 @@ for st in $STATES; do
       --arg sagent "$sagent" --arg sprov "$sprov" --arg smodel "$smodel" '
       def v: if . == null then "—" else tostring | gsub("[[:cntrl:]]"; " ") end;
       def m($k): if type == "object" then .[$k] | v else "—" end;
+      def stk: if (.stack | type) == "object" and (.stack.parent | type) == "number"
+        then " · stacked on #\(.stack.parent | floor)"
+          + (if (.stack.attention | type) == "string" then " · landing needs attention: \(.stack.attention | v)" else "" end)
+        else "" end;
       "  #\($n) \($t) · round \(.round | v) · PR \(if .pr == null then "—" else "#\(.pr)" end) · \(if $stage == "" then "\(.models | m("implementor"))/\(.models | m("reviewer"))"
         elif $sprov != "" then "\(.models | m("fixer"))/\($sprov):\($smodel)"
-        else "\(.models | m("fixer"))/\($sagent)@\($smodel)" end)\($sfx)"' \
+        else "\(.models | m("fixer"))/\($sagent)@\($smodel)" end)\($sfx)\(stk)"' \
       <<<"$note" || { printf '  #%s %s · note unreadable\n' "$n" "$title"; RC=1; }
   done <<<"$ROWS"
 done

@@ -138,8 +138,10 @@ def overlap(a, b):
     return False
 
 
-def same_repo(a, b):
+def same_repo(a, b, home=None):
     """True unless both repos are named and differ (owner/name, case-insensitive).
 
-    A claim naming no repo is the board's own repo, so it conflicts as before."""
+    A missing repo is the `home` repo (board.repo). With no `home` it matches every
+    repo, so the check fails closed."""
+    a, b = a or home, b or home
     return not a or not b or str(a).lower() == str(b).lower()

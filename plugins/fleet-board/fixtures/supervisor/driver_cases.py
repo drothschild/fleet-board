@@ -316,6 +316,52 @@ def test_update_branch_conflict_counts_once_and_never_blocks(base):
     assert b.card()['state'] == 'in_review' and 'board-move.sh' not in b.scripts_called()
 
 
+def test_land_runs_worktree_then_stack_land(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'action_failures': 2, 'last_action_error': 'older'})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['stack-land.sh'] = ok()
+    assert begin(b, 'land', state='in_review').kind == 'done'
+    assert b.scripts_called() == ['worktree.sh', 'stack-land.sh'], b.calls
+    assert b.calls[0] == ('worktree.sh', 'create', '12', BRANCH, b.worktree)
+    assert ('stack-land.sh', '12', '34', BRANCH, b.worktree) in b.calls
+    note = b.note()
+    assert note['action_failures'] == 0 and note['last_action_error'] is None
+    assert b.card()['state'] == 'in_review' and 'board-move.sh' not in b.scripts_called()
+
+
+def test_land_without_a_pr_passes_a_dash(base):
+    b = board_for(base, 'in_progress')
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['stack-land.sh'] = ok()
+    assert begin(b, 'land', state='in_progress', pr=None).kind == 'done'
+    assert ('stack-land.sh', '12', '-', BRANCH, b.worktree) in b.calls, b.calls
+
+
+def test_land_exits_3_and_4_are_not_failures(base):
+    for rc in (3, 4):
+        sub = Path(base) / ('rc%d' % rc)
+        sub.mkdir()
+        b = board_for(sub, 'in_review')
+        b.put_note({'action_failures': 1, 'last_action_error': 'older'})
+        b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+        b.stubs['stack-land.sh'] = fail_with('waiting or attention\n', rc=rc)
+        assert begin(b, 'land', state='in_review').kind == 'done'
+        note = b.note()
+        assert note['action_failures'] == 1 and note['last_action_error'] == 'older', (rc, note)
+        assert b.card()['state'] == 'in_review' and 'board-move.sh' not in b.scripts_called()
+
+
+def test_land_exit_1_counts_one_failure(base):
+    b = board_for(base, 'in_review')
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['stack-land.sh'] = fail_with('git push origin fleet/12 was rejected\n', rc=1)
+    assert begin(b, 'land', state='in_review').kind == 'done'
+    note = b.note()
+    assert note['action_failures'] == 1 and note['last_action_error'].startswith('git push'), note
+    assert b.card()['state'] == 'in_review' and 'board-move.sh' not in b.scripts_called()
+
+
 LAST = {'round': 1, 'sha': 'abc', 'critical': 1, 'important': 1,
         'findings': [{'severity': 'Critical', 'text': 'crashes'}, {'severity': 'Minor', 'text': 'nit'},
                      {'severity': 'Important', 'text': 'leaks'}]}
@@ -2329,6 +2375,38 @@ def test_checks_failed_hands_the_failure_to_the_fixer_as_an_important_finding(ba
 def test_rerun_checks_and_checks_failed_reserve_no_scope(base):
     from supervisor import scheduler
     assert {'rerun_checks', 'checks_failed'} <= scheduler.SCOPE_FREE_ACTIONS, scheduler.SCOPE_FREE_ACTIONS
+
+
+def _security_report(b, stage, round_, report):
+    out = {'status': 'posted', 'report_file': report_file(b, report), 'parsed': {}, 'provider': 'codex',
+           'model': 'gpt-5', 'input_tokens': 5, 'output_tokens': 6, 'attempts': 1}
+    fake_plugin(b, 0, json.dumps(out))
+    b.put_note({'round': round_})
+    run_role(b, begin(b, 'review_stage', state='in_review', stage=stage, round=round_))
+    return b.note()
+
+
+def test_a_stage_report_with_findings_counts_one_finding_round_per_card_round(base):
+    b, stage = provider_stage_board(base, 0, '')
+    b.put_note({'state': 'in_review', 'stage': None, 'round': 2, 'last_review': LAST_REVIEW,
+                'reviews': {'evidence': LAST_REVIEW}})
+    note = _security_report(b, stage, 2, 'stage-reviewer-findings')
+    assert note['finding_rounds'] == {'security': {'count': 1, 'last_round': 2}}, note.get('finding_rounds')
+    note = _security_report(b, stage, 2, 'stage-reviewer-findings')
+    assert note['finding_rounds']['security'] == {'count': 1, 'last_round': 2}, note.get('finding_rounds')
+    note = _security_report(b, stage, 3, 'stage-reviewer-findings')
+    assert note['finding_rounds']['security'] == {'count': 2, 'last_round': 3}, note.get('finding_rounds')
+    note = _security_report(b, stage, 4, 'stage-reviewer-ok')
+    assert note['finding_rounds']['security'] == {'count': 2, 'last_round': 3}, note.get('finding_rounds')
+
+
+def test_an_advisory_stage_report_with_findings_is_not_counted(base):
+    b, stage = provider_stage_board(base, 0, '')
+    stage = dict(stage, advisory=True, max_rounds=1)
+    b.put_note({'state': 'in_review', 'stage': None, 'round': 2, 'last_review': LAST_REVIEW,
+                'reviews': {'evidence': LAST_REVIEW}})
+    note = _security_report(b, stage, 2, 'stage-reviewer-findings')
+    assert 'security' not in (note.get('finding_rounds') or {}), note.get('finding_rounds')
 
 
 if __name__ == '__main__':

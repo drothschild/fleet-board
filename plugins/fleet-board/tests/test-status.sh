@@ -575,6 +575,25 @@ assert_stdout_contains "local cycle: #6 reports the cycle" "#6 card 6 · round �
 assert_stdout_contains "local: blocked_by gives the waiting reason" "#9 card 9 · round — · PR — · —/— · waits for acme/toy#10 (in_progress)"
 assert_stdout_not_contains "local: no blocked_by, no waiting reason" "#11 card 11 · round — · PR — · —/— · waits"
 
+# Stacking: a card whose note has stack shows what it is stacked on and any landing attention
+STK='{"parent":11,"base":"fleet/11-parent-card","start":"0123456789abcdef0123456789abcdef01234567","attention":null}'
+STK_ATT='{"parent":11,"base":"fleet/11-parent-card","start":"0123456789abcdef0123456789abcdef01234567","attention":"parent closed unmerged"}'
+setup_case
+card 12 "Add subtract" fleet:in_review \
+  "{\"state\":\"in_review\",\"round\":2,\"pr\":34,\"models\":{\"implementor\":\"sonnet\",\"reviewer\":\"opus\",\"fixer\":\"sonnet\"},\"stack\":$STK}"
+run_check "$SCRIPT"
+assert_exit "stacked: exit" 0
+assert_stdout_contains "status.sh shows stacked on #11 for a card whose note has stack" "$LINE12 · stacked on #11"
+assert_stdout_not_contains "stacked: no attention text when stack.attention is null" "landing needs attention"
+assert_stdout_contains "status.sh prints the line of a card without stack exactly as before" "$(printf '%s\n' "$LINE14")"
+assert_stdout_not_contains "an unstacked card's line has no stacked text" "$LINE14 · stacked"
+
+setup_case
+card 12 "Add subtract" fleet:in_review \
+  "{\"state\":\"in_review\",\"round\":2,\"pr\":34,\"models\":{\"implementor\":\"sonnet\",\"reviewer\":\"opus\",\"fixer\":\"sonnet\"},\"stack\":$STK_ATT}"
+run_check "$SCRIPT"
+assert_stdout_contains "status.sh shows landing needs attention: <reason> when stack.attention is set" "$LINE12 · stacked on #11 · landing needs attention: parent closed unmerged"
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

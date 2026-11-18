@@ -120,6 +120,12 @@
 # ready-card overlap check and the reservations of the plan) skip the cards in ancestors, never
 # the other cards, siblings included.
 #
+# Land: with stacking.enabled, an in_progress or review-state card whose note has stack (attention
+# null) while the parent card's board state is done plans land (reason "#<parent> merged; land on
+# <default branch>"), before the conflict, fix, update_branch, start_review and review rows; a stale
+# conflicted_files does not stop it. The supervisor runs stack-land.sh. The note's landed pair is passed
+# to review-drift.sh as --landing.
+#
 # Conflicting PRs: an open PR whose mergeable state is CONFLICTING, on an
 # in_progress or in_review card, plans update_branch (reason "PR #<pr> has
 # merge conflicts with its base branch"), before start_review, review, fix and
@@ -335,6 +341,11 @@ HAS_STAGES=false
 # stacking.enabled (default false): a Ready card whose one unmet dependency is in review may start on it
 STACKING="$(jq -r 'if .stacking.enabled == true then "true" else "false" end' <<<"$FLEET_CFG")" || fb_die 1 "cannot read stacking.enabled"
 
+# The default branch the land row names: origin/HEAD, else main
+DEFAULT_BRANCH="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" || DEFAULT_BRANCH=""
+DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
+[ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH=main
+
 # premise_check.enabled (default false): a Ready card whose ground moved plans check_premise, not start
 PREMISE_CHECK="$(jq -r 'if .premise_check.enabled == true then "true" else "false" end' <<<"$FLEET_CFG")" || fb_die 1 "cannot read premise_check.enabled"
 
@@ -386,6 +397,13 @@ is_test_path() {
   return 1
 }
 
+# landing_args <note-json>: prints "--landing <parent_head>:<squash>" for a note whose landed is
+# set (a stacked child that landed), else nothing; review-drift.sh counts the landing's commits
+landing_args() {
+  jq -r 'if (.landed | type) == "object" and (.landed.parent_head | type) == "string" and (.landed.squash | type) == "string"
+         then "--landing \(.landed.parent_head):\(.landed.squash)" else empty end' <<<"$1" 2>/dev/null
+}
+
 # drift_lookup <note-json> <pr-info-json>: prints {merge, test_edit, from} for
 # the PR's own commits (the first-parent chain from the head, so commits that
 # arrived through a merge of main are not the PR's) made after last_review.sha.
@@ -424,7 +442,8 @@ drift_lookup() {
   # (review-drift.sh); a failed check reads as unreviewed
   also=()
   sbase="$(stack_base_of "$1")" && [ -n "$sbase" ] && also=(--also-base "origin/$sbase")
-  verdict="$(bash "$FLEET_SCRIPTS/review-drift.sh" "$from" "$head" ${also[@]+"${also[@]}"} 2>/dev/null)" || verdict=unreviewed
+  # shellcheck disable=SC2046
+  verdict="$(bash "$FLEET_SCRIPTS/review-drift.sh" "$from" "$head" $(landing_args "$1") ${also[@]+"${also[@]}"} 2>/dev/null)" || verdict=unreviewed
   [ "$verdict" = reviewed ] && unrev=false
   jq -cn --argjson m "$merge" --argjson t "$tedit" --argjson u "$unrev" --arg from "$from" --arg head "$head" \
     '{merge: $m, test_edit: $t, unreviewed: $u, from: $from, head: $head}'
@@ -524,7 +543,7 @@ card_input() {
   local failed="" read="" note='{}' has_acc=false marker=false pr=null info=null invalid="" outside="" mergeable=null
   local blocking_merged=null nhq=null body branch bpr out cmd found labels card_labels='[]' state_revision=null
   local deps_unmet='[]' deps_warn='[]' refs checked has_deps accepted_mine=null me
-  local drift=null scope='[]' stack=null premise_moved=null stack_st=null
+  local drift=null scope='[]' stack=null premise_moved=null stack_st=null land=false lparent lread
   local lint='[]' lint_gate=false lint_marker=null lint_commented=false lint_out lint_rc digest
   local stage=null next_stage=null nxt done_stages review_col=false matched next_labels
   local have_matched=false parallel='[]' stage_findings='[]'
@@ -783,7 +802,8 @@ card_input() {
         for rsha in $(jq -r '[(.reviews | if type == "object" then .[] else empty end), .last_review | objects | .sha // empty | strings] | unique | .[]' <<<"$note" 2>/dev/null); do
           case "$head_oid" in "$rsha"*) continue ;; esac
           also=(); sbase="$(stack_base_of "$note")" && [ -n "$sbase" ] && also=(--also-base "origin/$sbase")
-          if [ "$(bash "$FLEET_SCRIPTS/review-drift.sh" "$rsha" "$head_oid" ${also[@]+"${also[@]}"} 2>/dev/null)" = reviewed ]; then
+          # shellcheck disable=SC2046
+          if [ "$(bash "$FLEET_SCRIPTS/review-drift.sh" "$rsha" "$head_oid" $(landing_args "$note") ${also[@]+"${also[@]}"} 2>/dev/null)" = reviewed ]; then
             covered="$(jq -c --arg s "$rsha" '. + [$s]' <<<"$covered")"
           fi
         done
@@ -934,6 +954,21 @@ card_input() {
     [ -n "$stack" ] || stack=null
   fi
 
+  # Land: a stacked child (note.stack, no attention) whose parent card is done is planned land. A failed
+  # lookup reads as not done (the card keeps today's row).
+  if [ "$STACKING" = true ] && [ -z "$failed" ] && [ -z "$invalid" ]; then
+    case "$st" in
+      in_progress|in_review|review_*)
+        lparent="$(jq -r 'if (.stack | type) == "object" and .stack.attention == null and (.stack.parent | type) == "number"
+                            and .stack.parent == (.stack.parent | floor) and .stack.parent > 0 then (.stack.parent | tostring) else "" end' <<<"$note" 2>/dev/null)" || lparent=""
+        if [ -n "$lparent" ] && lread="$(bash "$FLEET_SCRIPTS/board-read.sh" "$lparent" 2>/dev/null)" \
+           && [ "$(jq -r '.state // ""' <<<"$lread" 2>/dev/null)" = done ]; then
+          land=true
+        fi
+        ;;
+    esac
+  fi
+
   # Premise check: a Ready card that could start (acceptance, lint clean, no unmet dependency)
   # is asked whether a file it names changed on the default branch since its stamp. A failed
   # lookup reads as not moved: the planner never fails on it.
@@ -946,7 +981,7 @@ card_input() {
   jq -cn --arg st "$st" --argjson n "$n" --argjson title "$title" --argjson card_labels "$card_labels" --argjson state_revision "$state_revision" --arg failed "$failed" --arg invalid "$invalid" \
     --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
     --argjson has_acc "$has_acc" --argjson lint "$lint" --argjson lint_gate "$lint_gate" --argjson lint_commented "$lint_commented" --argjson lint_marker "$lint_marker" --argjson marker "$marker" --argjson note "$note" \
-    --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" --argjson scope "$scope" --arg repo "${c_repo:-}" --argjson stack "$stack" --argjson stack_state "$stack_st" --argjson premise_moved "$premise_moved" \
+    --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" --argjson scope "$scope" --arg repo "${c_repo:-}" --argjson stack "$stack" --argjson stack_state "$stack_st" --argjson land "$land" --argjson premise_moved "$premise_moved" \
     --argjson stage "$stage" --argjson next_stage "$next_stage" --argjson parallel "$parallel" --argjson stage_findings "$stage_findings" \
     '{number: $n, title: $title, state: $st, labels: $card_labels, state_revision:$state_revision,
       lookup_failed: (if $failed == "" then null else $failed end),
@@ -956,7 +991,7 @@ card_input() {
       has_acceptance: $has_acc, lint: $lint, lint_gate: $lint_gate, lint_marker: $lint_marker,
       lint_commented: $lint_commented,
       skip_marker: $marker, note: $note, pr: $pr,
-      pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift, scope_paths: $scope, repo: (if $repo == "" then null else $repo end), stack: $stack, stack_state: $stack_state, premise_moved: $premise_moved,
+      pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift, scope_paths: $scope, repo: (if $repo == "" then null else $repo end), stack: $stack, stack_state: $stack_state, land: $land, premise_moved: $premise_moved,
       stage: $stage, next_stage: $next_stage, parallel_stages: $parallel, stage_findings: $stage_findings}'
 }
 
@@ -1142,7 +1177,7 @@ done <<<"$(jq -r '. as $c | (.review.stages // [])[] | select(.provider != null)
 TODAY="${FLEET_BOARD_TODAY:-$(date -u +%Y-%m-%d)}"
 IGNORE_CHECKS_JQ="$(cat "$FLEET_SCRIPTS/ignore-checks.jq")" || fb_die 1 "cannot read ignore-checks.jq"
 
-jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERSION_FILE" --argjson settle "$SETTLE" --argjson candidates "$CANDIDATES" --argjson no_start "$([ -n "$ONE_CARD" ] && echo true || echo false)" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" --argjson unset "$UNSET" --argjson closed_pending "$CLOSED_PENDING" --arg today "$TODAY" "$IGNORE_CHECKS_JQ$PATH_GLOB_JQ"'
+jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERSION_FILE" --argjson settle "$SETTLE" --argjson candidates "$CANDIDATES" --argjson no_start "$([ -n "$ONE_CARD" ] && echo true || echo false)" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" --arg default_branch "$DEFAULT_BRANCH" --argjson unset "$UNSET" --argjson closed_pending "$CLOSED_PENDING" --arg today "$TODAY" "$IGNORE_CHECKS_JQ$PATH_GLOB_JQ"'
   # One shared rule (ignore-checks.jq) for every merge decision: the review rows and the merging row
   def green: .statusCheckRollup | ic_green($cfg.merge.ignore_checks; $today);
   # The red checks nothing ignores (name, detailsUrl), and whether any uncovered check is still pending
@@ -1237,6 +1272,10 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
             then act("check_premise"; $c.premise_moved.reason)
             else act("start"; "ready, with acceptance criteria") end
           else act("skip_no_acceptance"; "no acceptance criteria") end
+        # A stacked child whose parent card is done lands on the default branch (stack-land.sh), before
+        # any conflict, fix, update_branch, start_review or review row; a stale conflicted_files does not stop it
+        elif $c.land == true and ($c.state == "in_progress" or is_review($c))
+          then act("land"; "#\($n.stack.parent) merged; land on \($default_branch)")
         # update-branch.sh recorded the files of an aborted conflicting merge: the
         # fixer resolves them (test files included), so update_branch is not
         # planned again while the PR still reads CONFLICTING
@@ -1334,7 +1373,9 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
           # clean merge of main (review-drift.sh); a lookup that failed reads as not covered
           elif $ci_eff == 0 and head_moved($c; $lr) and ($c.drift == null or $c.drift.unreviewed)
             then act($ra; "PR head \($c.pr_info.headRefOid[0:7]) has commits after the round \($round) review at \($lr.sha[0:7]) that are not clean merges of the base; review them before merging")
-          elif $ci_eff > 0 and $round >= $smax
+          # The evidence reviewer counts its own finding rounds (note.finding_rounds.evidence; a note without
+          # the count reads as the card round, the limit in force before this counter); a stage column still reads the card round
+          elif $ci_eff > 0 and (if $c.stage != null then $round else (($n.finding_rounds.evidence.count // $round)) end) >= $smax
             then act("block"; "\($ci) Critical/Important findings survive round \($round) of \($smax)\(if $c.stage != null then " in \($c.stage.name)" else "" end)")
           elif $ci_eff > 0 then act("fix"; "\($ci) Critical/Important findings in round \($round)")
           # Clean (or advisory) and current: a next stage comes before the tail
@@ -1492,8 +1533,17 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
            elif $row.action == "fix" and $row.findings != null then $row
            elif (($evf + $sf) | length) > 0
            then ($evf + $sf) as $all
-                | $row + {action: "fix", stage: null, findings: $all,
-                          reason: "\($all | length) Critical/Important findings from \([$all[].reviewer] | unique | length) reviewer(s) in round \($round)"}
+                # a reviewer with findings blocks the card when its own count of finding rounds has reached its limit
+                | ([$all[].reviewer] | unique
+                   | map(. as $rn
+                         | (if $rn == "evidence" then $max else (first($cfg.review.stages[] | select(.name == $rn)).max_rounds // $max) end) as $lim
+                         | (if $rn == "evidence" then ($n.finding_rounds.evidence.count // $round) else ($n.finding_rounds[$rn].count // 0) end) as $cnt
+                         | select($cnt >= $lim)
+                         | "\($rn): findings after \($cnt) round\(if $cnt == 1 then "" else "s" end) (max_rounds \($lim))")) as $over
+                | if ($over | length) > 0
+                  then $row + {action: "block", stage: null, findings: null, reason: ($over | join("; "))}
+                  else $row + {action: "fix", stage: null, findings: $all,
+                          reason: "\($all | length) Critical/Important findings from \([$all[].reviewer] | unique | length) reviewer(s) in round \($round)"} end
            elif $row.action == "fix" then $row
            else $row + {action: "wait", reason: "routed stage review pending; no stage to plan", stage: null} end)
         elif $row.action == "fix" and ($evf | length) == 0 then $row

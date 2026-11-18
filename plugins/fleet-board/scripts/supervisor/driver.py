@@ -79,7 +79,7 @@ Started = namedtuple('Started', 'kind action')
 Outcome = namedtuple('Outcome', 'card progressed redispatch provider_failure')
 
 SCRIPT_ACTIONS = frozenset((
-    'advance_stage', 'move_to_review', 'update_branch', 'block', 'to_human_qa', 'mark_ready', 'verify_main', 'finish', 'unblock',
+    'advance_stage', 'move_to_review', 'update_branch', 'land', 'block', 'to_human_qa', 'mark_ready', 'verify_main', 'finish', 'unblock',
     'file_pending', 'rerun_checks', 'checks_failed', 'skip_no_acceptance', 'skip_card_lint', 'wait', 'skip',
 ))
 ROLE_ACTIONS = frozenset(('start', 'continue_implementor', 'start_review', 'review', 'review_stage', 'fix',
@@ -95,7 +95,7 @@ PR_FILES_LIMIT = 100   # gh pr view --json files lists at most this many: a full
 _CONFLICT = re.compile(r'conflict', re.I)
 _SCRIPT_RUNNERS = ('stage-review', 'evidence-review')
 _UNCOUNTED = frozenset(('wait', 'skip'))
-_FLAGS = frozenset(('--all', '--qa-summary', '--role', '--commits-since-review', '--mode', '--by', '--sha'))
+_FLAGS = frozenset(('--all', '--qa-summary', '--role', '--commits-since-review', '--mode', '--by', '--sha', '-'))
 _FIXED_BEFORE = ('backlog', 'ready', 'in_progress', 'in_review')
 _MERGING = ('merging',)
 _FIXED_AFTER = ('human_qa', 'blocked', 'done', 'wont_do')
@@ -1387,6 +1387,20 @@ class CardDriver:
                 patch['review_passes'] = passes
                 patch['reviews'][run.stage] = dict(patch['last_review'], **{'pass': number})
                 patch['last_review'] = patch['reviews'][run.stage]
+            # finding_rounds: per reviewer, the rounds in which it reported Critical or Important findings. One
+            # more per card round (last_round keeps a repeat report of the same round from counting twice, as a
+            # required_passes pass does), never fewer; a clean report and an advisory stage leave it alone
+            stage_row = c.row.get('stage') if isinstance(c.row.get('stage'), dict) else {}
+            record = patch['last_review']
+            if (record['critical'] or record['important']) and stage_row.get('advisory') is not True \
+                    and isinstance(run.round, int):
+                counts = dict(note.get('finding_rounds')) if isinstance(note.get('finding_rounds'), dict) else {}
+                mine = counts.get(run.stage or 'evidence')
+                mine = mine if isinstance(mine, dict) else {}
+                if not (isinstance(mine.get('last_round'), int) and mine['last_round'] >= run.round):
+                    counts[run.stage or 'evidence'] = {'count': (mine.get('count') if isinstance(mine.get('count'), int)
+                                                                 else 0) + 1, 'last_round': run.round}
+                    patch['finding_rounds'] = counts
             # A card a person moved out of Blocked still has state blocked in its note; this review is the one
             # the planner asked for, so record the column the card is in, or the planner plans it again
             if note.get('state') == 'blocked' and status != 'blocked' and run.prior in c.states() \
@@ -1597,6 +1611,22 @@ class CardDriver:
         pr = c.pr(c.note().get('pr') if c.row.get('pr') is None else None)
         c.step('worktree.sh', 'create', c.n, branch, worktree)
         c.step('update-branch.sh', c.n, pr, branch, worktree)
+        c.merge_soft(dict(_RESET))
+
+    def _do_land(self, c):
+        # stack-land.sh: exit 3 (the parent has not landed on the default branch yet) and 4 (it set stack.attention
+        # and commented) are answers, not failures; any other non-zero exit counts one failure
+        branch, worktree = c.branch(), c.worktree()
+        fallback = c.note().get('pr') if c.row.get('pr') is None else None
+        pr = '-' if c.row.get('pr') is None and fallback is None else c.pr(fallback)
+        c.step('worktree.sh', 'create', c.n, branch, worktree)
+        result = c.soft('stack-land.sh', c.n, pr, branch, worktree)
+        if result.timed_out:
+            raise _Fail('stack-land.sh timed out')
+        if result.rc in (3, 4):
+            return
+        if result.rc != 0:
+            raise _Fail(_first_line(result.stderr) or 'stack-land.sh exited %d' % result.rc)
         c.merge_soft(dict(_RESET))
 
     def _do_block(self, c):

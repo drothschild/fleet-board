@@ -71,7 +71,7 @@ done
 OLD="$SCRIPT_DIR/test-tick-plan.sh"
 if [ ! -e "$OLD" ]; then
   pass "test-tick-plan.sh holds no scenario, so no scenario runs twice"
-elif sed -n 2p "$OLD" | grep -q '^# fleet-board: aggregate runner' \
+elif sed -n 2p "$OLD" | grep -c '^# fleet-board: aggregate runner' >/dev/null \
     && ! grep -qE '^[[:space:]]*(\.|source)[[:space:]].*tick-plan-lib\.sh' "$OLD" \
     && ! grep -qE '^[[:space:]]*(assert_[a-z_]+|plan|splan|setup_case)[[:space:]]' "$OLD"; then
   pass "test-tick-plan.sh holds no scenario, so no scenario runs twice"

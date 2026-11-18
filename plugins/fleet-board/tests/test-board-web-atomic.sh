@@ -59,7 +59,7 @@ PYEOF
 echo "$OUT" | sed 's/^/    /'
 
 check() {
-  if printf '%s\n' "$OUT" | grep -qx "$2"; then pass "$1"; else fail "$1" "want $2"; fi
+  if printf '%s\n' "$OUT" | grep -cx "$2" >/dev/null; then pass "$1"; else fail "$1" "want $2"; fi
 }
 check "meta.json gets a new inode (renamed into place, not rewritten)" "inode_changed=yes"
 check "meta.json still holds the old content while the new one is written" "old_kept_during_write=yes"

@@ -133,7 +133,7 @@ if [ -s "$REPORT" ] && [ "$(awk '/^## Status/{getline; while($0==""){getline}; p
 else
   fail "stale: Status is findings"
 fi
-if [ -s "$REPORT" ] && awk '/^## Findings/{f=1; next} /^## /{f=0} f' "$REPORT" | grep -q 'docs/config.md'; then
+if [ -s "$REPORT" ] && awk '/^## Findings/{f=1; next} /^## /{f=0} f' "$REPORT" | grep -c 'docs/config.md' >/dev/null; then
   pass "stale: a finding names docs/config.md"
 else
   fail "stale: a finding names docs/config.md"
