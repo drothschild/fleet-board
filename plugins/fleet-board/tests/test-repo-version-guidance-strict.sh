@@ -18,7 +18,7 @@ else
 fi
 
 # Acceptance 2: the configured lint command, run for real, passes a branch leaving manifests alone and flags a one-manifest bump.
-lint=$(sed -n 's/^[[:space:]]*lint:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$ROOT/.fleet-board.yml" | head -1)
+lint=$(sed -n 's/^[[:space:]]*lint:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$ROOT/.fleet-board.example.yml" | head -1)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 R="$T/repo"
 mkdir -p "$R/plugins/fleet-board/tests" "$R/plugins/fleet-board/.claude-plugin" "$R/.claude-plugin"
@@ -31,7 +31,7 @@ g update-ref refs/remotes/origin/main HEAD
 g checkout -q -b card
 echo x > "$R/plugins/fleet-board/change.txt"; g add -A; g commit -qm "change without bump"
 if [ -z "$lint" ]; then
-  bad "no commands.lint in .fleet-board.yml"
+  bad "no commands.lint in .fleet-board.example.yml"
 elif (cd "$R" && bash -c "$lint") >"$T/out" 2>&1; then
   ok "configured lint passes a branch leaving manifests alone"
 else
