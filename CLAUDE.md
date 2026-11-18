@@ -127,6 +127,9 @@ several doing one field each.
   produces. Do not claim a markdown file has unit tests.
 - A test suite that has never failed proves nothing. Prove each suite can fail before
   trusting it.
+- `FLEET_TEST_ONLY=<test name>` runs one test in `test-supervisor-driver.sh`, `-merging.sh`, `-loop.sh` and
+  `-stuck.sh` (a `driver_cases.py` function or a unittest method name; an unknown name runs none). This
+  repo's `commands.test_case` uses it so a reviewer's mutant runs one test, not the whole suite.
 - To run or author a primitive free of the local setup, use `claude -p --bare` with a
   fresh empty `CLAUDE_CONFIG_DIR`. Plain `--bare` still loads installed user plugins.
   Assert on the session's `system/init` event that no user plugin loaded.

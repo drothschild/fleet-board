@@ -5,6 +5,8 @@ plugin_dir=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/supervisor-driver.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$plugin_dir/scripts" python3 "$plugin_dir/fixtures/supervisor/driver_cases.py" "$tmp"
+# FLEET_TEST_ONLY selected one driver_cases test (commands.test_case); the inline cases below are not run
+[ -z "${FLEET_TEST_ONLY:-}" ] || exit 0
 
 # Worktree cleanup after done (card 149): cases that use the driver_cases fixtures.
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$plugin_dir/scripts" python3 - "$plugin_dir" "$tmp" <<'PY'
