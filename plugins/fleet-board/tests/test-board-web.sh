@@ -1833,6 +1833,14 @@ try:
     print("unknown|served")
 except m.ApiError as exc:
     print("unknown|%s" % exc.code)
+outside = os.path.join(os.path.dirname(sess), "elsewhere-2-review-7000-1.jsonl")
+open(outside, "w").write('{"type":"assistant","message":{"content":[{"type":"text","text":"secret"}]}}\n')
+m.supervisor_status = lambda: status(outside)
+try:
+    m.get_transcript({"n": 2, "id": "elsewhere-2-review-7000-1"}, None)
+    print("outside|served")
+except m.ApiError as exc:
+    print("outside|%s" % exc.code)
 m.supervisor_status = lambda: None
 try:
     m.get_transcript({"n": 2, "id": "card-2-review-6000-1"}, None)
@@ -1847,6 +1855,7 @@ rs_line() { printf '%s\n' "$RS_OUT" | grep "^$1|" | head -n1; }
 [ "$(rs_line text)" = "text|yes" ] && pass "its text is the log as read now" || fail "its text is the log as read now" "$RS_OUT"
 [ "$(rs_line other)" = "other|404" ] && pass "another card cannot read a running session of this card" || fail "another card cannot read a running session of this card" "$RS_OUT"
 [ "$(rs_line unknown)" = "unknown|404" ] && pass "an id no running action names is still a 404" || fail "an id no running action names is still a 404" "$RS_OUT"
+[ "$(rs_line outside)" = "outside|404" ] && pass "a running action whose log is outside the sessions directory is a 404" || fail "a running action whose log is outside the sessions directory is a 404" "$RS_OUT"
 [ "$(rs_line stopped)" = "stopped|404" ] && pass "with no supervisor, a session with no ledger line is a 404" || fail "with no supervisor, a session with no ledger line is a 404" "$RS_OUT"
 
 # Card 426: the board page shows a card's repo and lists the configured repos.

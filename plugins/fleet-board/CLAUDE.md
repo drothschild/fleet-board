@@ -403,7 +403,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
     newest first; a log outside the sessions directory is left out. `GET /api/cards/<n>/transcripts/<id>` answers
     the session's rendered log as plain text (`<id>` is the log's file stem). It is 404 `no such session for card <n>: <id>`
     when no ledger line of that card has that stem, and 404 `the log file is missing for session <id>` when the
-    line exists but its file does not. A running session's text is a snapshot of the log as read at that request. The supervisor status carries `log` on each running action (`active[]`), the
+    line exists but its file does not. A running session's text is a snapshot of the log as read at that request: `get_transcript` looks in the ledger first, and only when it has no such session for the card asks the supervisor status for a running action of that card whose `log` has that stem inside the sessions directory. The supervisor status carries `log` on each running action (`active[]`), the
     path of that session's log, or null when it has none; the list reads it to find running sessions. Status is
     `Service.status_view()`; `tests/test-supervisor-ui.sh` feeds real service output
     (`fixtures/supervisor/dump_real_shapes.py`) to the DOM harness so UI and service cannot drift.
