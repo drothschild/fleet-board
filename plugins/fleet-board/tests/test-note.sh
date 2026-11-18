@@ -807,6 +807,26 @@ clear_inputs; run_note merge 12 "$FAKE_GH_DIR/ic-bad3.json"
 assert_exit "ignored-checks: any other state is refused" 1
 
 # ---------------------------------------------------------------------------
+# checks_rerun: the one re-run of a PR head's red checks (planner action rerun_checks)
+setup_case
+set_note_json '{"state":"in_review","pr":34}'
+printf '{"checks_rerun":{"sha":"abc1234000000000000000000000000000000000","checks":["test-suite"],"at":"2026-11-17T00:00:00Z"}}\n' > "$FAKE_GH_DIR/cr.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/cr.json"
+assert_exit "checks-rerun: merge accepts the field" 0
+N="$(block_json "$(posted_body)")"
+assert_eq "checks-rerun: the checks are stored" "$(jq -c '.checks_rerun.checks' <<<"$N" 2>/dev/null)" '["test-suite"]'
+printf '{"checks_rerun":{"sha":"abc1234","checks":["test-suite"],"at":"2026-11-17T00:00:00Z"}}\n' > "$FAKE_GH_DIR/cr-bad.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/cr-bad.json"
+assert_exit "checks-rerun: a sha that is not 40-hex is refused" 1
+assert_stderr_contains "checks-rerun: the refusal names the field" "checks_rerun"
+assert_eq "checks-rerun: a refused merge writes nothing" "$(input_count)" "0"
+setup_case
+set_note_json '{"state":"in_review","pr":34,"checks_rerun":{"sha":"abc1234","checks":["x"],"at":"t"}}'
+clear_inputs; run_note get 12
+assert_stderr_contains "checks-rerun: get warns about an invalid checks_rerun" "checks_rerun"
+assert_stdout_exact "checks-rerun: get treats that note as invalid ({})" "{}"
+
+# ---------------------------------------------------------------------------
 # blocked-from: the state a card was blocked from
 setup_case
 set_note_json '{"state":"blocked","blocked_from":"in_review"}'
