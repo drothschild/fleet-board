@@ -1145,6 +1145,10 @@ class CardDriver:
         if sup.get('allow_api_key') is not True:
             env.pop('ANTHROPIC_API_KEY', None)   # the fleet bills the person's login, not a stray key
         env.setdefault('FLEET_BOARD_RUN_ID', str(self.state.run_id))
+        card_repo = c.row.get('repo')
+        home_repo = (self.config_loader().get('board') or {}).get('repo')
+        if card_repo and str(card_repo).lower() != str(home_repo or '').lower():
+            env['FLEET_BOARD_HOME'] = str(self.root)   # a card of another repo: its board is the home board
         argv = self.roles.command(d, run.prompt, c.config, self.plugin_dir, stage_args=run.stage_args)
         mode = None if run.script else ((c.config.get('headless') or {}).get('permission_mode') or 'auto')
         label = 'card-%d-%s-%d-%d' % (c.n, c.row['action'], int(self.clock() * 1000), run.attempt)
