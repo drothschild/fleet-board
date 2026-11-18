@@ -41,6 +41,8 @@ def resolve(config, candidate):
         return Dispatch('stage-review', None, stage['provider'], stage.get('model'), escalated)
     if action in ('merger', 'after_merge', 'merge_refusal'):
         return _claude('fleet-board:merger', cfg_models.get('merger') or 'sonnet', escalated)
+    if action == 'check_premise':
+        return Dispatch('claude', None, CLAUDE, cfg_models.get('checker') or 'sonnet', False)
     return None
 
 

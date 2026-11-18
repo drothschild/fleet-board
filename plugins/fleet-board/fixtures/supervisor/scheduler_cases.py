@@ -256,7 +256,7 @@ def test_every_planned_action_is_classified():
     expected = {0: ['continue_implementor', 'fix', 'review', 'review_stage'],
                 1: ['start_review', 'unblock', 'update_branch', 'land', 'advance_stage', 'to_human_qa', 'mark_ready',
                     'verify_main', 'finish', 'block', 'file_pending', 'merge', 'after_merge', 'merge_refusal',
-                    'move_to_review'],
+                    'move_to_review', 'check_premise'],
                 2: ['start']}
     for klass, actions in expected.items():
         for action in actions:
@@ -681,6 +681,20 @@ def test_an_after_merge_still_takes_a_provider_slot():
     assert r['admitted'] == [] and r['waits'][0]['reason'] == 'global capacity', r
 
 
+def test_a_check_premise_row_is_admitted_beside_a_start_row_whose_scope_overlaps_it():
+    start = candidate(11, 'start', paths=['src/a.sh'])
+    check = candidate(12, 'check_premise', paths=['src/a.sh'])
+    r = Scheduler(clock=lambda: 0).admit([start, check], limits=LIMITS)
+    assert sorted(x['number'] for x in r['admitted']) == [11, 12], (r['admitted'], r['waits'])
+    r = Scheduler(clock=lambda: 0).admit([check], active=[{'number': 11, 'provider': 'claude', 'paths': ['src/a.sh'],
+                                                           'action': 'start'}], limits=LIMITS)
+    assert [x['number'] for x in r['admitted']] == [12], r['waits']
+    r = Scheduler(clock=lambda: 0).admit([candidate(13, 'start', paths=['src/a.sh'])],
+                                         active=[{'number': 12, 'provider': 'claude', 'paths': ['src/a.sh'],
+                                                  'action': 'check_premise'}], limits=LIMITS)
+    assert [x['number'] for x in r['admitted']] == [13], r['waits']
+
+
 def _repo_row(number, repo, action='start'):
     return dict(candidate(number, action, paths=['src/a.py']), repo=repo)
 
@@ -722,4 +736,5 @@ def test_a_missing_repo_on_a_reservation_means_the_home_repo():
 
 
 if __name__ == '__main__':
+    test_a_check_premise_row_is_admitted_beside_a_start_row_whose_scope_overlaps_it()
     run()

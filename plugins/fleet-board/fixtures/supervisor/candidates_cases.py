@@ -57,7 +57,23 @@ def test_unlisted_script_is_refused(base):
             continue
         raise AssertionError('unlisted script ran: ' + name)
     assert 'tick-plan.sh' in scripts.ALLOWED and 'board-list.sh' in scripts.ALLOWED, scripts.ALLOWED
-    assert len(scripts.ALLOWED) == 20, len(scripts.ALLOWED)
+    assert len(scripts.ALLOWED) == 21, len(scripts.ALLOWED)
+
+
+def test_a_script_run_through_the_runner_sees_the_supervisor_as_its_actor(base):
+    assert os.environ.get('FLEET_BOARD_ACTOR') is None
+    before = os.environ.get('FLEET_BOARD_ACTOR')
+    got = scripts.run_argv(Path(base), ['sh', '-c', 'printf %s "$FLEET_BOARD_ACTOR"'])
+    assert got.rc == 0 and got.stdout == 'supervisor', got
+    spawned = scripts.spawn_argv(Path(base), ['sh', '-c', 'printf %s "$FLEET_BOARD_ACTOR"'])
+    result = None
+    for _ in range(200):
+        result = spawned.poll()
+        if result is not None:
+            break
+        time.sleep(0.05)
+    assert result is not None and result.stdout == 'supervisor', result
+    assert os.environ.get('FLEET_BOARD_ACTOR') == before is None
 
 
 def test_run_captures_output_and_args(base):
