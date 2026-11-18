@@ -271,6 +271,11 @@ assert_jq "reviewed_stages vs reviews: a clean security record at the head still
 R_DECL='{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[{"severity":"Minor","text":"test/x.sh: declared test change"}]}'
 review_note "{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":1,"reviewed_stages":[],"last_review":,"reviews":{"evidence":,"security":{"round":1,"sha":"abc1234","critical":0,"important":0,"stage":"security"}}}"
 assert_jq "Declared-only findings: the fixer is not dispatched (not fix)" "$(card 12 action | sed 's/^/(/; s/$/ != "fix")/')" 'true'
+# The same case with the note built properly: the Declared-only record is the last review and the evidence record
+review_note "{\"state\":\"in_review\",\"branch\":\"fleet/12-add-subtract\",\"pr\":34,\"round\":1,\"reviewed_stages\":[],\"last_review\":$R_DECL,\"reviews\":{\"evidence\":$R_DECL,\"security\":{\"round\":1,\"sha\":\"abc1234\",\"critical\":0,\"important\":0,\"stage\":\"security\"}}}"
+assert_exit "Declared-only note built: exit" 0
+assert_jq "Declared-only note built: a Minor-only review does not dispatch the fixer" "$(card 12 action | sed 's/^/(/; s/$/ != "fix")/')" 'true'
+assert_jq "Declared-only note built: the card merges" "$(card 12 action)" '"merge"'
 
 # ---------------------------------------------------------------------------
 # A clean-reviewed PR whose checks finished red: re-run once, then hand the failure to a fixer
