@@ -73,7 +73,6 @@ CLOSE="$WORK/close.json"
 jq -n --arg h "$PROP_HEAD" '{kind: "close", evidence: [{item: 1, command: "true", output: "ok"}, {item: 2, command: "true", output: "ok"}], head: $h}' > "$CLOSE"
 
 REPO="$(mkrepo r1)"
-MAIN_HEAD="$(git -C "$REPO" rev-parse refs/remotes/origin/main)"
 
 echo "Test: propose"
 N="$(mkcard "$REPO" "rewrite me" blocked)"
@@ -170,7 +169,7 @@ inrepo "$REPO2" bash "$SCRIPTS/board-move.sh" "$M" ready >/dev/null 2>&1
 eq "a person's move to ready: proposal cleared" "$(jq -c .proposal "$(cardf "$REPO2" "$M")")" null
 eq "a person's move to ready: a rejected line" "$(decisions "$REPO2")" '["rejected","rejected"]'
 eq "a person's move to ready: stamp by move" "$(jq -r .premise.by "$(cardf "$REPO2" "$M")")" move
-eq "a person's move to ready: stamp is the default head" "$(jq -r .premise.sha "$(cardf "$REPO2" "$M")")" "$MAIN_HEAD"
+eq "a person's move to ready: stamp is the default head" "$(jq -r .premise.sha "$(cardf "$REPO2" "$M")")" "$(git -C "$REPO2" rev-parse refs/remotes/origin/main)"
 
 K="$(mkcard "$REPO2" "supervisor move" blocked)"
 settle "$REPO2" propose "$K" "$CLOSE" >/dev/null 2>&1
