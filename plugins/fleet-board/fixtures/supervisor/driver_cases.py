@@ -979,7 +979,17 @@ def test_rules_match_the_reporting_skill_table_cell_for_cell(base):
     import re
     briefer = {'role <role> requires ## <section>', 'out of scope entry needs <title> :: <detail>: <entry>'}
     # A rule the driver adds after the table: parse-report.sh emits it, the skill's table does not list it.
-    driver_only = ['status not_reproducible needs no commits since the reviewed head, found <n>']
+    driver_only = ['status not_reproducible needs no commits since the reviewed head, found <n>',
+                   'checker status <s> is not allowed in mode <m>',
+                   'checker report needs ## <section> for status <s>',
+                   '## Card must hold exactly one card number (#<n>)',
+                   '## Proposed scope and ## Proposed acceptance must both be present or both absent',
+                   '## Proposed acceptance has no bullet',
+                   '## Proposed scope names no repository path',
+                   '## Evidence has no entry',
+                   '## Evidence item must be an acceptance item number',
+                   'malformed ## Evidence line (want - <number> :: `<command>` :: <output>): <line>',
+                   'malformed ## Evidence line (want - `<command>` :: <output>): <line>']
     lines = (PLUGIN / 'skills' / 'reporting' / 'SKILL.md').read_text().splitlines()
     start = [i for i, l in enumerate(lines) if l.startswith('| Rejection message')][0]
     rows = []
@@ -2034,6 +2044,193 @@ def test_the_launch_column_stays_ready_while_the_ledger_column_is_in_progress(ba
         wait_for(started)
 
 
+# premise check (card 473) -------------------------------------------------------------------------------
+PREMISE_HEAD = 'c' * 40
+CHECK_PROMPT = PLUGIN / 'scripts' / 'supervisor' / 'defaults' / 'premise-check-prompt.md'
+FAILED_SUFFIX = '; move the card to Ready to start it without a check'
+
+
+def premise_board(base, **kw):
+    b = board_for(base, **kw)
+    b.premise_path = str(b.root / '.fw' / '12-premise_check')
+    b.stubs['worktree.sh'] = lambda *a: (ok(json.dumps({'path': b.premise_path, 'head': PREMISE_HEAD}) + '\n')
+                                         if a[0] == 'premise' else ok())
+    return b
+
+
+def begin_check(b, **kw):
+    kw.setdefault('worktree', None)
+    kw.setdefault('reason', 'ground moved: src/calc.js')
+    return b.driver.begin(candidate('check_premise', **kw))
+
+
+def finish_all(b, started):
+    """Finish the session, and the one re-dispatch a rejected report earns."""
+    outcome = run_role(b, started)
+    while outcome.redispatch:
+        outcome = b.driver.finish(started.action, wait_for(started))
+    return outcome
+
+
+def check_plan(report, **kw):
+    return dict({'report': report, 'post': False}, **kw)
+
+
+def stamps(b):
+    return [c for c in b.calls if c[:2] == ('premise.sh', 'stamp')]
+
+
+def test_check_premise_starts_a_session_in_a_premise_worktree(base):
+    b = premise_board(base)
+    b.plans(check_plan('checker-go'))
+    started = begin_check(b)
+    assert started.kind == 'session' and started.action.role == 'checker', started
+    assert ('worktree.sh', 'premise', '12') in b.calls, b.calls
+    assert not [c for c in b.calls if c[:2] == ('worktree.sh', 'create')], b.calls
+    argv = b.fake_calls(1)[0]['argv']
+    assert None not in argv and '--agent' not in argv, argv
+    assert argv[argv.index('--tools') + 1] == 'Read,Write,Bash,Grep,Glob', argv
+    assert argv.index('--tools') < argv.index('--permission-mode'), argv
+    assert b.card()['state'] == 'ready' and 'board-move.sh' not in b.scripts_called()
+    finish_all(b, started)
+
+
+def test_the_checker_prompt_carries_the_card_and_the_board(base):
+    b = premise_board(base, acceptance=('adds two numbers', 'subtracts them'))
+    b.seed(40, 'in_review', acceptance=('x',))
+    card = b.card(40)
+    card.update(title='Other work', pr_url='https://github.com/acme/toy/pull/9')
+    (b.root / '.fleet-board' / 'cards' / '40.json').write_text(json.dumps(card))
+    b.seed(41, 'backlog', acceptance=('y',))
+    card = b.card(41)
+    card['title'] = 'Idea'
+    (b.root / '.fleet-board' / 'cards' / '41.json').write_text(json.dumps(card))
+    b.plans(check_plan('checker-go'))
+    started = begin_check(b)
+    prompt = b.prompt()
+    for want in ('1. adds two numbers', '2. subtracts them',
+                 '#40 in_review Other work PR https://github.com/acme/toy/pull/9', '#41 backlog Idea',
+                 b.premise_path, CHECK_PROMPT.read_text(), '## Mode\ncheck', 'Add subtract'):
+        assert want in prompt, (want, prompt)
+    finish_all(b, started)
+
+
+def test_go_stamps_the_commit_the_session_saw(base):
+    b = premise_board(base)
+    b.put_note({'action_failures': 2, 'last_action_error': 'older'})
+    b.plans(check_plan('checker-go'))
+    started = begin_check(b)
+    outcome = finish_all(b, started)
+    assert outcome.progressed is True, outcome
+    assert ('premise.sh', 'stamp', '12', '--by', 'check', '--sha', PREMISE_HEAD) in b.calls, b.calls
+    assert b.card()['premise']['sha'] == PREMISE_HEAD and b.card()['premise']['by'] == 'check'
+    note = b.note()
+    assert note['premise_check']['head'] == PREMISE_HEAD and note['premise_check']['verdict'] == 'go', note
+    assert note['premise_check']['at'], note
+    assert note['action_failures'] == 0 and note['last_action_error'] is None, note
+    assert ('worktree.sh', 'remove', '12', b.premise_path) in b.calls, b.calls
+    assert b.card()['state'] == 'ready' and 12 not in b.state.active
+    assert any('## Status' in c for c in b.comments()), 'the driver posts the accepted report'
+
+
+def assert_one_failed_check(b):
+    note = b.note()
+    assert note['action_failures'] == 1, note
+    assert note['last_action_error'].startswith('premise check failed: '), note
+    assert note['last_action_error'].endswith(FAILED_SUFFIX), note
+    assert not stamps(b), b.calls
+    parses = [c for c in b.calls if c[0] == 'parse-report.sh']
+    assert parses and all(c[1:5] == ('--role', 'checker', '--mode', 'check') for c in parses), parses
+    assert ('worktree.sh', 'remove', '12', b.premise_path) in b.calls, b.calls
+    assert b.card()['state'] == 'ready'
+
+
+def test_an_empty_final_reply_counts_one_failure(base):
+    b = premise_board(base)
+    b.plans(check_plan(''), check_plan(''))
+    started = begin_check(b)
+    outcome = finish_all(b, started)
+    assert outcome.progressed is False, outcome
+    assert_one_failed_check(b)
+
+
+def test_a_report_rejected_twice_counts_one_failure(base):
+    b = premise_board(base)
+    b.plans(check_plan('not a report'), check_plan('still not a report'))
+    started = begin_check(b)
+    finish_all(b, started)
+    assert_one_failed_check(b)
+    assert len([c for c in b.calls if c[0] == 'parse-report.sh']) == 2, b.calls
+
+
+def test_the_card_changed_during_the_check_drops_the_verdict(base):
+    b = premise_board(base)
+    b.plans(check_plan('checker-go'))
+    started = begin_check(b)
+    card = b.card()
+    card['acceptance'] = ['something else entirely']
+    (b.root / '.fleet-board' / 'cards' / '12.json').write_text(json.dumps(card))
+    finish_all(b, started)
+    assert not stamps(b) and 'board-move.sh' not in b.scripts_called(), b.calls
+    note = b.note()
+    assert not note.get('action_failures') and note.get('premise_check') is None, note
+    dropped = [e for e in b.state.events if 'premise verdict dropped: card changed' in json.dumps(e)]
+    assert len(dropped) == 1, list(b.state.events)
+    assert not [e for e in b.state.events if e['type'] == 'action_failed'], list(b.state.events)
+    assert ('worktree.sh', 'remove', '12', b.premise_path) in b.calls, b.calls
+    assert 12 not in b.state.active
+
+
+def test_a_new_comment_alone_does_not_drop_the_verdict(base):
+    b = premise_board(base)
+    b.plans(check_plan('checker-go'))
+    started = begin_check(b)
+    note_file = Path(base) / 'comment.txt'
+    note_file.write_text('a person wrote this')
+    assert scripts.run(b.root, 'board-comment.sh', 12, str(note_file), env=b.env).rc == 0
+    finish_all(b, started)
+    assert len(stamps(b)) == 1, b.calls
+    assert not [e for e in b.state.events if 'verdict dropped' in json.dumps(e)], list(b.state.events)
+
+
+FOLLOWUP_GO = """## Status
+go
+
+## Findings
+- none
+
+## For the card
+Every item holds.
+Out of scope:
+- Tidy the readme :: `true` exits 0
+Bugs found:
+- A crash :: repro: `false` :: expected: exit 0 :: observed: exit 1
+
+VERIFIED: `true` -> 1 command ran
+"""
+
+
+def test_follow_up_lines_in_a_checker_report_file_nothing(base):
+    b = premise_board(base)
+    b.plans(check_plan(FOLLOWUP_GO))
+    started = begin_check(b)
+    finish_all(b, started)
+    assert 'file-followups.sh' not in b.scripts_called(), b.calls
+    assert len(stamps(b)) == 1, b.calls
+    assert b.note().get('pending_followups') is None
+
+
+def test_an_unhandled_verdict_is_a_failed_check(base):
+    b = premise_board(base)
+    b.plans(check_plan('checker-needs'))
+    started = begin_check(b)
+    finish_all(b, started)
+    note = b.note()
+    assert note['action_failures'] == 1, note
+    assert note['last_action_error'] == 'premise check failed: verdict needs is not handled yet' + FAILED_SUFFIX, note
+    assert not stamps(b), b.calls
+
+
 HEAD40 = 'abc1234' + '0' * 33
 RED = [{'name': 'test-suite', 'detailsUrl': 'https://github.com/acme/toy/actions/runs/123/job/456'}]
 
@@ -2075,6 +2272,38 @@ def test_checks_failed_hands_the_failure_to_the_fixer_as_an_important_finding(ba
 def test_rerun_checks_and_checks_failed_reserve_no_scope(base):
     from supervisor import scheduler
     assert {'rerun_checks', 'checks_failed'} <= scheduler.SCOPE_FREE_ACTIONS, scheduler.SCOPE_FREE_ACTIONS
+
+
+def _security_report(b, stage, round_, report):
+    out = {'status': 'posted', 'report_file': report_file(b, report), 'parsed': {}, 'provider': 'codex',
+           'model': 'gpt-5', 'input_tokens': 5, 'output_tokens': 6, 'attempts': 1}
+    fake_plugin(b, 0, json.dumps(out))
+    b.put_note({'round': round_})
+    run_role(b, begin(b, 'review_stage', state='in_review', stage=stage, round=round_))
+    return b.note()
+
+
+def test_a_stage_report_with_findings_counts_one_finding_round_per_card_round(base):
+    b, stage = provider_stage_board(base, 0, '')
+    b.put_note({'state': 'in_review', 'stage': None, 'round': 2, 'last_review': LAST_REVIEW,
+                'reviews': {'evidence': LAST_REVIEW}})
+    note = _security_report(b, stage, 2, 'stage-reviewer-findings')
+    assert note['finding_rounds'] == {'security': {'count': 1, 'last_round': 2}}, note.get('finding_rounds')
+    note = _security_report(b, stage, 2, 'stage-reviewer-findings')
+    assert note['finding_rounds']['security'] == {'count': 1, 'last_round': 2}, note.get('finding_rounds')
+    note = _security_report(b, stage, 3, 'stage-reviewer-findings')
+    assert note['finding_rounds']['security'] == {'count': 2, 'last_round': 3}, note.get('finding_rounds')
+    note = _security_report(b, stage, 4, 'stage-reviewer-ok')
+    assert note['finding_rounds']['security'] == {'count': 2, 'last_round': 3}, note.get('finding_rounds')
+
+
+def test_an_advisory_stage_report_with_findings_is_not_counted(base):
+    b, stage = provider_stage_board(base, 0, '')
+    stage = dict(stage, advisory=True, max_rounds=1)
+    b.put_note({'state': 'in_review', 'stage': None, 'round': 2, 'last_review': LAST_REVIEW,
+                'reviews': {'evidence': LAST_REVIEW}})
+    note = _security_report(b, stage, 2, 'stage-reviewer-findings')
+    assert 'security' not in (note.get('finding_rounds') or {}), note.get('finding_rounds')
 
 
 if __name__ == '__main__':

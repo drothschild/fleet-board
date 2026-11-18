@@ -1373,7 +1373,9 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
           # clean merge of main (review-drift.sh); a lookup that failed reads as not covered
           elif $ci_eff == 0 and head_moved($c; $lr) and ($c.drift == null or $c.drift.unreviewed)
             then act($ra; "PR head \($c.pr_info.headRefOid[0:7]) has commits after the round \($round) review at \($lr.sha[0:7]) that are not clean merges of the base; review them before merging")
-          elif $ci_eff > 0 and $round >= $smax
+          # The evidence reviewer counts its own finding rounds (note.finding_rounds.evidence; a note without
+          # the count reads as the card round, the limit in force before this counter); a stage column still reads the card round
+          elif $ci_eff > 0 and (if $c.stage != null then $round else (($n.finding_rounds.evidence.count // $round)) end) >= $smax
             then act("block"; "\($ci) Critical/Important findings survive round \($round) of \($smax)\(if $c.stage != null then " in \($c.stage.name)" else "" end)")
           elif $ci_eff > 0 then act("fix"; "\($ci) Critical/Important findings in round \($round)")
           # Clean (or advisory) and current: a next stage comes before the tail
@@ -1531,8 +1533,17 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
            elif $row.action == "fix" and $row.findings != null then $row
            elif (($evf + $sf) | length) > 0
            then ($evf + $sf) as $all
-                | $row + {action: "fix", stage: null, findings: $all,
-                          reason: "\($all | length) Critical/Important findings from \([$all[].reviewer] | unique | length) reviewer(s) in round \($round)"}
+                # a reviewer with findings blocks the card when its own count of finding rounds has reached its limit
+                | ([$all[].reviewer] | unique
+                   | map(. as $rn
+                         | (if $rn == "evidence" then $max else (first($cfg.review.stages[] | select(.name == $rn)).max_rounds // $max) end) as $lim
+                         | (if $rn == "evidence" then ($n.finding_rounds.evidence.count // $round) else ($n.finding_rounds[$rn].count // 0) end) as $cnt
+                         | select($cnt >= $lim)
+                         | "\($rn): findings after \($cnt) round\(if $cnt == 1 then "" else "s" end) (max_rounds \($lim))")) as $over
+                | if ($over | length) > 0
+                  then $row + {action: "block", stage: null, findings: null, reason: ($over | join("; "))}
+                  else $row + {action: "fix", stage: null, findings: $all,
+                          reason: "\($all | length) Critical/Important findings from \([$all[].reviewer] | unique | length) reviewer(s) in round \($round)"} end
            elif $row.action == "fix" then $row
            else $row + {action: "wait", reason: "routed stage review pending; no stage to plan", stage: null} end)
         elif $row.action == "fix" and ($evf | length) == 0 then $row

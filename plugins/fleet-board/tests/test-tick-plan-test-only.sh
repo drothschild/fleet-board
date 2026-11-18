@@ -41,7 +41,7 @@ fails="$(count_lines "$OUT" '^  FAIL ')"
 if [ "$RC" = 0 ]; then pass "stages: the selected check exits 0"; else fail "stages: the selected check exits 0" "exit $RC: $ERR"; fi
 if [ "$oks" = 1 ]; then pass "stages: exactly one ok line"; else fail "stages: exactly one ok line" "ok lines: $oks"; fi
 if [ "$fails" = 0 ]; then pass "stages: no FAIL line"; else fail "stages: no FAIL line" "FAIL lines: $fails"; fi
-if printf '%s\n' "$OUT" | grep -qF "  ok   $NAME"; then pass "stages: the ok line is the selected check"; else fail "stages: the ok line is the selected check" "$OUT"; fi
+if printf '%s\n' "$OUT" | grep -cF "  ok   $NAME" >/dev/null; then pass "stages: the ok line is the selected check"; else fail "stages: the ok line is the selected check" "$OUT"; fi
 case "$ERR" in *"FLEET_TEST_ONLY=$NAME: 1 test(s) selected"*) pass "stages: stderr says 1 test(s) selected" ;; *) fail "stages: stderr says 1 test(s) selected" "$ERR" ;; esac
 if [ "$SECS" -lt 30 ]; then pass "stages: the filtered run finishes in under 30 seconds"; else fail "stages: the filtered run finishes in under 30 seconds" "took ${SECS}s"; fi
 
@@ -57,7 +57,7 @@ for pair in \
   run_only "$HERE" "$suite" "$name"
   oks="$(count_lines "$OUT" '^  ok ')"
   fails="$(count_lines "$OUT" '^  FAIL ')"
-  if [ "$RC" = 0 ] && [ "$oks" = 1 ] && [ "$fails" = 0 ] && printf '%s\n' "$OUT" | grep -qF "  ok   $name"; then
+  if [ "$RC" = 0 ] && [ "$oks" = 1 ] && [ "$fails" = 0 ] && printf '%s\n' "$OUT" | grep -cF "  ok   $name" >/dev/null; then
     pass "$suite: '$name' runs alone and passes"
   else
     fail "$suite: '$name' runs alone and passes" "exit $RC, ok lines $oks, FAIL lines $fails, stderr: $ERR"
@@ -75,7 +75,7 @@ else
   run_only "$MUT/plugins/fleet-board/tests" test-tick-plan-stages.sh "$NAME"
   oks="$(count_lines "$OUT" '^  ok ')"
   fails="$(count_lines "$OUT" '^  FAIL ')"
-  if [ "$fails" = 1 ] && [ "$oks" = 0 ] && printf '%s\n' "$OUT" | grep -qF "  FAIL $NAME"; then
+  if [ "$fails" = 1 ] && [ "$oks" = 0 ] && printf '%s\n' "$OUT" | grep -cF "  FAIL $NAME" >/dev/null; then
     pass "mutant: exactly one FAIL line, for the selected check"
   else
     fail "mutant: exactly one FAIL line, for the selected check" "FAIL lines $fails, ok lines $oks"

@@ -28,12 +28,11 @@
 #                          branch of the card's own repo (with --bodies, the
 #                          <dir>/<id>.repo file names it). Lines under a
 #                          "## Creates" heading are skipped: they name files
-#                          the card makes. A path named there is not flagged
-#                          anywhere else in that card, nor in a card that depends
-#                          on it, directly or through other cards in the set (the
-#                          heading is matched without regard to case). A path that
-#                          the open PR (pr_url) of a card in the linted card's
-#                          blocked_by adds is not flagged.
+#                          the card makes. The first backticked path on each such
+#                          line counts as present (whole-path match) everywhere in
+#                          that card and in every card that depends on it, directly
+#                          or through other cards, in the set or on the board. A path that the open PR (pr_url) of a
+#                          card in the linted card's blocked_by adds is not flagged.
 #
 # Exit codes: 0 pass, 1 lint failed, 2 usage error, 3 a card could not be read.
 
@@ -56,7 +55,6 @@ WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 LCARDS="" # the card files a board.repo ref resolves to (unset without a config)
 OUT="$WORK/out"; : > "$OUT"
 EDGES="$WORK/edges"; : > "$EDGES"
-EXTDEPS="$WORK/extdeps"; : > "$EXTDEPS" # "<id> <number>": a board card outside the set that <id> depends on
 IDS=()
 
 if [ -n "$BODIES" ]; then
@@ -148,8 +146,6 @@ for id in ${IDS[@]+"${IDS[@]}"}; do
     fi
     if [ -z "$LCARDS" ] || [ ! -f "$LCARDS/$num.json" ]; then
       emit "$id" unresolved-dependency "$tok does not exist"
-    else
-      printf '%s %s\n' "$id" "$num" >> "$EXTDEPS"
     fi
   done < <(if [ -f "$WORK/$id.read" ]; then
              jq -r --arg r "$REPO" '(.blocked_by // [])[] | $r + "#" + tostring' "$WORK/$id.read"
@@ -158,13 +154,6 @@ for id in ${IDS[@]+"${IDS[@]}"}; do
     /^#/ { s = 0 }
     s && /^[-*][ \t]+/ { l = $0; sub(/^[-*][ \t]+/, "", l); sub(/[ \t].*$/, "", l); print l }
   ' "$F"; fi)
-
-done
-
-# missing-file runs in its own pass, after every card's dependency edges are known, so a ## Creates path can be
-# followed through a chain of dependencies
-for id in ${IDS[@]+"${IDS[@]}"}; do
-  F="$WORK/$id.md"
 
   # missing-file: in the card's own repo. A card whose repo differs from the
   # board repo (<dir>/<id>.repo, written by import-plan.sh) is checked on that
@@ -199,38 +188,37 @@ $(jq -r 'select(.state == "OPEN") | .files[]?.path' <<<"$view" 2>/dev/null)"
     [ -n "$DEP_FILES" ] && grep -Fxq -- "$1" <<<"$DEP_FILES"
   }
   if [ "$FILECHECK" -eq 1 ]; then
-    # the paths this card creates, and those any card it depends on, directly or through others, creates:
-    # named under "## Creates" (the heading matched without regard to case), they are not missing wherever
-    # this card mentions them
-    DEPS=""; todo="$id"
-    while [ -n "$todo" ]; do
-      next=""
-      for n in $todo; do
-        for d in $(awk -v n="$n" '$1 == n { print $2 }' "$EDGES"); do
-          case " $DEPS " in *" $d "*) ;; *) DEPS="$DEPS $d"; next="$next $d" ;; esac
-        done
+    # CREATED: the paths this card and every card it depends on (directly or
+    # through others, in the set or on the board) name first on a ## Creates line
+    CREATED="$WORK/created.$id"; : > "$CREATED"
+    seen=" $id "; queue="$id"
+    while [ -n "$queue" ]; do
+      k="${queue%% *}"; case "$queue" in *" "*) queue="${queue#* }" ;; *) queue="" ;; esac
+      if in_set "$k"; then tf="$WORK/$k.md"
+      elif [ -n "$LCARDS" ] && [ -f "$LCARDS/$k.json" ]; then
+        tf="$WORK/ext-$k.md"; jq -r '.body // ""' "$LCARDS/$k.json" > "$tf" 2>/dev/null
+      else continue; fi
+      awk '
+        /^##/ { s = (tolower($0) ~ /^##[ \t]+creates[ \t]*$/); next }
+        s && match($0, /`[^`]+`/) { print substr($0, RSTART + 1, RLENGTH - 2) }
+      ' "$tf" >> "$CREATED"
+      if [ -f "$WORK/$k.read" ]; then
+        deps="$(jq -r '(.blocked_by // [])[] | tostring' "$WORK/$k.read")"
+      elif in_set "$k"; then
+        deps="$(awk '
+          /^##[ \t]+[Dd]epends[ \t]+[Oo]n[ \t]*$/ { s = 1; next }
+          /^#/ { s = 0 }
+          s && /^[-*][ \t]+/ { l = $0; sub(/^[-*][ \t]+/, "", l); sub(/[ \t].*$/, "", l); print l }
+        ' "$tf")"
+      else
+        deps="$(jq -r '(.blocked_by // [])[] | tostring' "$LCARDS/$k.json" 2>/dev/null)"
+      fi
+      for d in $deps; do
+        case "$d" in "$REPO"#[0-9]*) [ -n "$REPO" ] && d="${d#*#}" ;; */*#[0-9]*) continue ;; '#'[0-9]*) d="${d#\#}" ;; esac
+        case "$seen" in *" $d "*) continue ;; esac
+        seen="$seen$d "; queue="$queue $d"; queue="${queue# }"
       done
-      todo="$next"
     done
-    # board cards outside the set that this card, or a card it depends on in the set, depends on, and
-    # theirs in turn (read from the card files, each once)
-    EXTCARDS=""; ext_todo="$(for k in $id $DEPS; do awk -v n="$k" '$1 == n { print $2 }' "$EXTDEPS"; done)"
-    while [ -n "$ext_todo" ]; do
-      ext_next=""
-      for e in $ext_todo; do
-        case " $EXTCARDS " in *" $e "*) continue ;; esac
-        [ -n "$LCARDS" ] && [ -f "$LCARDS/$e.json" ] || continue
-        EXTCARDS="$EXTCARDS $e"
-        ext_next="$ext_next $(jq -r '(.blocked_by // [])[] | tostring' "$LCARDS/$e.json" 2>/dev/null)"
-      done
-      ext_todo="$ext_next"
-    done
-    # only the first backticked span of a line under "## Creates" is a path the card makes
-    CAWK='tolower($0) ~ /^##[ \t]+creates[ \t]*$/ { s = 1; next } /^##/ { s = 0 } s && match($0, /`[^`]+`/) { print substr($0, RSTART + 1, RLENGTH - 2) }'
-    CREATED="$({ for k in $id $DEPS; do
-      [ -f "$WORK/$k.md" ] && awk "$CAWK" "$WORK/$k.md"
-    done
-    for e in $EXTCARDS; do jq -r '.body // ""' "$LCARDS/$e.json" 2>/dev/null | awk "$CAWK"; done; })"
     inc=0
     while IFS= read -r line; do
       case "$line" in
@@ -241,8 +229,8 @@ $(jq -r 'select(.state == "OPEN") | .files[]?.path' <<<"$view" 2>/dev/null)"
         p="${span#\`}"; p="${p%\`}"
         grep -Eq '^[A-Za-z0-9_.@-][A-Za-z0-9_./@-]*/[A-Za-z0-9_.-]+\.[A-Za-z0-9]+$' <<<"$p" || continue
         case "$p" in http*|*..*) continue ;; esac
+        grep -Fxq -- "$p" "$CREATED" && continue
         rbranch || continue
-        [ -n "$CREATED" ] && grep -Fxq -- "$p" <<<"$CREATED" && continue
         dep_pr_adds "$p" && continue
         where="$rbr"; [ "$remote" -eq 1 ] && where="$rbr of $crepo"
         if [ "$remote" -eq 1 ]; then

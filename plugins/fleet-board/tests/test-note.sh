@@ -916,6 +916,36 @@ run_note get 12; assert_stdout_exact "reviews: a non-hex sha rejected" "{}"
 set_note_json '{"reviews":["security"]}'
 run_note get 12; assert_stdout_exact "reviews: a list rejected" "{}"
 
+# finding_rounds: per reviewer, the rounds with findings {count, last_round}
+set_note_json '{"finding_rounds":{"evidence":{"count":2,"last_round":3},"security":{"count":1,"last_round":2}}}'
+run_note get 12
+assert_eq "finding_rounds: kept per reviewer" "$(jq -c '.finding_rounds | keys' <<<"$LAST_OUT")" '["evidence","security"]'
+assert_eq "finding_rounds: count and last_round kept" "$(jq -c '.finding_rounds.security' <<<"$LAST_OUT")" '{"count":1,"last_round":2}'
+for bad in '{"security":{"count":"1","last_round":2}}' '{"security":{"count":-1,"last_round":2}}' '{"security":{"count":1.5,"last_round":2}}' \
+           '{"security":{"count":1,"last_round":"2"}}' '{"security":{"count":1,"last_round":-2}}' '{"Bad Key":{"count":1,"last_round":2}}'; do
+  set_note_json "{\"finding_rounds\":$bad}"
+  run_note get 12; assert_stdout_exact "finding_rounds: $bad rejected" "{}"
+  assert_stderr_contains "finding_rounds: $bad names the field" "ignoring invalid manager note on #12: finding_rounds"
+done
+
+# note.sh put: finding_rounds of that shape is accepted; a non-integer or negative count or last_round is refused
+fr_put() { # <label> <expected exit> <expected posted> <count> <last_round>
+  setup_case
+  jq -cn --argjson c "$4" --argjson l "$5" '{state:"in_review",round:2,finding_rounds:{security:{count:$c,last_round:$l}}}' > "$FAKE_GH_DIR/fr.json"
+  clear_inputs
+  run_note put 12 "$FAKE_GH_DIR/fr.json"
+  assert_exit "finding_rounds put $1: exit" "$2"
+  assert_eq "finding_rounds put $1: bodies posted" "$(input_count)" "$3"
+}
+fr_put "a valid entry is accepted" 0 1 1 2
+fr_put "a zero count is accepted" 0 1 0 0
+fr_put "a negative count is refused" 1 0 -1 2
+assert_stderr_contains "finding_rounds put: negative count names the field" "finding_rounds"
+fr_put "a fractional count is refused" 1 0 1.5 2
+fr_put "a string count is refused" 1 0 '"1"' 2
+fr_put "a negative last_round is refused" 1 0 1 -2
+fr_put "a string last_round is refused" 1 0 1 '"2"'
+
 # review_passes: per stage, the pass records at the current head (pass 1 to 5, a 40-hex sha, integer counts)
 SHA40=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 rp_put() { # <label> <expected exit> <expected posted> <pass> <sha> <critical> <important>

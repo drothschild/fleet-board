@@ -195,9 +195,9 @@ no_builtin_stages() {
   nl="$(printf '\nx')"; nl="${nl%x}"
   dis="$(printf '    - name: documentation\n      enabled: false\n    - name: blast_radius\n      enabled: false')"
   if [ "${TP_KEEP_BUILTINS:-}" = 1 ]; then printf '%s' "$x"; return; fi
-  if ! printf '%s\n' "$x" | grep -q '^review:'; then
+  if ! printf '%s\n' "$x" | grep -c '^review:' >/dev/null; then
     printf '%s%sreview:\n  stages:\n%s' "$x" "${x:+$nl}" "$dis"
-  elif printf '%s\n' "$x" | grep -q '^  stages:'; then
+  elif printf '%s\n' "$x" | grep -c '^  stages:' >/dev/null; then
     DIS="$dis" awk '{print} /^  stages:/ {print ENVIRON["DIS"]}' <<<"$x"
   else
     DIS="$dis" awk '{print} /^review:/ {print "  stages:"; print ENVIRON["DIS"]}' <<<"$x"

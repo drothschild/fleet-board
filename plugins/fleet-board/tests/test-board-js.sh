@@ -19,6 +19,8 @@ check "board.js has no regex lookbehind" bash -c "! grep -q '(?<' '$JS'"
 check "node --check passes on board.js" node --check "$JS"
 check "board.css has no card-now rule" bash -c "! grep -q 'card-now' '$CSS'"
 
+check "index.html has a labelled Stacked on drawer field with a parent link" bash -c "grep -q 'id=\"dr-stack-h\" class=\"dr-h\">Stacked on<' '$DIR/../scripts/board-web/static/index.html' && grep -q 'id=\"dr-stack-link\"' '$DIR/../scripts/board-web/static/index.html'"
+
 node "$DIR/board-js-harness.js" "$JS" || FAIL=$((FAIL + 1))
 
 # Column header reviewer line: a second node script with its own small DOM shim.
@@ -92,6 +94,109 @@ setImmediate(function () {
 NODE
 node "$HDR_JS" "$JS" || FAIL=$((FAIL + 1))
 rm -f "$HDR_JS"
+
+# Drawer: stacked on #<parent>, and the attention text.
+STK_JS="$(mktemp)"
+cat >"$STK_JS" <<'NODE'
+"use strict";
+const assert = require("node:assert/strict");
+const path = require("node:path");
+const loadBoard = require(path.join(process.env.DIR, "board-interaction-harness.js"));
+const JS = path.join(process.env.DIR, "../scripts/board-web/static/board.js");
+const states = [{key: "backlog", name: "Backlog"}, {key: "ready", name: "Ready"}];
+const mk = (number, extra) => ({number, title: "Card " + number, body: "", labels: [], comments: [],
+  acceptance: [], blocked_by: [], blocks: [], state: "ready", known: true, ...extra});
+const allText = n => (n.textContent || "") + (n.children || []).map(allText).join("");
+let fails = 0;
+async function test(name, fn) { try { await fn(); console.log("ok - " + name); } catch (e) { fails++; console.log("FAIL - " + name + ": " + e.message); } }
+async function drawerText(card) {
+  const h = loadBoard(JS, async (url) => {
+    let data = {}, m;
+    if (url === "/api/board") data = {repo: "acme/toy", states, cards: [{...card}], run: {state: "idle"}};
+    else if ((m = /^\/api\/cards\/(\d+)$/.exec(url))) data = {...card};
+    return {ok: true, status: 200, json: async () => data};
+  });
+  await h.flush();
+  await h.ctx.openDrawer(card.number);
+  await h.flush();
+  const el = h.$("dr-stack");
+  return el && !el.hidden ? allText(el) : "";
+}
+(async () => {
+  await test("the drawer renders stacked on #11 for stacked_on 11", async () => {
+    const t = await drawerText(mk(1, {stacked_on: 11, stack_attention: null}));
+    assert.ok(t.includes("stacked on #11"), t);
+  });
+  await test("the drawer Stacked on link opens the parent's drawer", async () => {
+    const urls = [];
+    const card = mk(1, {stacked_on: 11, stack_attention: null});
+    const h = loadBoard(JS, async (url) => {
+      urls.push(url);
+      let data = {}, m;
+      if (url === "/api/board") data = {repo: "acme/toy", states, cards: [{...card}, mk(11, {})], run: {state: "idle"}};
+      else if ((m = /^\/api\/cards\/(\d+)$/.exec(url))) data = m[1] === "11" ? mk(11, {}) : {...card};
+      return {ok: true, status: 200, json: async () => data};
+    });
+    await h.flush();
+    await h.ctx.openDrawer(1);
+    await h.flush();
+    const link = h.$("dr-stack-link");
+    assert.equal(link.textContent.trim(), "#11");
+    const before = urls.filter(u => u === "/api/cards/11").length;
+    for (const fn of link.listeners.click || []) fn({preventDefault() {}, stopPropagation() {}, currentTarget: link, target: link});
+    await h.flush();
+    assert.ok(urls.filter(u => u === "/api/cards/11").length > before, urls.join(","));
+  });
+  await test("the drawer renders nothing for stacked_on null", async () => {
+    const t = await drawerText(mk(1, {stacked_on: null, stack_attention: null}));
+    assert.equal(t, "");
+  });
+  await test("the drawer shows the attention text when stack_attention is set", async () => {
+    const t = await drawerText(mk(1, {stacked_on: 11, stack_attention: "parent closed unmerged"}));
+    assert.ok(t.includes("parent closed unmerged"), t);
+  });
+  const tile = (extra) => {
+    const h = loadBoard(JS, async () => ({ok: true, status: 200, json: async () => ({})}));
+    return h.ctx.renderCard(mk(2, {blocked: true, blocked_by: [11], open_blockers: [11], ...extra}), "acme/toy");
+  };
+  const lines = li => li.all().filter(n => n.classList.contains("card-meta"));
+  await test("A card tile for a card with stacked_on set shows a stacked on #N line, same class as blocked by, not the amber one", async () => {
+    const li = tile({stacked_on: 11, stack_attention: null});
+    const l = lines(li).filter(n => n.textContent.trim() === "stacked on #11");
+    assert.equal(l.length, 1, lines(li).map(n => n.textContent).join("|"));
+    assert.ok(l[0].classList.contains("stacked-on"));
+    assert.ok(!l[0].classList.contains("blocked-by"));
+  });
+  await test("A stacked card's tile also has a left-edge marker class, stacked", async () => {
+    assert.ok(tile({stacked_on: 11}).classList.contains("stacked"));
+  });
+  await test("When stack_attention is set, the tile shows landing needs attention: <reason> in the amber attention style", async () => {
+    const li = tile({stacked_on: 11, stack_attention: "parent closed unmerged"});
+    const l = lines(li).filter(n => n.textContent.trim() === "landing needs attention: parent closed unmerged");
+    assert.equal(l.length, 1, lines(li).map(n => n.textContent).join("|"));
+    assert.ok(l[0].classList.contains("stack-attention"));
+  });
+  await test("A card with stacked_on null shows none of this on its tile", async () => {
+    const li = tile({stacked_on: null, stack_attention: null});
+    assert.ok(!li.classList.contains("stacked"));
+    assert.ok(!lines(li).some(n => /stacked on|landing needs/.test(n.textContent)));
+  });
+  await test("The tile's blocked by line is not shown when the only open blocker is the stack parent", async () => {
+    const li = tile({stacked_on: 11});
+    assert.ok(!lines(li).some(n => n.classList.contains("blocked-by")));
+    assert.ok(!li.classList.contains("blocked"));
+  });
+  await test("The tile's blocked by line is still shown for any other open blocker", async () => {
+    const li = tile({stacked_on: 11, blocked_by: [11, 12], open_blockers: [11, 12]});
+    const l = lines(li).filter(n => n.classList.contains("blocked-by"));
+    assert.equal(l.length, 1);
+    assert.equal(l[0].textContent.trim(), "blocked by #12");
+  });
+  process.exit(fails ? 1 : 0);
+})();
+NODE
+DIR="$DIR" node "$STK_JS" || FAIL=$((FAIL + 1))
+rm -f "$STK_JS"
 
 echo "$FAIL failing groups"
 [ "$FAIL" -eq 0 ]

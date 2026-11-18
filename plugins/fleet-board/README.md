@@ -192,6 +192,24 @@ Moving the card out of Blocked sets `"merger": null`, `"merge_refusal": null` an
 
 A `PreToolUse` hook blocks any agent command that would move a card out of Human QA, merge a PR under `merge.policy: human`, or mark a card Ready without acceptance items. It does nothing in repos without `.fleet-board.yml`. It is a text check, so it has blind spots and some false positives; [docs/gates.md](docs/gates.md) lists them, along with how fleet-board behaves alongside other plugins. Branch protection on GitHub remains the backstop for merges.
 
+## Stacked pull requests
+
+Stacking lets a card that depends on one card still in review start now, instead of waiting for that parent to merge. It is off by default: set `stacking.enabled: true` to turn it on (see [docs/config.md](docs/config.md)); with it off nothing behaves differently.
+
+- A child starts when its one unmet dependency is in review. Its branch follows the parent's branch.
+- Its pull request stays a draft and targets the parent's branch until the parent merges. Then the PR is retargeted to the default branch (`origin/HEAD`, else `origin/main`) with one bridge merge commit; nothing is rebased or force-pushed.
+- The person's check of a card (Human QA) happens after landing, on the default branch.
+- Landing needs git 2.40 or later (`git merge-tree --write-tree`); an older git stops the landing for a person.
+- `status` shows `stacked on #<parent>` on the card's line, and the board page shows it in the card's drawer.
+
+Three cases stop for a person. The card's line then adds `landing needs attention: <reason>`:
+
+1. The parent was closed unmerged.
+2. The child followed commits that never merged (the parent's head is not what was squashed into the default branch).
+3. A conflict while landing the bridge merge.
+
+To clear a stop, fix the cause (reopen or replace the parent, or resolve the conflict in the card's worktree), then clear the flag with `note.sh merge <n> '{"stack": {...}}'`, writing the card's `stack` object again with `"attention": null`, or set `"stack": null` to make the card an ordinary one.
+
 ## Review quality
 
 The reviewer catches 6 of 6 seeded defect classes at least 2 of 3 times (opus, `review.mutation` on), measured by a harness in `tests/eval/` on defects such as an off-by-one the tests miss, a weakened assertion and a mocked-away bug. The method, the exact commands, and the results table (measured catch rate per defect class, with and without `review.mutation`, per model, plus cost per run) are in [docs/reviewer-eval.md](docs/reviewer-eval.md).

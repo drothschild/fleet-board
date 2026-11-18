@@ -439,7 +439,7 @@ assert_eq "local escape-words: only the PR file lookup and the PR comment reache
 assert_eq "local escape-words: the PR comment reached gh once" "$(calls_starting pr comment)" 1
 assert_eq "local escape-words: the PR file list was read once" "$(calls_starting pr view)" 1
 
-if grep -F 'main is red' "$DOCS" | sed 's/.*main is red//; s/\. .*//' | grep -qF 'Backlog'; then fail "docs: no sentence puts the main is red card in Backlog" "Backlog follows main is red"; else pass "docs: no sentence puts the main is red card in Backlog"; fi
+if grep -F 'main is red' "$DOCS" | sed 's/.*main is red//; s/\. .*//' | grep -cF 'Backlog' >/dev/null; then fail "docs: no sentence puts the main is red card in Backlog" "Backlog follows main is red"; else pass "docs: no sentence puts the main is red card in Backlog"; fi
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

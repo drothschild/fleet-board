@@ -29,7 +29,7 @@ workflow_problems() {
   grep -qiE 'brew|homebrew' "$wf" && echo "workflow uses Homebrew"
   # any bash path other than exactly /bin/bash
   grep -oE '[A-Za-z0-9_./~$-]*/bash([^A-Za-z0-9_-]|$)' "$wf" \
-    | sed -E 's/[^A-Za-z0-9_]$//' | grep -vx '/bin/bash' | grep -q . \
+    | sed -E 's/[^A-Za-z0-9_]$//' | grep -vx '/bin/bash' | grep -c . >/dev/null \
     && echo "workflow uses a bash path outside /bin/bash"
   grep -q '/bin/bash' "$wf" || echo "workflow does not select /bin/bash"
   # the glob must cover test-clean-room.sh
@@ -84,10 +84,10 @@ else
   out="$(bash "$RUNNER" "$FIX/test-*.sh" 2>&1)"; rc=$?
   [ "$rc" -ne 0 ] && pass "runner exits non-zero when a suite fails" \
     || fail "runner exited 0 despite a failing suite"
-  printf '%s\n' "$out" | grep -q 'test-pass.sh.*PASS' \
+  printf '%s\n' "$out" | grep -c 'test-pass.sh.*PASS' >/dev/null \
     && pass "runner prints passing suite name and result" \
     || fail "runner output lacks 'test-pass.sh ... PASS': $out"
-  printf '%s\n' "$out" | grep -q 'test-fail.sh.*FAIL' \
+  printf '%s\n' "$out" | grep -c 'test-fail.sh.*FAIL' >/dev/null \
     && pass "runner prints failing suite name and result" \
     || fail "runner output lacks 'test-fail.sh ... FAIL': $out"
   rm "$FIX/test-fail.sh"
@@ -98,7 +98,7 @@ fi
 
 # 3. Badge in both READMEs within the first five lines.
 for r in "${ROOT}/README.md" "${ROOT}/plugins/fleet-board/README.md"; do
-  if head -5 "$r" | grep -qE '!\[[^]]*\]\([^)]*tests\.yml[^)]*\)'; then
+  if head -5 "$r" | grep -cE '!\[[^]]*\]\([^)]*tests\.yml[^)]*\)' >/dev/null; then
     pass "tests.yml badge in first 5 lines of ${r#"$ROOT"/}"
   else fail "no tests.yml badge in first 5 lines of ${r#"$ROOT"/}"; fi
 done
