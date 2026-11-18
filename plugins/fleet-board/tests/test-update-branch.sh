@@ -496,7 +496,7 @@ real_scripts() { # a copy of scripts/ with note.sh and board-comment.sh logging 
   printf '#!/usr/bin/env bash\n[ "$1" = get ] && { printf "%%s\\n" "${RG_NOTE_JSON:-null}"; exit 0; }\nprintf "note %%s %%s\\n" "$1" "$(cat "$3")" >> "$RG_LOG"\nexit "${RG_NOTE_RC:-0}"\n' > "$RG_SCRIPTS/note.sh"
   printf '#!/usr/bin/env bash\nprintf "comment %%s\\n" "$1" >> "$RG_LOG"\n' > "$RG_SCRIPTS/board-comment.sh"
   mkdir -p "$RG_SCRIPTS/.bin"
-  printf '#!/usr/bin/env bash\nprintf "gh %%s\\n" "$*" >> "${RG_LOG:-/dev/null}"\necho main\n' > "$RG_SCRIPTS/.bin/gh"
+  printf '#!/usr/bin/env bash\nprintf "gh %%s\\n" "$*" >> "${RG_LOG:-/dev/null}"\n[ "$1 $2" = "pr edit" ] && exit "${RG_GH_EDIT_RC:-0}"\necho "${RG_GH_BASE:-main}"\n' > "$RG_SCRIPTS/.bin/gh"
   chmod +x "$RG_SCRIPTS/.bin/gh"
 }
 rg_plugin() { printf '{\n  "name": "%s",\n  "version": "%s",\n  "description": "d"\n}\n' "$2" "$3" > "$1"; }
@@ -853,6 +853,34 @@ RG_NOTE_JSON="$STACK_NOTE"; export RG_NOTE_JSON
 real_run
 assert_exit "stacked, PR targets main: exit 0" 0
 assert_eq "stacked, PR targets main: the PR is retargeted to the parent branch" "$(grep -c '^gh pr edit 34 --repo acme/toy --base fleet/11-parent$' "$RG_LOG")" 1
+assert_eq "stacked, PR targets main: the update records the parent branch as its base" "$(grep -cE '"base": ?"fleet/11-parent"' "$RG_LOG")" 1
+
+# A stacked card whose PR already targets its parent branch is not edited again
+real_setup
+rg_parent src/parent.txt "from the parent"
+RG_NOTE_JSON="$STACK_NOTE" RG_GH_BASE=fleet/11-parent; export RG_NOTE_JSON RG_GH_BASE
+real_run
+assert_exit "stacked, PR already targets the parent: exit 0" 0
+assert_eq "stacked, PR already targets the parent: no pr edit" "$(grep -c '^gh pr edit' "$RG_LOG")" 0
+unset RG_GH_BASE
+
+# A failed retarget stops the run before any merge
+real_setup
+rg_parent src/parent.txt "from the parent"
+RG_NOTE_JSON="$STACK_NOTE" RG_GH_EDIT_RC=1; export RG_NOTE_JSON RG_GH_EDIT_RC
+BEFORE_SHA="$(rg_remote)"
+real_run
+assert_exit "stacked, retarget fails: exit 1" 1
+assert_eq "stacked, retarget fails: the error says so" "$(printf '%s' "$LAST_ERR" | grep -c 'cannot retarget PR #34 to its parent branch fleet/11-parent')" 1
+assert_eq "stacked, retarget fails: the remote is unchanged" "$(rg_remote)" "$BEFORE_SHA"
+unset RG_GH_EDIT_RC
+
+# The merge lane (--lane-bump) never retargets: merge-reviewed.sh checks the base before it bumps
+real_setup
+rg_parent src/parent.txt "from the parent"
+RG_NOTE_JSON="$STACK_NOTE"; export RG_NOTE_JSON
+(cd "$RG/wt" && PATH="$RG_SCRIPTS/.bin:$ORIG_PATH" bash "$RG_SCRIPTS/update-branch.sh" 12 34 fleet/12-x "$RG/wt" --lane-bump patch --bump-paths '["plugins/**"]') >/dev/null 2>&1
+assert_eq "stacked, merge lane: no pr edit" "$(grep -c '^gh pr edit' "$RG_LOG")" 0
 
 real_setup
 RG_NOTE_JSON='{}'; export RG_NOTE_JSON
