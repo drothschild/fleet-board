@@ -1214,7 +1214,7 @@ class PlannedActionsRun(LoopCase):
         found = self.until(event, what='a not_admitted event for card 13')
         self.assertEqual(found[0]['payload'].get('action'), 'fix')
         self.assertEqual(found[0]['payload'].get('reason'), 'global capacity')
-        self.sup.request_stop('now')
+        self.sup.request_stop('cancel')
         self.finished()
 
 
