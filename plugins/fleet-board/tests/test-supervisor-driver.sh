@@ -290,7 +290,7 @@ def launched_env(b, key='sk-test-key-436', **row):
 
 
 def case_a_session_for_a_card_of_another_repo_has_fleet_board_home_set_to_the_home_root(sub):
-    b = dc.board_for(sub)
+    b, _ = other_board(sub)   # the card's repo is listed in board.repos, as the supervisor requires
     env = launched_env(b, repo='acme/other')
     assert env.get('FLEET_BOARD_HOME') == str(b.root), (env.get('FLEET_BOARD_HOME'), str(b.root))
 
