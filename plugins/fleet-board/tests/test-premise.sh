@@ -272,5 +272,38 @@ inrepo "$REPO" bash "$SCRIPTS/premise.sh" add-dep "$N" 99999 >/dev/null 2>&1
 eq "add-dep of a missing card: exit 2" "$?" 2
 eq "add-dep refused: blocked_by unchanged" "$(jq -c .blocked_by "$f")" "[$M,$D]"
 
+echo "Test: premise.sh apply-draft and set-followup"
+N="$(mkcard "$REPO" "drafted follow-up")"
+f="$REPO/.fleet-board/cards/$N.json"
+jq '.followup = {draft: "pending", kind: "bug", entry: {title: "t", repro: "r", expected: "e", observed: "o"}, from: 7}' "$f" > "$f.t" && mv "$f.t" "$f"
+seed "$REPO" "$N" create
+STAMP_BEFORE="$(jq -c .premise "$f")"
+printf '{"why":"The stamp is lost on a move.","scope":"- `src/draft.js`: the change","acceptance":["first drafted item","second drafted item"]}\n' > "$WORK/draft.json"
+inrepo "$REPO" bash "$SCRIPTS/premise.sh" apply-draft "$N" "$WORK/draft.json" >/dev/null 2>&1
+eq "apply-draft: exit 0" "$?" 0
+eq "apply-draft: the body holds the Why section" "$(jq -r .body "$f" | grep -c '^## Why$')" 1
+eq "apply-draft: the Why text is written" "$(jq -r .body "$f" | grep -c '^The stamp is lost on a move\.$')" 1
+eq "apply-draft: the body holds the Scope section with the scope" "$(jq -r .body "$f" | awk '/^## Scope$/{s=1;next} /^## /{s=0} s' | grep -c 'src/draft.js')" 1
+eq "apply-draft: the acceptance is replaced" "$(jq -c .acceptance "$f")" '["first drafted item","second drafted item"]'
+eq "apply-draft: followup.draft is done" "$(jq -r .followup.draft "$f")" done
+eq "apply-draft: the rest of the followup record is kept" "$(jq -c '.followup | {kind, from}' "$f")" '{"kind":"bug","from":7}'
+eq "apply-draft: the stamp is left alone" "$(jq -c .premise "$f")" "$STAMP_BEFORE"
+printf '{"why":"w","scope":"- `src/a.js`","acceptance":"not a list"}\n' > "$WORK/draft-bad.json"
+inrepo "$REPO" bash "$SCRIPTS/premise.sh" apply-draft "$N" "$WORK/draft-bad.json" >/dev/null 2>&1
+eq "apply-draft: an acceptance that is not a list exits 2" "$?" 2
+eq "apply-draft: a refused file changes nothing" "$(jq -c .acceptance "$f")" '["first drafted item","second drafted item"]'
+
+M="$(mkcard "$REPO" "follow-up to settle")"
+g="$REPO/.fleet-board/cards/$M.json"
+jq '.followup = {draft: "pending", kind: "bug", entry: {title: "t"}, from: 7}' "$g" > "$g.t" && mv "$g.t" "$g"
+STAMP_M="$(jq -c .premise "$g")"
+inrepo "$REPO" bash "$SCRIPTS/premise.sh" set-followup "$M" failed >/dev/null 2>&1
+eq "set-followup failed: exit 0" "$?" 0
+eq "set-followup failed: sets the draft value" "$(jq -r .followup.draft "$g")" failed
+inrepo "$REPO" bash "$SCRIPTS/premise.sh" set-followup "$M" nonsense >/dev/null 2>&1
+eq "set-followup nonsense: exit 2" "$?" 2
+eq "set-followup nonsense: the draft value is unchanged" "$(jq -r .followup.draft "$g")" failed
+eq "set-followup: the stamp is left alone" "$(jq -c .premise "$g")" "$STAMP_M"
+
 printf '\npassed: %s  failed: %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

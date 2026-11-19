@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# create.sh <title> <body-file> [--label L]... [--state S] [--acceptance-file F] [--blocked-by N]... [--repo R]
+# create.sh <title> <body-file> [--label L]... [--state S] [--acceptance-file F] [--blocked-by N]... [--repo R] [--followup-file F]
 # A body that carries "## Acceptance" / "## Depends on" sections is split into
 # the card fields; --acceptance-file and --blocked-by, when given, win over it.
 set -uo pipefail
@@ -14,17 +14,26 @@ blocked=()
 STATE="${FB_CREATE_STATE:-backlog}"
 ACC_FILE=""
 REPO=""
+FU_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --label) labels+=("$2"); shift 2 ;;
     --state) STATE="$2"; shift 2 ;;
     --acceptance-file) ACC_FILE="$2"; shift 2 ;;
     --blocked-by) blocked+=("$2"); shift 2 ;;
+    --followup-file) [ $# -ge 2 ] || fb_die 2 "create.sh: --followup-file needs a value"; FU_FILE="$2"; shift 2 ;;
     --repo) [ $# -ge 2 ] || fb_die 2 "create.sh: --repo needs a value"; REPO="$2"; shift 2 ;;
     *) fb_die 2 "create.sh: unknown argument: $1" ;;
   esac
 done
 [ -z "$ACC_FILE" ] || [ -f "$ACC_FILE" ] || fb_die 2 "file not found: $ACC_FILE"
+# the follow-up record a card filed by a role carries; it must be one JSON object
+FOLLOWUP=null
+if [ -n "$FU_FILE" ]; then
+  [ -f "$FU_FILE" ] || fb_die 2 "file not found: $FU_FILE"
+  FOLLOWUP="$(jq -c 'if type == "object" then . else error("not an object") end' "$FU_FILE" 2>/dev/null)" \
+    || fb_die 2 "$FU_FILE does not hold one JSON object"
+fi
 
 fl_require_store
 fl_check_repo "$REPO"
@@ -64,10 +73,11 @@ LABELS_JSON="$(printf '%s\n' ${labels[@]+"${labels[@]}"} | jq -R . | jq -sc 'map
 jq -n --argjson n "$N" --arg t "$TITLE" --rawfile b "$BODYTMP" \
   --arg s "$STATE" --argjson l "$LABELS_JSON" --arg now "$(fl_now)" \
   --argjson acc "$ACC" --argjson blk "$BLOCKED" --arg repo "$REPO" \
-  --argjson prem "$(fl_premise_json create)" \
+  --argjson prem "$(fl_premise_json create)" --argjson fu "$FOLLOWUP" \
   '{number: $n, title: $t, body: $b, acceptance: $acc, blocked_by: $blk, pr_url: null, pr_url_source: null,
     state: $s, labels: $l, next_comment_id: 1, comments: [], created_at: $now, premise: $prem}
-    + (if $repo == "" then {} else {repo: $repo} end)' > "$TMP" \
+    + (if $repo == "" then {} else {repo: $repo} end)
+    + (if $fu == null then {} else {followup: $fu} end)' > "$TMP" \
   || fb_die 1 "cannot build card #$N"
 fl_write_card "$N" "$TMP" || exit 1
 jq -nc --argjson n "$N" --arg u "$(fl_url "$N")" '{number: $n, url: $u}'

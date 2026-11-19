@@ -317,13 +317,31 @@ class Lifecycle(unittest.TestCase):
         snap = self.state.snapshot()
         self.assertEqual(set(snap), {'run_id', 'mode', 'pause_reason', 'revision', 'active',
                                      'lane', 'provider_health', 'holds', 'run_tokens', 'run_budget',
-                                     'events', 'attention', 'queue', 'limits', 'last_plan'})
+                                     'events', 'attention', 'queue', 'limits', 'last_plan',
+                                     'followups_auto_ready'})
         self.assertEqual(snap['run_id'], 'run1')
         self.assertEqual(snap['active'][1]['card'], 1)
         self.assertEqual(snap['lane']['card'], 1)
         self.assertNotIn('session', snap['active'][1])
         import json
         json.dumps(snap)
+
+    def test_take_auto_ready_counts_up_to_the_cap_and_the_snapshot_shows_it(self):
+        self.assertEqual(self.state.followups_auto_ready, 0)
+        self.assertEqual(State('run2').followups_auto_ready, 0)
+        self.assertEqual([self.state.take_auto_ready(2) for _ in range(3)], [True, True, False])
+        self.assertEqual(self.state.followups_auto_ready, 2)
+        self.assertEqual(self.state.snapshot()['followups_auto_ready'], {'count': 2, 'cap': 2})
+
+    def test_take_auto_ready_with_a_cap_of_zero_never_admits(self):
+        self.assertFalse(self.state.take_auto_ready(0))
+        self.assertEqual(self.state.followups_auto_ready, 0)
+
+    def test_a_new_state_starts_the_auto_ready_count_at_zero(self):
+        self.state.take_auto_ready(5)
+        fresh = State('run2')
+        self.assertEqual(fresh.followups_auto_ready, 0)
+        self.assertEqual(fresh.snapshot()['followups_auto_ready']['count'], 0)
 
     def test_a_running_role_action_in_the_status_reply_has_a_log_field_holding_the_session_jsonl_path(self):
         act = action(1)
