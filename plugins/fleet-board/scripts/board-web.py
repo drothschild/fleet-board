@@ -991,7 +991,7 @@ def research_turn_text(result: str, error: str) -> str:
 
 
 def finish_planner_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Path, started_at: str = None):
-    cfg, _ = ctx()
+    cfg = None  # loaded only when a research round runs: a plain turn needs no config
     ledger = []  # (action, stream path, started_at): recorded last, once the conversation is free
     rounds = 0
     while True:
@@ -1017,6 +1017,8 @@ def finish_planner_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Pat
             n = len(turns)
         rounds += 1
         try:
+            if cfg is None:
+                cfg, _ = ctx()
             r_out, r_err = pdir / ("research-%d.jsonl" % n), pdir / ("research-%d.err" % n)
             r_started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             result, error = run_research(question, cfg, r_out, r_err, (cfg.get("limits") or {}).get("max_turns") or 200)
