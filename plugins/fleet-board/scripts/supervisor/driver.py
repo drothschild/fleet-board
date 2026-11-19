@@ -28,7 +28,7 @@ import time
 from collections import namedtuple
 from pathlib import Path
 
-from . import markers as _markers, paths, resolver, roles as _roles, scopes, scripts, usage as _usage
+from . import markers as _markers, paths, repos as _repos, resolver, roles as _roles, scopes, scripts, usage as _usage
 from .state import Action, ledger_column
 
 
@@ -324,6 +324,7 @@ class _Ctx:
         self.attempts_before = None   # implementor_attempts before this dispatch charged one
         self._files = 0
         self._released = False
+        self._checkout = None
         self.reached_done = False
 
     # values -------------------------------------------------------------------------------------------
@@ -368,8 +369,32 @@ class _Ctx:
             raise _Invalid('stack', value)
         return value
 
+    def foreign(self):
+        """The card's repo when it names one other than the home repo, else None."""
+        card_repo = self.row.get('repo')
+        home = (self.config.get('board') or {}).get('repo')
+        if card_repo and str(card_repo).lower() != str(home or '').lower():
+            return card_repo
+        return None
+
+    def checkout(self):
+        """(root, config) of the card's repo: the home root and config, or the listed checkout's."""
+        if self._checkout is None:
+            repo = self.foreign()
+            if repo is None:
+                self._checkout = (str(self.d.root), self.config)
+            else:
+                def load(root):
+                    from .loop import config_loader
+                    return config_loader(root, run=self.d.run)()
+                found = _repos.resolve(self.d.root, self.config, repo, load)
+                if found.error:
+                    raise _Fail(found.error)
+                self._checkout = (found.root, found.config)
+        return self._checkout
+
     def repo(self):
-        value = (self.config.get('board') or {}).get('repo')
+        value = self.foreign() or (self.config.get('board') or {}).get('repo')
         if not isinstance(value, str) or not _REPO.fullmatch(value) or value.startswith('-'):
             raise _Invalid('repo', value)
         return value
@@ -391,6 +416,10 @@ class _Ctx:
             text = str(arg)
             if text.startswith('-') and text not in _FLAGS:
                 raise _Invalid('argument', text)
+        if name == 'worktree.sh' and self.foreign():
+            root = self.checkout()[0]   # a card of another repo: its worktrees are made in that checkout
+            kw['env'] = dict(kw.get('env') or {}, FLEET_ROOT=root)
+            return self.d.run(root, name, *args, **kw)
         return self.d.run(self.d.root, name, *args, **kw)
 
     def step(self, name, *args, **kw):
@@ -996,7 +1025,7 @@ class CardDriver:
         card = self._read_card(c)
         inputs = {'number': c.n, 'title': card.get('title'), 'body': card.get('body'),
                   'acceptance': ''.join('- %s\n' % a for a in card.get('acceptance') or []) or 'none',
-                  'config': json.dumps(c.config, indent=2, sort_keys=True), 'scripts': str(self.plugin_dir / 'scripts')}
+                  'config': json.dumps(c.checkout()[1], indent=2, sort_keys=True), 'scripts': str(self.plugin_dir / 'scripts')}
         if role in ('implementor', 'reviewer', 'fixer'):
             inputs['open_cards'] = self._open_cards(c)
         if role == 'implementor':
