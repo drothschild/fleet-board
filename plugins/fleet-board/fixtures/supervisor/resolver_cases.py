@@ -67,6 +67,15 @@ def test_merger_actions_run_the_merger_agent_with_models_merger():
         assert resolver.provider_for(STRING_CFG, cand(action)) == 'claude', action
 
 
+def test_check_premise_runs_a_claude_session_with_no_agent_on_models_checker():
+    cfg = {'models': dict(STRING_CFG['models'], checker='sonnet')}
+    d = resolver.resolve(cfg, cand('check_premise'))
+    assert d == Dispatch('claude', None, 'claude', 'sonnet', False), d
+    cfg = {'models': dict(STRING_CFG['models'], checker='opus')}
+    assert resolver.resolve(cfg, cand('check_premise')).model == 'opus'
+    assert resolver.provider_for(cfg, cand('check_premise')) == 'claude'
+
+
 def test_escalated_round_uses_the_escalation_model():
     models = {'implementor': 'opus', 'reviewer': 'opus', 'fixer': 'opus'}
     d = resolver.resolve(STRING_CFG, cand('fix', models, escalated=True))

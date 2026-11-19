@@ -510,6 +510,9 @@ rp_case old "$OLD40" "[$(rp_rec "$OLD40" 1),$(rp_rec "$OLD40" 2),$(rp_rec "$OLD4
 rp_plan none
 assert_exit "required_passes none: exit" 0
 assert_jq "required_passes: a stage with required_passes 3 and no pass at the head plans three review_stage rows, passes 1, 2 and 3" "$SEC_ROWS" '[1,2,3]'
+# The supervisor admits from --candidates rows; the driver records review_passes from each row's pass
+TICK="$RPT"; setup_case rp-none "$RP_YAML"; run_check "$SCRIPT" --candidates; TICK="$TICK_REAL"
+assert_jq "required_passes: the --candidates review_stage rows carry passes 1, 2 and 3" '[.candidates[] | select(.number == 12 and .action == "review_stage" and .stage.name == "security") | .pass]' '[1,2,3]'
 rp_plan two
 assert_jq "required_passes: clean passes 1 and 2 at the head plan one review_stage row with pass 3" "$SEC_ROWS" '[3]'
 assert_jq "required_passes: two clean passes of three do not plan merge" '[.cards[] | select(.number == 12 and .action == "merge")] | length' '0'

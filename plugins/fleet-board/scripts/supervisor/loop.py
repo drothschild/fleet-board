@@ -65,6 +65,7 @@ class Supervisor:
     def __init__(self, root, *, config_loader, state, driver, scheduler, fetch=candidates.fetch,
                  fetch_card=candidates.fetch_card, clock=time.time, mono=time.monotonic, run=scripts.run, merge_lane=None, ignored=None):
         self.root = Path(root)
+        self._claim_ancestors = {}   # card -> the cards it is stacked on (a stacked child's ancestors)
         self._claim_repo = {}   # card -> the repo its admitted row named; state keeps paths only
         self.config_loader = config_loader
         self.state = state
@@ -583,12 +584,30 @@ class Supervisor:
             self._last_attention = attention
             if attention:
                 self.state.event('attention', cards=[{'number': n, 'reason': r} for n, r in attention])
+        self._trace_unadmitted(rows, result, limit_waits)
         for row in result['admitted']:
             # A begin can be slow: apply a pause that arrived meanwhile before launching the next row.
             self._drain_commands()
             if self.state.mode != 'running' or self._stop_mode:
                 break
             self._begin(row)
+
+    def _trace_unadmitted(self, rows, result, limit_waits):
+        """A planned role or script action that was not admitted this cycle leaves a `not_admitted` event naming the
+        card, the action and the reason (once per change), so an ATTENTION badge is never the only trace."""
+        actions = {r.get('number'): r.get('action') for r in rows}
+        now = {}
+        for w in result['waits'] + limit_waits:
+            if w.get('reason') != ACTIVE_CLAIM_REASON:
+                now[w.get('number')] = w.get('reason')
+        for a in result['attention']:
+            now[a.get('number')] = a.get('reason')
+        before = getattr(self, '_last_unadmitted', {})
+        for number, reason in now.items():
+            action = actions.get(number)
+            if action and before.get(number) != (action, reason):
+                self.state.event('not_admitted', card=number, action=action, reason=_clean(reason))
+        self._last_unadmitted = {n: (actions.get(n), r) for n, r in now.items()}
 
     def _pass_done(self, began):
         """A board-wide pass just ended: record it for the status, and hold the next one back for the longer of
@@ -768,10 +787,12 @@ class Supervisor:
     def _active_claims(self):
         """The running actions as the scheduler sees them; `action` lets a read-only one leave scope free."""
         claims = [{'number': a.card, 'provider': a.provider, 'paths': list(a.paths), 'action': a.action,
-                   'stage': a.stage}
+                   'stage': a.stage, **({'pass': a.review_pass} if a.review_pass is not None else {})}
                   for a in self.state.all_actions()]
         for claim in claims:
             self._with_repo(claim, claim['number'])
+            if self._claim_ancestors.get(claim['number']):
+                claim['ancestors'] = list(self._claim_ancestors[claim['number']])
         return claims
 
     def _reservations(self):
@@ -779,6 +800,8 @@ class Supervisor:
         held = [{'card': card, 'paths': list(paths)} for card, paths in list(self.state.reservations.items())]
         for item in held:
             self._with_repo(item, item['card'])
+            if self._claim_ancestors.get(item['card']):
+                item['ancestors'] = list(self._claim_ancestors[item['card']])
         return held
 
     def _with_repo(self, claim, card):
@@ -821,8 +844,12 @@ class Supervisor:
             exempt = tuple(a for a in ancestors if isinstance(a, int)) if isinstance(ancestors, list) else ()
             # only a stacked child passes `exempt`: every other call is the one it always was
             repos = dict(repo=row.get('repo'), home_repo=self._repo())
-            held = self.state.reserve(number, scope, ignore=ignore, exempt=exempt, **repos) if exempt \
+            held = self.state.reserve(number, scope, ignore=ignore, exempt=exempt, ancestors=exempt, **repos) if exempt \
                 else self.state.reserve(number, scope, ignore=ignore, **repos)
+            if exempt:
+                self._claim_ancestors[number] = list(exempt)
+            else:
+                self._claim_ancestors.pop(number, None)
             if held is not None:
                 return
             reserved = True

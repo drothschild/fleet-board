@@ -807,14 +807,22 @@ EOF
   if [ "$(tr '\n' ',' < "$FAKE_CREATE_LOG" 2>/dev/null)" = "y,m," ]; then pass "embed_docs false sends m"; else fail "embed_docs false sends m" "stdin: $(tr '\n' ',' < "$FAKE_CREATE_LOG" 2>/dev/null)"; fi
   rm -f "$FAKE_CLAUDE_DIR/fixture"
 
-  # FLEET_BOARD_PLUGIN_DIR adds --plugin-dir to the session's argv; without it there is none.
-  if ! grep -q -- '--plugin-dir' "$FAKE_CLAUDE_DIR/args.log"; then pass "no --plugin-dir without FLEET_BOARD_PLUGIN_DIR"; else fail "no --plugin-dir without FLEET_BOARD_PLUGIN_DIR" "args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
+  # The session loads the plugin the page itself runs (--plugin-dir <the plugin root of the page's scripts>), so the
+  # skill's script path is the one the allow rule names; a session that loaded another install was denied its dry run
+  # (card 501). FLEET_BOARD_PLUGIN_DIR overrides it.
+  PLUGIN_ROOT_OF_SCRIPTS="$(dirname "$SCRIPTS")"
+  # args.log holds one line per session so far: each has exactly one --plugin-dir, and it is that root
+  if [ "$(grep -c . "$FAKE_CLAUDE_DIR/args.log")" = "$(grep -o -- '--plugin-dir [^ ]*' "$FAKE_CLAUDE_DIR/args.log" | grep -c .)" ] \
+     && [ "$(grep -o -- '--plugin-dir [^ ]*' "$FAKE_CLAUDE_DIR/args.log" | sort -u)" = "--plugin-dir $PLUGIN_ROOT_OF_SCRIPTS" ]; then pass "without FLEET_BOARD_PLUGIN_DIR every session gets exactly one --plugin-dir, the plugin root of the page's scripts"; else fail "without FLEET_BOARD_PLUGIN_DIR every session gets exactly one --plugin-dir, the plugin root of the page's scripts" "want $PLUGIN_ROOT_OF_SCRIPTS; args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
+  if grep -qxF -- "--plugin-dir" "$TMP/logs/web/acme-toy/imports/fixed/session.argv" 2>/dev/null && grep -qxF -- "$PLUGIN_ROOT_OF_SCRIPTS" "$TMP/logs/web/acme-toy/imports/fixed/session.argv"; then pass "session.argv records the --plugin-dir"; else fail "session.argv records the --plugin-dir" "file: $(cat "$TMP/logs/web/acme-toy/imports/fixed/session.argv" 2>/dev/null)"; fi
+  if grep -q -- "--plugin-dir $PLUGIN_ROOT_OF_SCRIPTS .*/fleet-board:import-plan" "$FAKE_CLAUDE_DIR/args.log"; then pass "--plugin-dir comes before the prompt"; else fail "--plugin-dir comes before the prompt" "args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
   : > "$FAKE_CLAUDE_DIR/args.log"
   stop_server
   export FLEET_BOARD_TEST_IMPORT_ID=fixed7
   FLEET_BOARD_PLUGIN_DIR=/x start_server "$REPO"
   api POST /api/import '{"plan":"x","status":"backlog"}'; assert_code 200
   wait_for 'api GET /api/import/fixed7; body_is .state ready'
+  if [ "$(grep -c . "$FAKE_CLAUDE_DIR/args.log")" = 1 ] && [ "$(grep -o -- '--plugin-dir [^ ]*' "$FAKE_CLAUDE_DIR/args.log" | tr '\n' '|')" = "--plugin-dir /x|" ]; then pass "FLEET_BOARD_PLUGIN_DIR=/x replaces the default: exactly one --plugin-dir, /x"; else fail "FLEET_BOARD_PLUGIN_DIR=/x replaces the default: exactly one --plugin-dir, /x" "args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
   if grep -q -- '--plugin-dir /x ' "$FAKE_CLAUDE_DIR/args.log"; then pass "FLEET_BOARD_PLUGIN_DIR=/x adds --plugin-dir /x to the session argv"; else fail "FLEET_BOARD_PLUGIN_DIR=/x adds --plugin-dir /x to the session argv" "args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
 
   # A session outliving a server restart is still running, then ready.
@@ -1634,9 +1642,9 @@ import web_cases as wc  # pops the temp dir off sys.argv, as web_cases does when
 
 class BoardReviewers(wc.SupervisorWebContract):
 
-    def write_review_card(self, n, state, reviews, round_=2):
+    def write_review_card(self, n, state, reviews, round_=2, extra=None):
         fence = "`" * 3
-        note = {"round": round_, "pr": 41, "reviews": reviews}
+        note = dict({"round": round_, "pr": 41, "reviews": reviews}, **(extra or {}))
         body = "<!-- fleet-board:manager-note -->\n%sjson\n%s\n%s\n" % (fence, json.dumps(note), fence)
         (self.repo / ".fleet-board" / "cards" / ("%d.json" % n)).write_text(json.dumps(
             {"number": n, "title": "card %d" % n, "state": state, "labels": [], "body": "",
@@ -1664,6 +1672,26 @@ class BoardReviewers(wc.SupervisorWebContract):
         self.assertEqual(got["perf"]["status"], "pending")
         self.assertEqual((got["perf"]["passes"], got["perf"]["required_passes"]), (0, 1))
         self.assertEqual(by_n[2].get("reviewers"), [])
+
+    def test_board_in_review_card_counts_the_clean_pass_records_at_the_head(self):
+        self.config.write_text(
+            "board:\n  repo: acme/toy\nreview:\n  stages:\n"
+            "    - name: security\n      agent: reviewer\n      label: review-security\n      required_passes: 3\n", encoding="utf-8")
+        head = "a" * 40
+        other = "b" * 40
+        rec = lambda i, sha, crit=0: {"pass": i, "round": 2, "sha": sha, "critical": crit, "important": 0}
+        self.write_review_card(1, "in_review", {"security": {"round": 2, "sha": head, "critical": 0, "important": 0, "pass": 2}},
+                               extra={"review_passes": {"security": [rec(1, head), rec(2, head), rec(3, other)]}})
+        self.write_review_card(2, "in_review", {"security": {"round": 2, "sha": head, "critical": 1, "important": 0, "pass": 3}},
+                               extra={"review_passes": {"security": [rec(1, head), rec(2, head), rec(3, head, 1)]}})
+        self.start_web()
+        code, body = self.http("GET", "/api/board")
+        self.assertEqual(code, 200, body)
+        by_n = {c["number"]: c for c in body["cards"]}
+        sec = lambda n: [r for r in by_n[n]["reviewers"] if r["name"] == "security"][0]
+        self.assertEqual({k: sec(1)[k] for k in ("status", "passes", "required_passes")},
+                         {"status": "pending", "passes": 2, "required_passes": 3})
+        self.assertEqual((sec(2)["status"], sec(2)["passes"]), ("findings", 2))
 
 
 names = [n for n in dir(BoardReviewers) if n.startswith("test_board_in_review")]
@@ -1800,6 +1828,71 @@ rt_line() { printf '%s\n' "$RT_OUT" | grep "^$1|" | head -n1; }
 [ "$(rt_line first)" = "first|card-2-fix-5000-1|True" ] && pass "while a supervisor runs, the card's running session appears first, marked running" || fail "while a supervisor runs, the card's running session appears first, marked running" "$RT_OUT"
 [ "$(rt_line later)" = "later|False" ] && pass "ledger sessions are not marked running" || fail "ledger sessions are not marked running" "$RT_OUT"
 [ "$(rt_line dups)" = "dups|1" ] && pass "a session that has ended and reached the ledger is listed once, not twice" || fail "a session that has ended and reached the ledger is listed once, not twice" "$RT_OUT"
+
+# Card 481: a session the list marks running can be opened; its log is read as a snapshot (no ledger line yet).
+echo "Case: a running session's transcript is served, not a 404"
+RS_LOG_DIR="$TMP/logs"; mkdir -p "$RS_LOG_DIR/sessions"
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"still working on it"}]}}' > "$RS_LOG_DIR/sessions/card-2-review-6000-1.jsonl"
+RS_OUT="$(SCRIPTS="$SCRIPTS" RT_REPO="$REPO" SESS="$RS_LOG_DIR/sessions" FLEET_BOARD_LOG_DIR="$RS_LOG_DIR" python3 -I - <<'PYEOF'
+import importlib.util, os
+spec = importlib.util.spec_from_file_location("board_web", os.path.join(os.environ["SCRIPTS"], "board-web.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.APP.update(root=os.environ["RT_REPO"], scripts=os.environ["SCRIPTS"])
+sess = os.environ["SESS"]
+def status(log):
+    return {"phase": "running", "desired_mode": "running", "pid": 1,
+            "active": [{"card": 2, "action": "review", "role": "reviewer", "log": log}]}
+m.supervisor_status = lambda: status(sess + "/card-2-review-6000-1.jsonl")
+listed = [x["id"] for x in m.get_transcripts({"n": 2}, None)[1] if x.get("running")]
+print("listed|%s" % ",".join(listed))
+try:
+    code, body = m.get_transcript({"n": 2, "id": "card-2-review-6000-1"}, None)
+    print("code|%s" % code)
+    print("text|%s" % ("yes" if "still working on it" in str(body) else "no"))
+except m.ApiError as exc:
+    print("code|%s" % exc.code)
+try:
+    m.get_transcript({"n": 1, "id": "card-2-review-6000-1"}, None)
+    print("other|served")
+except m.ApiError as exc:
+    print("other|%s" % exc.code)
+try:
+    m.get_transcript({"n": 2, "id": "card-2-review-9999-1"}, None)
+    print("unknown|served")
+except m.ApiError as exc:
+    print("unknown|%s" % exc.code)
+for odd in ({"active": 7}, {"active": [None, 5, {"card": 2, "log": None}, {"card": 2, "log": 9}]}, ["not", "a", "dict"]):
+    m.supervisor_status = lambda odd=odd: odd
+    try:
+        m.get_transcript({"n": 2, "id": "card-2-review-6000-1"}, None)
+        print("odd|served")
+    except m.ApiError as exc:
+        print("odd|%s" % exc.code)
+outside = os.path.join(os.path.dirname(sess), "elsewhere-2-review-7000-1.jsonl")
+open(outside, "w").write('{"type":"assistant","message":{"content":[{"type":"text","text":"secret"}]}}\n')
+m.supervisor_status = lambda: status(outside)
+try:
+    m.get_transcript({"n": 2, "id": "elsewhere-2-review-7000-1"}, None)
+    print("outside|served")
+except m.ApiError as exc:
+    print("outside|%s" % exc.code)
+m.supervisor_status = lambda: None
+try:
+    m.get_transcript({"n": 2, "id": "card-2-review-6000-1"}, None)
+    print("stopped|served")
+except m.ApiError as exc:
+    print("stopped|%s" % exc.code)
+PYEOF
+)"
+rs_line() { printf '%s\n' "$RS_OUT" | grep "^$1|" | head -n1; }
+[ "$(rs_line listed)" = "listed|card-2-review-6000-1" ] && pass "the list marks the running session" || fail "the list marks the running session" "$RS_OUT"
+[ "$(rs_line code)" = "code|200" ] && pass "a session the list marks running is served with 200" || fail "a session the list marks running is served with 200" "$RS_OUT"
+[ "$(rs_line text)" = "text|yes" ] && pass "its text is the log as read now" || fail "its text is the log as read now" "$RS_OUT"
+[ "$(rs_line other)" = "other|404" ] && pass "another card cannot read a running session of this card" || fail "another card cannot read a running session of this card" "$RS_OUT"
+[ "$(rs_line unknown)" = "unknown|404" ] && pass "an id no running action names is still a 404" || fail "an id no running action names is still a 404" "$RS_OUT"
+[ "$(printf '%s\n' "$RS_OUT" | grep -c '^odd|404$')" = 3 ] && pass "a malformed supervisor status or a null/non-string log is a 404, never a 500" || fail "a malformed supervisor status or a null/non-string log is a 404, never a 500" "$RS_OUT"
+[ "$(rs_line outside)" = "outside|404" ] && pass "a running action whose log is outside the sessions directory is a 404" || fail "a running action whose log is outside the sessions directory is a 404" "$RS_OUT"
+[ "$(rs_line stopped)" = "stopped|404" ] && pass "with no supervisor, a session with no ledger line is a 404" || fail "with no supervisor, a session with no ledger line is a 404" "$RS_OUT"
 
 # Card 426: the board page shows a card's repo and lists the configured repos.
 echo "Case: /api/board card summaries carry repo and the reply lists repos from config"
@@ -1947,6 +2040,53 @@ assert_body "detail payload: stacked_on is 11 for a stacked card" '.stacked_on' 
 assert_body "detail payload: stack_attention for a stacked card" '.stack_attention' 'parent closed unmerged'
 api GET /api/cards/2
 assert_body "detail payload: stacked_on is null for an unstacked card" '.stacked_on|tojson' null
+stop_server
+
+# --- premise proposal: payload keys and the three premise routes ---
+PR_REPO="$(new_repo "$LOCAL_YML")"
+mkdir -p "$PR_REPO/.fleet-board/cards" "$PR_REPO/.fleet-board/active"
+echo 10 > "$PR_REPO/.fleet-board/next"
+PR_HEAD="0123456789abcdef0123456789abcdef01234567"
+REPO="$PR_REPO" seed_card 1 blocked "Rewrite me" "b"
+jq --arg h "$PR_HEAD" '.proposal = {kind: "rewrite", scope: "- src/a.sh", acceptance: ["a works"], summary: "tighten", head: $h, at: "2026-01-01T00:00:00Z"}' "$PR_REPO/.fleet-board/cards/1.json" > "$TMP/pr1.json" && mv "$TMP/pr1.json" "$PR_REPO/.fleet-board/cards/1.json"
+REPO="$PR_REPO" seed_card 2 blocked "Already built" "b"
+jq --arg h "$PR_HEAD" '.proposal = {kind: "close", evidence: [{item: 1, command: "ls", output: "x"}], head: $h, at: "2026-01-01T00:00:00Z"}' "$PR_REPO/.fleet-board/cards/2.json" > "$TMP/pr2.json" && mv "$TMP/pr2.json" "$PR_REPO/.fleet-board/cards/2.json"
+REPO="$PR_REPO" seed_card 3 blocked "Malformed proposal" "b"
+jq '.proposal = {kind: "rewrite", scope: 7}' "$PR_REPO/.fleet-board/cards/3.json" > "$TMP/pr3.json" && mv "$TMP/pr3.json" "$PR_REPO/.fleet-board/cards/3.json"
+REPO="$PR_REPO" seed_card 4 ready "No proposal" "b"
+PR_SCRIPTS="$TMP/pr-scripts"
+cp -R "$SCRIPTS" "$PR_SCRIPTS"
+PR_LOG="$TMP/premise-calls.log"
+: > "$PR_LOG"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nif [ "$2" = 7 ]; then echo "card #7 has no close proposal to confirm" >&2; exit 1; fi\nexit 0\n' "$PR_LOG" > "$PR_SCRIPTS/premise-settle.sh"
+SERVER_PY="$PR_SCRIPTS/board-web.py" SCRIPTS="$PR_SCRIPTS" start_server "$PR_REPO"
+api GET /api/cards/1
+assert_body "GET /api/cards/<n> carries the rewrite proposal" '.proposal.kind' rewrite
+assert_body "GET /api/cards/<n> carries premise (null when unset)" 'has("premise")' true
+api GET /api/cards/2
+assert_body "GET /api/cards/<n> carries the close proposal" '.proposal.kind' close
+api GET /api/cards/3
+assert_body "a card with a malformed proposal reports proposal null" '.proposal|tojson' null
+api GET /api/cards/4
+assert_body "a card with no proposal reports proposal null" '.proposal|tojson' null
+api GET /api/board
+assert_body "board summary proposal_kind is rewrite" '.cards[]|select(.number==1)|.proposal_kind' rewrite
+assert_body "board summary proposal_kind is close" '.cards[]|select(.number==2)|.proposal_kind' close
+assert_body "board summary proposal_kind is null for a malformed proposal" '.cards[]|select(.number==3)|.proposal_kind|tojson' null
+assert_body "board summary proposal_kind is null for no proposal" '.cards[]|select(.number==4)|.proposal_kind|tojson' null
+api POST /api/cards/1/premise/approve '{}'
+assert_code 200
+api POST /api/cards/2/premise/confirm '{}'
+assert_code 200
+api POST /api/cards/1/premise/reject '{}'
+assert_code 200
+if [ "$(cat "$PR_LOG")" = "$(printf 'approve 1\nconfirm 2\nreject 1')" ]; then pass "each premise route runs its premise-settle.sh verb once"; else fail "each premise route runs its premise-settle.sh verb once" "log: $(cat "$PR_LOG")"; fi
+REPO="$PR_REPO" seed_card 7 blocked "Settle fails" "b"
+api POST /api/cards/7/premise/confirm '{}'
+assert_code 409
+assert_body "a premise verb that exits non-zero gives its stderr in the 409" '.error' '*has no close proposal to confirm*'
+api POST /api/cards/99/premise/approve '{}'
+assert_code 404
 stop_server
 
 echo ""

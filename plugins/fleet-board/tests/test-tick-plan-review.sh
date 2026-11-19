@@ -267,6 +267,15 @@ assert_jq "reviewed_stages vs reviews: a stage in reviewed_stages with a Critica
 assert_jq "reviewed_stages vs reviews: the card is fixed for security's finding, not merged (fix)" "$(card 12 action)" '"fix"'
 review_note "{\"state\":\"in_review\",\"branch\":\"fleet/12-add-subtract\",\"pr\":34,\"round\":1,\"reviewed_stages\":[],\"last_review\":$R_CLEAN,\"reviews\":{\"evidence\":$R_CLEAN,\"security\":{\"round\":1,\"sha\":\"abc1234\",\"critical\":0,\"important\":0,\"stage\":\"security\"}}}"
 assert_jq "reviewed_stages vs reviews: a clean security record at the head still merges" "$(card 12 action)" '"merge"'
+# The fixer is not dispatched for a card whose only open findings are Declared test changes ([Minor])
+R_DECL='{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[{"severity":"Minor","text":"test/x.sh: declared test change"}]}'
+review_note "{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":1,"reviewed_stages":[],"last_review":,"reviews":{"evidence":,"security":{"round":1,"sha":"abc1234","critical":0,"important":0,"stage":"security"}}}"
+assert_jq "Declared-only findings: the fixer is not dispatched (not fix)" "$(card 12 action | sed 's/^/(/; s/$/ != "fix")/')" 'true'
+# The same case with the note built properly: the Declared-only record is the last review and the evidence record
+review_note "{\"state\":\"in_review\",\"branch\":\"fleet/12-add-subtract\",\"pr\":34,\"round\":1,\"reviewed_stages\":[],\"last_review\":$R_DECL,\"reviews\":{\"evidence\":$R_DECL,\"security\":{\"round\":1,\"sha\":\"abc1234\",\"critical\":0,\"important\":0,\"stage\":\"security\"}}}"
+assert_exit "Declared-only note built: exit" 0
+assert_jq "Declared-only note built: a Minor-only review does not dispatch the fixer" "$(card 12 action | sed 's/^/(/; s/$/ != "fix")/')" 'true'
+assert_jq "Declared-only note built: the card merges" "$(card 12 action)" '"merge"'
 
 # ---------------------------------------------------------------------------
 # A clean-reviewed PR whose checks finished red: re-run once, then hand the failure to a fixer
@@ -282,6 +291,19 @@ plan in-review-red-rerun-same "$AUTO"
 assert_jq "red checks: checks_rerun at the PR head plans checks_failed" "$(card 12 action)" '"checks_failed"'
 assert_jq "red checks: the checks_failed reason" "$(card 12 reason)" \
   '"PR #34 checks still red at abc1234 after a re-run (test-suite)"'
+
+# The supervisor admits from --candidates rows, so a red-check row there must carry the red checks the
+# driver re-runs or reports (a row without them failed every rerun_checks with "invalid red_checks: None")
+candidates() { setup_case "$@"; run_check "$SCRIPT" --candidates; }
+crow() { printf '(.candidates[] | select(.number == %d)).%s' "$1" "$2"; }
+candidates in-review-red-first "$AUTO"
+assert_exit "red checks: --candidates exit" 0
+assert_jq "red checks: the --candidates row plans rerun_checks" "$(crow 12 action)" '"rerun_checks"'
+assert_jq "red checks: the --candidates rerun_checks row carries the red check's name" "[$(crow 12 red_checks)[]?.name]" '["test-suite"]'
+assert_jq "red checks: the --candidates rerun_checks row carries the red check's details URL" "[$(crow 12 red_checks)[]? | has(\"detailsUrl\")]" '[true]'
+candidates in-review-red-rerun-same "$AUTO"
+assert_jq "red checks: the --candidates row plans checks_failed" "$(crow 12 action)" '"checks_failed"'
+assert_jq "red checks: the --candidates checks_failed row carries the red check's name" "[$(crow 12 red_checks)[]?.name]" '["test-suite"]'
 
 plan in-review-red-rerun-older "$AUTO"
 assert_jq "red checks: checks_rerun naming an older head plans rerun_checks again" "$(card 12 action)" '"rerun_checks"'

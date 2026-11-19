@@ -496,7 +496,7 @@ real_scripts() { # a copy of scripts/ with note.sh and board-comment.sh logging 
   printf '#!/usr/bin/env bash\n[ "$1" = get ] && { printf "%%s\\n" "${RG_NOTE_JSON:-null}"; exit 0; }\nprintf "note %%s %%s\\n" "$1" "$(cat "$3")" >> "$RG_LOG"\nexit "${RG_NOTE_RC:-0}"\n' > "$RG_SCRIPTS/note.sh"
   printf '#!/usr/bin/env bash\nprintf "comment %%s\\n" "$1" >> "$RG_LOG"\n' > "$RG_SCRIPTS/board-comment.sh"
   mkdir -p "$RG_SCRIPTS/.bin"
-  printf '#!/usr/bin/env bash\necho main\n' > "$RG_SCRIPTS/.bin/gh"
+  printf '#!/usr/bin/env bash\nprintf "gh %%s\\n" "$*" >> "${RG_LOG:-/dev/null}"\n[ "$1 $2" = "pr edit" ] && exit "${RG_GH_EDIT_RC:-0}"\necho "${RG_GH_BASE:-main}"\n' > "$RG_SCRIPTS/.bin/gh"
   chmod +x "$RG_SCRIPTS/.bin/gh"
 }
 rg_plugin() { printf '{\n  "name": "%s",\n  "version": "%s",\n  "description": "d"\n}\n' "$2" "$3" > "$1"; }
@@ -807,7 +807,7 @@ assert_exit "ahead of origin: exit 0" 0
 assert_eq "ahead of origin: local keeps its commit" "$(git -C "$RG/wt" merge-base --is-ancestor "$LOCAL_SHA" HEAD && echo yes || echo no)" yes
 assert_eq "ahead of origin: the commit is pushed" "$(rg_remote)" "$(rg_local)"
 
-# Stacked card: the parent branch (note.stack.base) is merged along with the base
+# Stacked card: the PR is retargeted to the parent branch (note.stack.base), which is then merged as the base
 STACK_NOTE='{"stack":{"parent":11,"base":"fleet/11-parent","start":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","attention":null}}'
 rg_parent() { # <file> <content>: a commit on origin/fleet/11-parent, pushed from seed
   rg_git -C "$RG/seed" checkout -q -B parent origin/main
@@ -842,6 +842,57 @@ assert_exit "stacked, parent branch conflicts: exit 1" 1
 assert_eq "stacked, parent branch conflicts: the comment is posted" "$(grep -c '^comment' "$RG_LOG")" 1
 assert_eq "stacked, parent branch conflicts: the remote is unchanged" "$(rg_remote)" "$BEFORE_SHA"
 assert_eq "stacked, parent branch conflicts: the worktree is clean" "$(git -C "$RG/wt" status --porcelain | wc -l | tr -d ' ')" 0
+assert_eq "stacked, parent branch conflicts: the error names the parent branch it failed to merge" "$(printf '%s' "$LAST_ERR" | grep -c 'merge of origin/fleet/11-parent into')" 1
+assert_eq "stacked, parent branch conflicts: the error does not blame the default branch" "$(printf '%s' "$LAST_ERR" | grep -c 'merge of origin/main into')" 0
+
+# A stacked card whose PR still targets the default branch (it reached review without start_review)
+# is retargeted to its parent branch, so the fixer, which merges the PR's base, merges the same branch
+real_setup
+rg_parent src/parent.txt "from the parent"
+RG_NOTE_JSON="$STACK_NOTE"; export RG_NOTE_JSON
+real_run
+assert_exit "stacked, PR targets main: exit 0" 0
+assert_eq "stacked, PR targets main: the PR is retargeted to the parent branch" "$(grep -c '^gh pr edit 34 --repo acme/toy --base fleet/11-parent$' "$RG_LOG")" 1
+assert_eq "stacked, PR targets main: the update records the parent branch as its base" "$(grep -cE '"base": ?"fleet/11-parent"' "$RG_LOG")" 1
+
+# A stacked card whose PR already targets its parent branch is not edited again
+real_setup
+rg_parent src/parent.txt "from the parent"
+RG_NOTE_JSON="$STACK_NOTE" RG_GH_BASE=fleet/11-parent; export RG_NOTE_JSON RG_GH_BASE
+real_run
+assert_exit "stacked, PR already targets the parent: exit 0" 0
+assert_eq "stacked, PR already targets the parent: no pr edit" "$(grep -c '^gh pr edit' "$RG_LOG")" 0
+unset RG_GH_BASE
+
+# A failed retarget stops the run before any merge
+real_setup
+rg_parent src/parent.txt "from the parent"
+RG_NOTE_JSON="$STACK_NOTE" RG_GH_EDIT_RC=1; export RG_NOTE_JSON RG_GH_EDIT_RC
+BEFORE_SHA="$(rg_remote)"
+real_run
+assert_exit "stacked, retarget fails: exit 1" 1
+assert_eq "stacked, retarget fails: the error says so" "$(printf '%s' "$LAST_ERR" | grep -c 'cannot retarget PR #34 to its parent branch fleet/11-parent')" 1
+assert_eq "stacked, retarget fails: the remote is unchanged" "$(rg_remote)" "$BEFORE_SHA"
+unset RG_GH_EDIT_RC
+
+# The merge lane (--lane-bump) never retargets: merge-reviewed.sh checks the base before it bumps
+real_setup
+rg_parent src/parent.txt "from the parent"
+RG_NOTE_JSON="$STACK_NOTE"; export RG_NOTE_JSON
+(cd "$RG/wt" && PATH="$RG_SCRIPTS/.bin:$ORIG_PATH" bash "$RG_SCRIPTS/update-branch.sh" 12 34 fleet/12-x "$RG/wt" --lane-bump patch --bump-paths '["plugins/**"]') >/dev/null 2>&1
+assert_eq "stacked, merge lane: no pr edit" "$(grep -c '^gh pr edit' "$RG_LOG")" 0
+
+real_setup
+RG_NOTE_JSON='{}'; export RG_NOTE_JSON
+real_run
+assert_exit "not stacked, PR targets main: exit 0" 0
+assert_eq "not stacked: the PR is not retargeted" "$(grep -c '^gh pr edit' "$RG_LOG")" 0
+
+real_setup
+RG_NOTE_JSON='{"stack":{"parent":11,"base":"fleet/11-gone","start":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","attention":null}}'; export RG_NOTE_JSON
+real_run
+assert_exit "stacked, parent branch missing on origin: exit 0" 0
+assert_eq "stacked, parent branch missing on origin: the PR is not retargeted" "$(grep -c '^gh pr edit' "$RG_LOG")" 0
 unset RG_NOTE_JSON
 
 PATH="$ORIG_PATH"

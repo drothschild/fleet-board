@@ -303,6 +303,53 @@ dcard '[]'
 DOUT="$(cd "$DR" && PATH="$DSTUB:$PATH" bash "$SCRIPT" 3 2>"$SB/err")"
 has "no dependency adds the path: missing-file names it" "$DOUT" "missing-file: src/page.js is not on main"
 
+echo "# ## Creates counts card-wide and in cards that depend on it"
+newset; card 1 "$GOOD\n## Creates\n- \`src/fresh.js\`\n\n## Scope\n- edit \`src/fresh.js\`\n\n## Acceptance\n- \`src/fresh.js\` exports clamp\n"
+run_lint
+check "creator: its own Scope and Acceptance are not flagged for the created path" "$(printf '%s\n' "$OUT" | grep -c 'src/fresh.js')" "0"
+newset
+card 1 "$GOOD\n## Creates\n- \`src/fresh.js\`\n"
+card 2 "$GOOD\n## Scope\n- edit \`src/fresh.js\`\n\n## Depends on\n- #1\n"
+card 3 "$GOOD\n## Scope\n- edit \`src/fresh.js\`\n"
+run_lint
+check "dependent: not flagged for the created path" "$(printf '%s\n' "$OUT" | grep -c '^#2:.*src/fresh.js')" "0"
+check "no dependency on the creator: still flagged" "$(printf '%s\n' "$OUT" | grep -c '^#3: missing-file: src/fresh.js')" "1"
+newset
+card 1 "$GOOD\n## Creates\n- \`src/fresh.js\`\n"
+card 2 "$GOOD\n## Depends on\n- #1\n"
+card 3 "$GOOD\n## Scope\n- edit \`src/fresh.js\`\n\n## Depends on\n- #2\n"
+for order in "3 2 1" "1 2 3" "2 3 1"; do
+  # shellcheck disable=SC2086
+  run_lint $order
+  check "two dependencies away is not flagged (linted $order)" "$(printf '%s\n' "$OUT" | grep -c 'src/fresh.js')" "0"
+done
+newset; card 1 "$GOOD\n## CREATES   \n- \`src/fresh.js\`\n\n## Scope\n- edit \`src/fresh.js\`\n"
+run_lint
+check "## Creates heading matches in any case with trailing spaces" "$(printf '%s\n' "$OUT" | grep -c 'src/fresh.js')" "0"
+newset; card 1 "$GOOD\n## Creates\n- \`src/a.js\` and \`src/b.js\`\n- \`lib/src/c.js\`\n\n## Scope\n- edit \`src/a.js\`, \`src/b.js\` and \`src/c.js\`\n"
+run_lint
+check "the first path on a Creates line is exempt" "$(printf '%s\n' "$OUT" | grep -c 'src/a.js')" "0"
+has "a second path on a Creates line is still flagged elsewhere" "$OUT" "missing-file: src/b.js is not on main"
+has "a created lib/src/c.js does not exempt src/c.js" "$OUT" "missing-file: src/c.js is not on main"
+check "a created lib/src/c.js is itself exempt" "$(printf '%s\n' "$OUT" | grep -c 'lib/src/c.js')" "0"
+
+echo "# ## Creates follows board cards a lone linted card depends on"
+lfcard 10 '["x"]' '[]' "$(printf '## Creates\n- `src/fresh.js`\n')"
+lfcard 11 '["x"]' '[10]' ""
+lfcard 12 '["`src/fresh.js` exports clamp"]' '[11]' ""
+lfcard 13 '["`src/fresh.js` exports clamp"]' '[]' ""
+lfcard 14 '["`src/fresh.js` exports clamp"]' '[10]' ""
+run_local 14
+check "board card: a direct dependency's Creates is not flagged" "$(printf '%s\n' "$OUT" | grep -c 'src/fresh.js')" "0"
+run_local 12
+check "board card: a Creates two cards away is not flagged" "$(printf '%s\n' "$OUT" | grep -c 'src/fresh.js')" "0"
+run_local 13
+has "board card: no dependency on the creator is still flagged" "$OUT" "missing-file: src/fresh.js is not on main"
+
+echo "# skill documents the ## Creates rule"
+has "SKILL.md documents ## Creates" "$(cat "$SKILL")" "## Creates"
+hasnt "SKILL.md no longer says lint reads lines that create or add a file" "$(cat "$SKILL")" "lines that create or add a file"
+
 echo
 echo "passed: $PASS failed: $FAIL"
 [ "$FAIL" -eq 0 ]

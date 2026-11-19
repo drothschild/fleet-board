@@ -32,6 +32,7 @@ class Action:
     marker: Any = None  # the card's active marker path once a session or merge child was launched
     pgid: Any = None    # the process group this action owns; end() removes a marker naming it or no usable pgid
     stage: Any = None   # a review_stage action's stage name: one card's reviewers run together, one per stage
+    review_pass: Any = None  # a review_stage action's pass of required_passes: two passes of one stage run together
     work_column: Any = None  # the column the card is in while the role session runs; set in _launch and by the merge lane
 
 
@@ -58,6 +59,7 @@ class State:
         self._also = {}         # card -> its further running reviewer actions (see REVIEWER_ACTIONS)
         self._retired = {}      # card -> {marker, pgids} of the card's reviewers that already ended
         self.reservations = {}
+        self.reservation_ancestors = {}   # card -> the cards it is stacked on
         self.reservation_repos = {}   # card -> repo of its reservation ('' or absent: the home repo)
         self.lane = None
         self.provider_health = {}
@@ -207,7 +209,7 @@ class State:
             markers.clear(marker, action.pgid, also=(retired or {}).get('pgids') or ())
         return action
 
-    def reserve(self, card, paths, ignore=None, exempt=(), repo=None, home_repo=None):
+    def reserve(self, card, paths, ignore=None, exempt=(), repo=None, home_repo=None, ancestors=()):
         """Reserve `paths` for `card`; they must already be `scopes.normalize()` output.
 
         `ignore` is `supervisor.scope_ignore`: matching paths are dropped from both sides
@@ -218,12 +220,17 @@ class State:
             mine = scopes.drop_ignored(paths, ignore)
             for owner, held in self.reservations.items():
                 if owner != card and owner not in exempt \
+                        and card not in self.reservation_ancestors.get(owner, ()) \
                         and scopes.same_repo(repo, self.reservation_repos.get(owner), home_repo) \
                         and scopes.overlap(mine, scopes.drop_ignored(held, ignore)):
                     return owner
             held = set(self.reservations.get(card, ())) | set(paths)
             # Union like the store did; '' (whole repo) absorbs everything.
             self.reservations[card] = [''] if '' in held else sorted(held)
+            if ancestors:
+                self.reservation_ancestors[card] = tuple(ancestors)
+            else:
+                self.reservation_ancestors.pop(card, None)
             if repo:
                 self.reservation_repos[card] = repo
             else:
@@ -235,6 +242,7 @@ class State:
         with self._lock:
             self.reservations.pop(card, None)
             self.reservation_repos.pop(card, None)
+            self.reservation_ancestors.pop(card, None)
             self._bump()
 
     def set_health(self, provider, entry):
