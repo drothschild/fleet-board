@@ -391,6 +391,12 @@ VALIDATION_SCRIPT='
         (if .merge.persona_append != null and (.merge.persona_append | type) != "string"
          then "merge.persona_append must be null or a string" else empty end)
       else empty end),
+      (if (.implementor | type) == "object" then
+        (if .implementor.persona != null and ((.implementor.persona | type) != "string" or .implementor.persona == "" or (.implementor.persona | startswith("/")) or (.implementor.persona | split("/") | index("..") != null))
+         then "implementor.persona must be null or a non-empty relative path without .." else empty end),
+        (if .implementor.persona_append != null and (.implementor.persona_append | type) != "string"
+         then "implementor.persona_append must be null or a string" else empty end)
+      else empty end),
       (if (.review | type) == "object" then
         (if (.review.max_rounds | type) != "number" or (.review.max_rounds | floor) != .review.max_rounds or .review.max_rounds <= 0 then "review.max_rounds must be a positive integer" else empty end)
       else empty end),

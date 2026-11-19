@@ -512,7 +512,7 @@ def _parse_time(text):
 
 
 _SECTIONS = {
-    'implementor': ('number', 'title', 'body', 'acceptance', 'open_cards', 'worktree', 'branch', 'note', 'config',
+    'implementor': ('number', 'title', 'body', 'acceptance', 'open_cards', 'project_rules', 'worktree', 'branch', 'note', 'config',
                     'scripts'),
     'reviewer': ('number', 'body', 'acceptance', 'open_cards', 'pr', 'diff', 'report', 'worktree', 'config', 'round',
                  'prev_sha', 'findings', 'scripts'),
@@ -534,7 +534,7 @@ _LABELS = {
     'merge_commit': 'Merge commit (merge_commit)',
     'entry': 'Follow-up entry', 'filed_by': 'Filed by card', 'all_cards': 'Every card on the board',
     'checkout': 'Checkout', 'instructions': 'Instructions', 'working_rules': "Planner's working rules",
-    'refusal': 'Refusal', 'persona': 'Persona', 'persona_hash': 'Persona hash',
+    'refusal': 'Refusal', 'persona': 'Persona', 'project_rules': 'Project rules', 'persona_hash': 'Persona hash',
 }
 DIFF_FILE_LINES = 1500
 
@@ -1052,6 +1052,16 @@ class CardDriver:
             raise _Invalid('stage', stage)
         if dispatch is None or (dispatch.runner == 'claude' and not dispatch.agent):
             raise _Fail('%s names no agent' % name)
+        rules = None
+        if role == 'implementor':
+            try:
+                rules = self._implementor_rules(c)
+            except _Attention as exc:
+                reason = str(exc)
+                c.merge(dict(_RESET, role_guard={'role': role, 'status': 'attention', 'reason': reason}))
+                self.state.set_attention(c.n, reason)
+                self.state.event('attention', card=c.n, role=role, reason=reason)
+                return 'attention'
         for field, value in (('agent', dispatch.agent), ('model', dispatch.model)):
             if value is not None and not (isinstance(value, str) and _NAME.fullmatch(value)):
                 raise _Invalid(field, value)
@@ -1066,7 +1076,7 @@ class CardDriver:
         if role in ('implementor', 'reviewer', 'fixer'):
             inputs['open_cards'] = self._open_cards(c)
         if role == 'implementor':
-            inputs.update(worktree=c.worktree(), branch=c.branch())
+            inputs.update(worktree=c.worktree(), branch=c.branch(), project_rules=rules)
             if name == 'continue_implementor':
                 inputs['note'] = note
             run.round = note.get('round') if isinstance(note.get('round'), int) else 0
@@ -1084,6 +1094,28 @@ class CardDriver:
         run.guard = self._role_snapshot(card)
         self._launch(run)
         return 'session'
+
+    def _implementor_rules(self, c):
+        """The project rules for an implementor session, or None: the implementor.persona file text, then the
+        implementor.persona_append text, from the card's own repo. A set path that cannot be read is attention,
+        never a fallback."""
+        root, config = c.checkout()
+        section = config.get('implementor') if isinstance(config.get('implementor'), dict) else {}
+        parts = []
+        configured = section.get('persona')
+        if configured is not None:
+            shown = _first_line(str(configured))
+            if (not isinstance(configured, str) or not configured or configured.startswith('/')
+                    or '..' in configured.split('/') or not (Path(root) / configured).is_file()):
+                raise _Attention('implementor.persona not found: %s' % shown)
+            try:
+                parts.append((Path(root) / configured).read_text(errors='replace').strip('\n'))
+            except OSError as exc:
+                raise _Attention('implementor.persona unreadable: %s: %s' % (shown, _first_line(str(exc))))
+        append = section.get('persona_append')
+        if isinstance(append, str) and append.strip():
+            parts.append(append.strip('\n'))
+        return '\n\n'.join(parts) + '\n' if parts else None
 
     def _open_cards(self, c, with_state=False, closed=False):
         """One `#<n> <title>` line per card that is not done or wont_do, the card itself left out; `none` when
