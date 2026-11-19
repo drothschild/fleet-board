@@ -1793,9 +1793,9 @@ def test_pass_2_of_a_stage_starts_in_its_own_checkout_and_its_prompt_holds_no_ot
     stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'Look for token leaks.',
              'provider': None, 'required_passes': 3}
     card = b.card()
-    report = '## Status\n%s\n\n## Findings\n- none\n\n## For the card\nx\n\nVERIFIED: `t` -> 1 test\n'
-    card['comments'] = [{'id': 1, 'author': 'a', 'body': report % 'done IMPLEMENTOR-REPORT-MARK', 'created_at': '2026-01-01T00:00:00Z'},
-                        {'id': 2, 'author': 'a', 'body': report % 'done PASS-ONE-REPORT-MARK', 'created_at': '2026-01-01T00:01:00Z'}]
+    report = '## Status\n%s\n\n## Findings\n- none\n\n## For the card\nx\n%s\nVERIFIED: `t` -> 1 test\n'
+    card['comments'] = [{'id': 1, 'author': 'a', 'body': report % ('done IMPLEMENTOR-REPORT-MARK', '\n## PR\nDraft PR #34.\n'), 'created_at': '2026-01-01T00:00:00Z'},
+                        {'id': 2, 'author': 'a', 'body': report % ('done PASS-ONE-REPORT-MARK', ''), 'created_at': '2026-01-01T00:01:00Z'}]
     card['next_comment_id'] = 3
     (b.root / '.fleet-board' / 'cards' / '12.json').write_text(json.dumps(card))
     first = {'pass': 1, 'round': 1, 'sha': head, 'critical': 0, 'important': 0, 'findings': []}
