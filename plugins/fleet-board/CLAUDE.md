@@ -115,7 +115,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   dependency) asks `premise.sh moved <n>` and plans `check_premise` instead when it returns
   `moved` true, with its reason (`ground moved: <path>`, `no premise stamp`, `premise stamp commit is
   unknown`) as the plan reason. `moved` is false with no default head (no `origin`). The `Scope lists
-  no paths` wait still comes first and the Scope-overlap wait does not apply. The supervisor runs
+  no paths` wait still comes first, and the Scope-overlap wait applies too: a card held by an open card's Scope plans `wait` (`Scope overlaps #<n>`), not `check_premise`, until the holder is gone. The supervisor runs
   `check_premise` (`CardDriver._do_check_premise`): `worktree.sh premise <n>` makes a detached checkout
   `<base>/<n>-premise_check` of the default branch, and a session with no agent file (`Read,Write,Bash,Grep,Glob`
   through `--tools`, placed before `--permission-mode`; `models.checker`) gets the instructions in
