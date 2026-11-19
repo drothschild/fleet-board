@@ -2477,8 +2477,223 @@ def test_a_question_resets_the_failure_count_and_records_blocked_from_ready(base
     assert note['blocked_from'] == 'ready' and note['state'] == 'blocked', note
 
 
+# follow-up drafts (card 477) ---------------------------------------------------------------------------
+ENTRY = {'title': 'Stamp is lost on a move', 'repro': 'bash tests/stamp.sh', 'expected': 'exit 0', 'observed': 'exit 1'}
+DRAFT_FAILED_SUFFIX = '; left as filed. A person writes the criteria and moves it to Ready.'
+
+
+def draft_config(**followups):
+    return {'board': {'repo': 'acme/toy'}, 'review': {'stages': [], 'max_rounds': 3}, 'commands': {},
+            'followups': dict({'status': 'ready', 'auto_ready': 'bugs', 'auto_ready_cap': 5}, **followups)}
+
+
+def add_followup(b, number=12, kind='bug', draft='pending', frm=7):
+    path = b.root / '.fleet-board' / 'cards' / ('%d.json' % number)
+    card = json.loads(path.read_text())
+    card['followup'] = {'draft': draft, 'kind': kind, 'entry': ENTRY if kind == 'bug' else {
+        'title': 'Tidy the readme', 'detail': '`true` exits 0'}, 'from': frm}
+    path.write_text(json.dumps(card))
+
+
+def draft_board(base, kind='bug', **followups):
+    b = premise_board(base, card_state='backlog', config=draft_config(**followups), body='## Bug\nStamp is lost\n',
+                      acceptance=('`bash tests/stamp.sh` gives the expected result: exit 0',))
+    add_followup(b, kind=kind)
+    b.seed(7, 'in_review', acceptance=('x',))
+    return b
+
+
+def begin_draft(b, number=12):
+    return b.driver.begin(candidate('draft_followup', number=number, state='backlog', worktree=None,
+                                    reason='follow-up awaits a draft'))
+
+
+def draft_text(name, **replace):
+    text = (PLUGIN / 'fixtures' / 'reports' / ('%s.md' % name)).read_text()
+    for old, new in replace.items():
+        text = text.replace(old, new)
+    return text
+
+
+def draft_run(b, report, number=12):
+    b.plans(check_plan(report))
+    return finish_all(b, begin_draft(b, number))
+
+
+def left_comments(b, number=12):
+    return [t for t in b.comments(number) if t.startswith('Drafted; left in Backlog: ')]
+
+
+def test_the_draft_prompt_carries_the_entry_and_every_card(base):
+    b = draft_board(base)
+    for number, state_name, title in ((40, 'done', 'Closed one'), (41, 'wont_do', 'Dropped one'), (42, 'ready', 'Open one')):
+        b.seed(number, state_name)
+        card = b.card(number)
+        card['title'] = title
+        (b.root / '.fleet-board' / 'cards' / ('%d.json' % number)).write_text(json.dumps(card))
+    b.plans(check_plan('checker-drafted'))
+    started = begin_draft(b)
+    assert started.kind == 'session' and started.action.role == 'checker', started
+    prompt = b.prompt()
+    for want in ('## Mode\ndraft', 'Stamp is lost on a move', 'bash tests/stamp.sh', '#40 done Closed one',
+                 '#41 wont_do Dropped one', '#42 ready Open one', '#7 in_review', CHECK_PROMPT.read_text(),
+                 b.premise_path):
+        assert want in prompt, (want, prompt)
+    assert '7' in prompt.split('## Filed by card\n', 1)[1].split('\n', 1)[0], prompt
+    assert ('worktree.sh', 'premise', '12') in b.calls, b.calls
+    finish_all(b, started)
+
+
+def test_draft_duplicate_closes_with_a_link(base):
+    b = draft_board(base)
+    b.seed(40, 'done')
+    outcome = draft_run(b, draft_text('checker-duplicate', **{'#12': '#40'}))
+    assert outcome.progressed is True, outcome
+    assert b.card()['state'] == 'wont_do', b.card()['state']
+    assert ('board-move.sh', '12', 'wont_do') in b.calls, b.calls
+    assert 'Follow-up draft: duplicate of #40.' in b.comments(), b.comments()
+    assert not stamps(b) and not [c for c in b.calls if c[:2] == ('premise.sh', 'apply-draft')], b.calls
+    parses = [c for c in b.calls if c[0] == 'parse-report.sh']
+    assert parses and all(c[1:5] == ('--role', 'checker', '--mode', 'draft') for c in parses), parses
+    assert ('worktree.sh', 'remove', '12', b.premise_path) in b.calls, b.calls
+
+
+def test_draft_duplicate_of_itself_or_a_missing_card_is_a_failed_draft(base):
+    for number in (12, 999):
+        sub = Path(base) / ('dup%d' % number)
+        sub.mkdir()
+        b = draft_board(sub)
+        draft_run(b, draft_text('checker-duplicate', **{'#12': '#%d' % number}))
+        assert b.card()['state'] == 'backlog', (number, b.card()['state'])
+        assert not [c for c in b.calls if c[0] == 'board-move.sh'], b.calls
+        assert not [t for t in b.comments() if t.startswith('Follow-up draft:')], b.comments()
+        note = b.note()
+        assert note['action_failures'] == 1 and note['last_action_error'], (number, note)
+        assert not note['last_action_error'].startswith('premise check failed'), note
+
+
+def test_draft_fixed_closes_with_the_evidence(base):
+    b = draft_board(base)
+    draft_run(b, draft_text('checker-fixed'))
+    assert b.card()['state'] == 'wont_do', b.card()['state']
+    posted = [t for t in b.comments() if t.startswith('Follow-up draft: already fixed on the default branch.')]
+    assert len(posted) == 1, b.comments()
+    assert '`bash plugins/fleet-board/tests/test-premise.sh` :: failed: 0' in posted[0], posted[0]
+    assert not stamps(b), b.calls
+
+
+def test_drafted_bug_with_a_failing_repro_goes_to_ready(base):
+    b = draft_board(base)
+    outcome = draft_run(b, draft_text('checker-drafted'))
+    assert outcome.progressed is True, outcome
+    applied = [c for c in b.calls if c[:3] == ('premise.sh', 'apply-draft', '12')]
+    assert len(applied) == 1 and len(applied[0]) == 4, b.calls
+    names = [c[:2] for c in b.calls if c[0] in ('premise.sh', 'card-lint.sh', 'board-move.sh')]
+    assert names.index(('premise.sh', 'apply-draft')) < names.index(('card-lint.sh', '12')) \
+        < names.index(('premise.sh', 'stamp')) < names.index(('board-move.sh', '12')), names
+    card = b.card()
+    assert card['state'] == 'ready', card['state']
+    assert '## Why\nThe stamp is lost on a move.' in card['body'] and '## Scope' in card['body'], card['body']
+    assert 'plugins/fleet-board/scripts/premise.sh' in card['body'], card['body']
+    assert card['acceptance'] == ['stamp survives a move', 'stamp is read back'], card['acceptance']
+    assert card['followup']['draft'] == 'done', card['followup']
+    assert ('premise.sh', 'stamp', '12', '--by', 'check', '--sha', PREMISE_HEAD) in b.calls, b.calls
+    assert card['premise']['by'] == 'check' and card['premise']['sha'] == PREMISE_HEAD, card['premise']
+    assert b.state.followups_auto_ready == 1
+    assert not left_comments(b), b.comments()
+
+
+def stays(b, reason, number=12):
+    posted = left_comments(b, number)
+    assert len(posted) == 1 and posted[0].endswith(reason), b.comments(number)
+    assert b.card(number)['state'] == 'backlog', b.card(number)['state']
+    assert ('board-move.sh', str(number), 'ready') not in b.calls, b.calls
+    assert b.card(number)['followup']['draft'] == 'done', b.card(number)['followup']
+
+
+def test_drafted_out_of_scope_stays_in_backlog(base):
+    b = draft_board(base, kind='out_of_scope')
+    draft_run(b, draft_text('checker-drafted'))
+    stays(b, 'not a bug report.')
+    assert b.state.followups_auto_ready == 0
+
+
+def test_drafted_bug_whose_repro_passed_stays(base):
+    b = draft_board(base)
+    draft_run(b, draft_text('checker-drafted', **{'failed :: 1 case failed': 'passed :: 0 cases failed'}))
+    stays(b, 'the repro did not fail on the default branch.')
+
+
+def test_drafted_bug_with_no_repro_stays(base):
+    b = draft_board(base)
+    draft_run(b, draft_text('checker-drafted-no-repro'))
+    stays(b, 'no repro was run.')
+
+
+def test_drafted_bug_failing_lint_stays(base):
+    b = draft_board(base)
+    draft_run(b, draft_text('checker-drafted', **{'- stamp survives a move': '- the stamp survives a move on a device'}))
+    stays(b, 'card lint failed: manual-check.')
+    assert ('card-lint.sh', '12') in b.calls, b.calls
+
+
+def test_auto_ready_none_keeps_every_draft_in_backlog(base):
+    b = draft_board(base, auto_ready='none')
+    draft_run(b, draft_text('checker-drafted'))
+    stays(b, 'followups.auto_ready is none.')
+    assert b.state.followups_auto_ready == 0
+
+
+def test_the_cap_admits_exactly_one_of_two_drafts_finishing_together(base):
+    b = draft_board(base, auto_ready_cap=1)
+    b.seed(13, 'backlog', body='## Bug\nSecond\n', acceptance=('`bash tests/second.sh` gives the expected result: exit 0',))
+    add_followup(b, 13)
+    b.plans(check_plan('checker-drafted'), check_plan('checker-drafted'))
+    first, second = begin_draft(b, 12), begin_draft(b, 13)
+    finish_all(b, first)
+    finish_all(b, second)
+    states = sorted([b.card(12)['state'], b.card(13)['state']])
+    assert states == ['backlog', 'ready'], states
+    held = 12 if b.card(12)['state'] == 'backlog' else 13
+    stays(b, "this run's cap of 1 is used.", held)
+    assert b.state.followups_auto_ready == 1
+
+
+def test_cap_zero_sends_nothing_to_ready(base):
+    b = draft_board(base, auto_ready_cap=0)
+    draft_run(b, draft_text('checker-drafted'))
+    stays(b, "this run's cap of 0 is used.")
+    assert b.state.followups_auto_ready == 0
+
+
+def test_a_draft_that_keeps_failing_is_marked_failed_and_left_as_filed(base):
+    b = draft_board(base)
+    b.put_note({'action_failures': 1, 'last_action_error': 'older'})
+    b.plans(check_plan(''), check_plan(''))
+    finish_all(b, begin_draft(b))
+    assert not [c for c in b.calls if c[:2] == ('premise.sh', 'set-followup')], b.calls
+    assert b.note()['action_failures'] == 2 and b.card()['followup']['draft'] == 'pending'
+    sub = Path(base) / 'again'
+    sub.mkdir()
+    b = draft_board(sub)
+    b.put_note({'action_failures': 2, 'last_action_error': 'older'})
+    b.plans(check_plan(''), check_plan(''))
+    finish_all(b, begin_draft(b))
+    assert ('premise.sh', 'set-followup', '12', 'failed') in b.calls, b.calls
+    assert b.card()['followup']['draft'] == 'failed', b.card()['followup']
+    posted = [t for t in b.comments() if t.startswith('Follow-up draft failed after')]
+    assert posted == ['Follow-up draft failed after 3 attempts' + DRAFT_FAILED_SUFFIX], b.comments()
+    assert b.card()['state'] == 'backlog' and not stamps(b), b.calls
+    assert ('worktree.sh', 'remove', '12', b.premise_path) in b.calls, b.calls
+
+
+def test_draft_followup_reserves_no_scope(base):
+    from supervisor import scheduler
+    assert 'draft_followup' in scheduler.SCOPE_FREE_ACTIONS, scheduler.SCOPE_FREE_ACTIONS
+
+
 HEAD40 = 'abc1234' + '0' * 33
-RED = [{'name': 'test-suite', 'detailsUrl': 'https://github.com/acme/toy/actions/runs/123/job/456'}]
+RED =[{'name': 'test-suite', 'detailsUrl': 'https://github.com/acme/toy/actions/runs/123/job/456'}]
 
 
 def test_rerun_checks_reruns_the_failed_run_and_records_it_in_the_note(base):
@@ -2511,8 +2726,33 @@ def test_checks_failed_hands_the_failure_to_the_fixer_as_an_important_finding(ba
     assert len(last['findings']) == 1 and last['findings'][0]['severity'] == 'Important', last
     text = last['findings'][0]['text']
     assert text.startswith('CI failed at abc1234:') and 'test-suite' in text and RED[0]['detailsUrl'] in text, text
-    assert not note.get('reviews') and note['reviewed_stages'] == [], note
+    # the failure is the evidence reviewer's finding; no reviewer's record is dropped (card: a wipe made the
+    # planner re-run every reviewer, they reported clean over the finding, and checks_failed fired again)
+    assert note['reviews']['evidence']['important'] == 1 and note['reviews']['evidence']['sha'] == HEAD40, note
+    assert note['reviews']['evidence']['findings'] == last['findings'], note
+    assert note['reviewed_stages'] == [], note
     assert note['state'] == 'in_review'
+
+
+def test_checks_failed_keeps_every_reviewers_record(base):
+    # Built-in stages on: the evidence reviewer and two stage reviewers all reported clean at the head. The failure
+    # replaces only the evidence record; the stage records stay, so the planner plans the fixer at once instead of
+    # re-running every reviewer (which reported clean again, erased the finding, and looped).
+    b = board_for(base, 'in_review')
+    clean = lambda stage: {'round': 1, 'sha': HEAD40, 'critical': 0, 'important': 0, 'findings': [], 'stage': stage}
+    b.put_note({'state': 'in_review', 'pr': 34, 'round': 1, 'last_review': clean('blast_radius'),
+                'reviews': {'evidence': clean(None), 'documentation': clean('documentation'),
+                            'blast_radius': clean('blast_radius')}})
+    begin(b, 'checks_failed', state='in_review', head_sha=HEAD40, red_checks=RED)
+    note = b.note()
+    reviews = note['reviews']
+    assert set(reviews) == {'evidence', 'documentation', 'blast_radius'}, reviews
+    assert reviews['documentation'] == clean('documentation'), reviews
+    assert reviews['blast_radius'] == clean('blast_radius'), reviews
+    assert reviews['blast_radius']['important'] == 0 and reviews['documentation']['sha'] == HEAD40, reviews
+    assert reviews['evidence']['important'] == 1 and reviews['evidence']['stage'] is None, reviews
+    assert note['last_review']['important'] == 1 and note['last_review']['stage'] is None, note['last_review']
+    assert 'test-suite' in reviews['evidence']['findings'][0]['text'], reviews['evidence']
 
 
 def test_rerun_checks_and_checks_failed_reserve_no_scope(base):

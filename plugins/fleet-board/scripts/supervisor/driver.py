@@ -83,10 +83,11 @@ SCRIPT_ACTIONS = frozenset((
     'file_pending', 'rerun_checks', 'checks_failed', 'skip_no_acceptance', 'skip_card_lint', 'wait', 'skip',
 ))
 ROLE_ACTIONS = frozenset(('start', 'continue_implementor', 'start_review', 'review', 'review_stage', 'fix',
-                          'after_merge', 'merge_refusal', 'check_premise'))
+                          'after_merge', 'merge_refusal', 'check_premise', 'draft_followup'))
 _ROLE_OF = {'start': 'implementor', 'continue_implementor': 'implementor', 'start_review': 'reviewer',
             'review': 'reviewer', 'review_stage': 'stage-reviewer', 'fix': 'fixer',
-            'after_merge': 'merger', 'merge_refusal': 'merger', 'check_premise': 'checker'}
+            'after_merge': 'merger', 'merge_refusal': 'merger', 'check_premise': 'checker',
+            'draft_followup': 'checker'}
 # begin_merger's mode (the lane's outcome kind, or the report mode itself) -> the card action
 _MERGER_ACTION = {'merged': 'after_merge', 'after_merge': 'after_merge', 'refused': 'merge_refusal',
                   'refusal': 'merge_refusal'}
@@ -518,8 +519,8 @@ _SECTIONS = {
               'scripts'),
     'stage-reviewer': ('number', 'body', 'acceptance', 'pr', 'diff', 'report', 'worktree', 'config', 'stage_name',
                        'brief', 'round', 'prev_sha', 'findings', 'scripts', 'post'),
-    'checker': ('number', 'title', 'body', 'acceptance', 'mode', 'open_cards', 'checkout', 'scripts', 'instructions',
-                'working_rules', 'config'),
+    'checker': ('number', 'title', 'body', 'acceptance', 'mode', 'open_cards', 'entry', 'filed_by', 'all_cards',
+                'checkout', 'scripts', 'instructions', 'working_rules', 'config'),
     'merger': ('number', 'title', 'pr', 'mode', 'pr_head', 'merge_commit', 'refusal', 'persona', 'persona_hash', 'config',
                'scripts'),
 }
@@ -530,6 +531,7 @@ _LABELS = {
     'prev_sha': 'Previous review sha (prev_sha)', 'findings': 'Findings', 'stage_name': 'Stage name',
     'brief': 'Stage brief', 'post': 'Posting your report', 'mode': 'Mode', 'pr_head': 'PR head (pr_head)',
     'merge_commit': 'Merge commit (merge_commit)',
+    'entry': 'Follow-up entry', 'filed_by': 'Filed by card', 'all_cards': 'Every card on the board',
     'checkout': 'Checkout', 'instructions': 'Instructions', 'working_rules': "Planner's working rules",
     'refusal': 'Refusal', 'persona': 'Persona', 'persona_hash': 'Persona hash',
 }
@@ -813,8 +815,21 @@ class CardDriver:
             patch = ctx.failure_patch(message)
             if patch:
                 ctx.merge(patch)
+                if action_name == 'draft_followup':
+                    self._draft_gave_up(ctx, patch.get('action_failures'))
         except _Fail as exc:
             ctx.warn('could not count the failure: ' + str(exc))
+
+    def _draft_gave_up(self, c, count):
+        """A follow-up draft that failed `review.max_rounds` times in a row stays as it was filed: the card's
+        draft is marked failed (the planner no longer plans it) and one comment says so."""
+        limit = (c.config.get('review') or {}).get('max_rounds')
+        limit = limit if _posint(limit) else 3
+        if not isinstance(count, int) or count < limit:
+            return
+        c.step('premise.sh', 'set-followup', c.n, 'failed')
+        c.comment_soft('Follow-up draft failed after %d attempts; left as filed. A person writes the criteria and '
+                       'moves it to Ready.' % count)
 
     # role actions ---------------------------------------------------------------------------------------
     def _do_start(self, c):
@@ -897,7 +912,17 @@ class CardDriver:
 
     def _do_check_premise(self, c):
         """Run the premise check: a session with a shell, in a throwaway checkout of the default branch."""
+        return self._launch_checker(c, self._read_card(c), 'check')
+
+    def _do_draft_followup(self, c):
+        """Draft a follow-up filed in Backlog: the same session in mode `draft`, given the entry and every card."""
         card = self._read_card(c)
+        record = card.get('followup')
+        if not (isinstance(record, dict) and record.get('draft') == 'pending' and isinstance(record.get('entry'), dict)):
+            raise _Fail('card #%d has no follow-up awaiting a draft' % c.n)
+        return self._launch_checker(c, card, 'draft', record)
+
+    def _launch_checker(self, c, card, mode, record=None):
         data = _json(c.step('worktree.sh', 'premise', c.n).stdout)
         path = data.get('path') if isinstance(data, dict) else None
         head = data.get('head') if isinstance(data, dict) else None
@@ -910,7 +935,8 @@ class CardDriver:
                 raise _Fail('check_premise names no session')
             if dispatch.model is not None and not (isinstance(dispatch.model, str) and _NAME.fullmatch(dispatch.model)):
                 raise _Invalid('model', dispatch.model)
-            run = _Run(c, c.action, dispatch, 'checker', '', prior='ready', mode='check', head=head, checkout=path,
+            run = _Run(c, c.action, dispatch, 'checker', '', prior='ready' if mode == 'check' else 'backlog',
+                       mode=mode, head=head, checkout=path,
                        digest=self._card_digest(card),
                        guard={'.fleet-board.yml': self._hash(self.root / '.fleet-board.yml')})
             try:
@@ -920,10 +946,15 @@ class CardDriver:
             inputs = {'number': c.n, 'title': card.get('title'), 'body': card.get('body'),
                       'acceptance': ''.join('%d. %s\n' % (i, a) for i, a in enumerate(card.get('acceptance') or [], 1))
                       or 'none',
-                      'mode': run.mode, 'open_cards': self._open_cards(c, with_state=True), 'checkout': path,
+                      'mode': run.mode, 'checkout': path,
                       'scripts': str(self.plugin_dir / 'scripts'),
                       'instructions': CHECK_INSTRUCTIONS.read_text(errors='replace'),
                       'working_rules': working_rules, 'config': json.dumps(c.config, indent=2, sort_keys=True)}
+            if mode == 'draft':
+                inputs.update(entry=record['entry'], filed_by=record.get('from'),
+                              all_cards=self._open_cards(c, with_state=True, closed=True))
+            else:
+                inputs['open_cards'] = self._open_cards(c, with_state=True)
             run.prompt = run.base_prompt = role_prompt('checker', inputs, c.tmp)
             run.attempts_before = None
             self._launch(run)
@@ -1053,10 +1084,10 @@ class CardDriver:
         self._launch(run)
         return 'session'
 
-    def _open_cards(self, c, with_state=False):
+    def _open_cards(self, c, with_state=False, closed=False):
         """One `#<n> <title>` line per card that is not done or wont_do, the card itself left out; `none` when
         there are none or the board cannot be listed. With `with_state` each line is `#<n> <state> <title>`, and
-        ` PR <url>` follows it for a card that has one."""
+        ` PR <url>` follows it for a card that has one. With `closed`, the done and wont_do cards are listed too."""
         # a read-only listing for the prompt, not a step of the card's action: it goes straight to the script
         result = scripts.run(c.d.root, 'board-list.sh', '--all', timeout=60, env=c.d.env)
         if result.timed_out or result.rc != 0:
@@ -1066,7 +1097,7 @@ class CardDriver:
         if len(lines) < 2:
             return 'none'
         out = []
-        for line in lines[:-2]:
+        for line in (lines if closed else lines[:-2]):
             try:
                 items = json.loads(line)
             except ValueError:
@@ -1336,12 +1367,15 @@ class CardDriver:
 
     def _rejected_twice(self, run, lines, message):
         c = run.c
-        if run.role == 'checker':
+        if run.role == 'checker' and run.mode == 'check':
             message = self._check_failure(message)
         entry = {'role': run.role, 'round': run.round if run.round is not None else 0,
                  'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(self.clock())), 'errors': lines[:20]}
         self.state.event('action_failed', card=c.n, action=c.row['action'], error=message)
-        c.merge(dict(c.failure_patch(message), report_errors=[entry]))
+        patch = c.failure_patch(message)
+        c.merge(dict(patch, report_errors=[entry]))
+        if run.role == 'checker' and run.mode == 'draft':
+            self._draft_gave_up(c, patch.get('action_failures'))
         return Outcome(c.n, False, False, None)
 
     def _commits_since_review(self, run):
@@ -1406,7 +1440,7 @@ class CardDriver:
         if role == 'merger':
             return self._apply_merger(run, parsed)
         if role == 'checker':
-            return self._settle_premise(c, run, parsed)
+            return (self._settle_draft if run.mode == 'draft' else self._settle_premise)(c, run, parsed)
         note = c.note()
         patch = {'last_verified': (parsed.get('verified') or {}).get('line')}
         final = dict(_RESET)
@@ -1494,6 +1528,67 @@ class CardDriver:
             raise _Fail('verdict %s is not handled' % status)
         c.step('premise.sh', 'stamp', c.n, '--by', 'check', '--sha', run.head)
         c.merge(dict(_RESET, premise_check={'head': run.head, 'verdict': status, 'at': _iso(self.clock())}))
+
+    def _settle_draft(self, c, run, parsed):
+        """Act on a drafting verdict. `duplicate` and `fixed` close the follow-up (Won't do, with the reason);
+        `drafted` writes the card's Why, Scope and acceptance and stamps it, and a bug whose repro failed on the
+        default branch goes to Ready while this run's cap allows; otherwise it stays in Backlog, with the first
+        reason it did not. The report itself is not posted."""
+        status = parsed.get('status')
+        if status == 'duplicate':
+            m = parsed.get('card')
+            if not _posint(m) or m == c.n:
+                raise _Fail('the duplicate verdict names #%s, which is not another card' % m)
+            if self._premise_card(c, m) is None:
+                raise _Fail('the duplicate verdict names #%d, which does not exist' % m)
+            c.move('wont_do')
+            c.comment_soft('Follow-up draft: duplicate of #%d.' % m)
+            return c.merge_soft(dict(_RESET))
+        if status == 'fixed':
+            evidence = ['- `%s` :: %s' % (e.get('command', ''), e.get('output', ''))
+                        for e in parsed.get('evidence') or [] if isinstance(e, dict)]
+            c.move('wont_do')
+            c.comment_soft('\n\n'.join(['Follow-up draft: already fixed on the default branch.'] + ['\n'.join(evidence)]))
+            return c.merge_soft(dict(_RESET))
+        if status != 'drafted':
+            raise _Fail('verdict %s is not handled' % status)
+        card = self._premise_card(c, c.n) or {}
+        record = card.get('followup') if isinstance(card.get('followup'), dict) else {}
+        proposal = parsed.get('proposal') if isinstance(parsed.get('proposal'), dict) else {}
+        draft = {'why': parsed.get('why') or '', 'scope': proposal.get('scope') or '',
+                 'acceptance': proposal.get('acceptance') or []}
+        c.step('premise.sh', 'apply-draft', c.n, c._file(draft))
+        lint = c.soft('card-lint.sh', c.n)
+        if lint.timed_out or lint.rc not in (0, 1):
+            raise _Fail('card-lint.sh ' + ('timed out' if lint.timed_out else _first_line(lint.stderr) or 'exited %d' % lint.rc))
+        rules = []
+        for line in lint.stdout.splitlines():
+            rule = line.split(':')[0].strip()
+            if rule and rule not in rules:
+                rules.append(rule)
+        c.step('premise.sh', 'stamp', c.n, '--by', 'check', '--sha', run.head)
+        settings = c.config.get('followups') if isinstance(c.config.get('followups'), dict) else {}
+        cap = settings.get('auto_ready_cap')
+        cap = cap if isinstance(cap, int) and not isinstance(cap, bool) and cap >= 0 else 5
+        repro = parsed.get('repro') if isinstance(parsed.get('repro'), dict) else None
+        reason = None
+        if record.get('kind') != 'bug':
+            reason = 'not a bug report'
+        elif repro is None:
+            reason = 'no repro was run'
+        elif repro.get('result') != 'failed':
+            reason = 'the repro did not fail on the default branch'
+        elif lint.rc != 0:
+            reason = 'card lint failed: %s' % ', '.join(rules)
+        elif settings.get('auto_ready', 'bugs') != 'bugs':
+            reason = 'followups.auto_ready is none'
+        elif not self.state.take_auto_ready(cap):
+            reason = "this run's cap of %d is used" % cap
+        if reason is None:
+            c.move('ready')
+        else:
+            c.comment('Drafted; left in Backlog: %s.' % reason)
+        c.merge_soft(dict(_RESET))
 
     def _premise_card(self, c, number):
         """Another card as board-read.sh prints it, or None when the board does not hold it."""
@@ -2220,7 +2315,11 @@ class CardDriver:
         review = dict(last, round=max(rounds, last.get('round') if _posint(last.get('round')) else 0),
                       sha=head, critical=0, important=1, stage=None, agent=None, provider=None,
                       findings=findings)
-        c.merge(dict(_RESET, last_review=review, reviews=None, stage=None, reviewed_stages=[]))
+        # The failure is the evidence reviewer's finding. Every other reviewer's record stays: wiping them made the
+        # planner re-run all reviewers, they reported clean over the finding, and checks_failed fired again.
+        reviews = dict(note['reviews']) if isinstance(note.get('reviews'), dict) else {}
+        reviews['evidence'] = review
+        c.merge(dict(_RESET, last_review=review, reviews=reviews, stage=None, reviewed_stages=[]))
 
     def _do_unblock(self, c):
         c.move('ready')

@@ -6,6 +6,8 @@
 #   premise.sh show <n>
 #   premise.sh moved <n>
 #   premise.sh add-dep <n> <m>
+#   premise.sh apply-draft <n> <json-file>
+#   premise.sh set-followup <n> pending|done|failed
 #
 # stamp writes the card's premise {sha, at, by}; the sha is --sha, else the local
 # head of the default branch. show prints the stored premise, or null when it is
@@ -21,13 +23,18 @@
 # add-dep appends <m> to card <n>'s blocked_by when absent, keeping the rest; <m> equal to <n>
 # or a missing card exits 2.
 #
+# apply-draft takes {why, scope, acceptance: [..]} and writes the card's body as a "## Why" and a
+# "## Scope" section, replaces its acceptance and sets followup.draft to done. set-followup sets
+# followup.draft to the value given. Neither writes the stamp. A file that is not that shape, an
+# unknown value, or a card with no followup record exits 2.
+#
 # Exit codes: 0 done, 1 moved: the card cannot be read, 2 usage, 3 the card (or the default
 # head) cannot be read.
 set -uo pipefail
 unset CDPATH
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
-USAGE="usage: premise.sh stamp <n> --by <by> [--sha <40-hex>] | premise.sh show <n> | premise.sh moved <n> | premise.sh add-dep <n> <m>"
+USAGE="usage: premise.sh stamp <n> --by <by> [--sha <40-hex>] | premise.sh show <n> | premise.sh moved <n> | premise.sh add-dep <n> <m> | premise.sh apply-draft <n> <json-file> | premise.sh set-followup <n> <pending|done|failed>"
 [ $# -ge 2 ] || fb_die 2 "$USAGE"
 VERB="$1"; N="$2"; shift 2
 fb_valid_number "$N" || fb_die 2 "card number must be numeric, got: $N"
@@ -58,6 +65,22 @@ case "$VERB" in
     fb_valid_number "$DEP" || fb_die 2 "card number must be numeric, got: $DEP"
     [ "$DEP" != "$N" ] || fb_die 2 "add-dep names #$DEP, the card itself"
     ;;
+  apply-draft)
+    [ $# -eq 1 ] || fb_die 2 "$USAGE"
+    DRAFT_FILE="$1"
+    [ -f "$DRAFT_FILE" ] || fb_die 2 "file not found: $DRAFT_FILE"
+    jq -e 'type == "object" and (.why | type) == "string" and (.scope | type) == "string"
+           and (.acceptance | type) == "array" and (.acceptance | length) > 0
+           and all(.acceptance[]; type == "string" and test("[^ \t\n]"))' "$DRAFT_FILE" >/dev/null 2>&1 \
+      || fb_die 2 "$DRAFT_FILE must hold {why, scope, acceptance: [non-empty strings]}"
+    ;;
+  set-followup)
+    [ $# -eq 1 ] || fb_die 2 "$USAGE"
+    case "$1" in
+      pending|done|failed) DRAFT_VALUE="$1" ;;
+      *) fb_die 2 "followup draft must be pending, done or failed, got: $1" ;;
+    esac
+    ;;
   show|moved) [ $# -eq 0 ] || fb_die 2 "$USAGE" ;;
   *) fb_die 2 "$USAGE" ;;
 esac
@@ -74,6 +97,25 @@ if [ "$VERB" = add-dep ]; then
   CARD="$(fl_read_card "$N")" || exit 3
   jq --argjson m "$DEP" '.blocked_by = ((.blocked_by // []) | if index($m) then . else . + [$m] end)' <<<"$CARD" > "$TMP" \
     || fb_die 1 "cannot update card #$N"
+  fl_write_card "$N" "$TMP" || exit 1
+  exit 0
+fi
+
+if [ "$VERB" = apply-draft ] || [ "$VERB" = set-followup ]; then
+  [ -f "$(fl_card_file "$N")" ] || fb_die 3 "card #$N not found in $(fl_cards_dir)"
+  fb_lock "$N"
+  TMP="$(mktemp)" || fb_die 1 "cannot create a temporary file"
+  trap 'rm -f "$TMP"; fb_lock_release "$FB_LOCK"' EXIT
+  CARD="$(fl_read_card "$N")" || exit 3
+  jq -e '(.followup | type) == "object"' <<<"$CARD" >/dev/null 2>&1 || fb_die 2 "card #$N has no followup record"
+  if [ "$VERB" = set-followup ]; then
+    jq --arg d "$DRAFT_VALUE" '.followup.draft = $d' <<<"$CARD" > "$TMP" || fb_die 1 "cannot update card #$N"
+  else
+    jq --slurpfile d "$DRAFT_FILE" '
+      .body = "## Why\n\($d[0].why | sub("^\\s+"; "") | sub("\\s+$"; ""))\n\n## Scope\n\($d[0].scope | sub("^\\s+"; "") | sub("\\s+$"; ""))\n"
+      | .acceptance = $d[0].acceptance
+      | .followup.draft = "done"' <<<"$CARD" > "$TMP" || fb_die 1 "cannot update card #$N"
+  fi
   fl_write_card "$N" "$TMP" || exit 1
   exit 0
 fi

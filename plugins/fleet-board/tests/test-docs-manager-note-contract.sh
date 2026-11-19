@@ -24,7 +24,7 @@ check() {
 }
 
 has() {
-  tr '\n' ' ' < "$1" | tr -s ' ' | grep -qiF -- "$2" && echo ok || echo bad
+  tr '\n' ' ' < "$1" | tr -s ' ' | grep -ciF -- "$2" >/dev/null && echo ok || echo bad
 }
 
 check "manager-note contract: review_passes (null or an object) counts clean passes per reviewer" \
