@@ -1498,7 +1498,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
     | (($c.title // "") | slug) as $slug
     | decide($c; $n; $round) as $d00
     # A ready card that would start waits when an open card names one of its Scope paths
-    | (if $d00.action == "start"
+    | (if $d00.action == "start" or $d00.action == "check_premise"
         then (first($open[] | select(.number != $c.number) | . as $o
                 # a stacked child is not held by the scope of its ancestors
                 | select(((($c.stack // {}).ancestors // []) | index($o.number)) == null)
