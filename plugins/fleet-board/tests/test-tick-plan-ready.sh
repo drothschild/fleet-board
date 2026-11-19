@@ -266,12 +266,10 @@ assert_jq "premise-no-scope: no Scope paths waits" "$(card 12 action)" '"wait"'
 assert_jq "premise-no-scope: the reason" "$(card 12 reason)" '"Scope lists no paths"'
 
 pm_setup "$PM_ON" src/calc.js
-pm_issue 12 ready "$PM_SCOPE" ""; pm_issue 14 ready "$PM_SCOPE" ""
-scope_routes "$PM_DIR" "12 14" ""; run_check "$SCRIPT"
-assert_jq "premise-scope-held: a Ready card whose Scope overlaps an open card plans wait, not check_premise" \
-  '[.cards[] | select(.number == 12 or .number == 14) | .action] | index("check_premise")' 'null'
-assert_jq "premise-scope-held: the reason names the open card" \
-  '[.cards[] | select(.number == 12 or .number == 14) | .reason | select(startswith("Scope overlaps #"))] | length' '2'
+pm_issue 12 ready "$PM_SCOPE" ""; pm_issue 14 in_review "$PM_SCOPE" ""
+scope_routes "$PM_DIR" "12" "14"; run_check "$SCRIPT"
+assert_jq "premise-scope-held: a Ready card whose Scope overlaps an open card plans wait, not check_premise" "$(card 12 action)" '"wait"'
+assert_jq "premise-scope-held: the reason names the open card" "$(card 12 reason)" '"Scope overlaps #14 on src/calc.js"'
 
 pm_setup "$PM_ON" src/calc.js
 pm_issue 12 ready "$PM_SCOPE" ""; pm_issue 14 ready "$PM_OTHER" ""
