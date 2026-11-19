@@ -292,6 +292,19 @@ assert_jq "red checks: checks_rerun at the PR head plans checks_failed" "$(card 
 assert_jq "red checks: the checks_failed reason" "$(card 12 reason)" \
   '"PR #34 checks still red at abc1234 after a re-run (test-suite)"'
 
+# The supervisor admits from --candidates rows, so a red-check row there must carry the red checks the
+# driver re-runs or reports (a row without them failed every rerun_checks with "invalid red_checks: None")
+candidates() { setup_case "$@"; run_check "$SCRIPT" --candidates; }
+crow() { printf '(.candidates[] | select(.number == %d)).%s' "$1" "$2"; }
+candidates in-review-red-first "$AUTO"
+assert_exit "red checks: --candidates exit" 0
+assert_jq "red checks: the --candidates row plans rerun_checks" "$(crow 12 action)" '"rerun_checks"'
+assert_jq "red checks: the --candidates rerun_checks row carries the red check's name" "[$(crow 12 red_checks)[]?.name]" '["test-suite"]'
+assert_jq "red checks: the --candidates rerun_checks row carries the red check's details URL" "[$(crow 12 red_checks)[]? | has(\"detailsUrl\")]" '[true]'
+candidates in-review-red-rerun-same "$AUTO"
+assert_jq "red checks: the --candidates row plans checks_failed" "$(crow 12 action)" '"checks_failed"'
+assert_jq "red checks: the --candidates checks_failed row carries the red check's name" "[$(crow 12 red_checks)[]?.name]" '["test-suite"]'
+
 plan in-review-red-rerun-older "$AUTO"
 assert_jq "red checks: checks_rerun naming an older head plans rerun_checks again" "$(card 12 action)" '"rerun_checks"'
 

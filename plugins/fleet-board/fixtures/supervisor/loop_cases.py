@@ -1173,6 +1173,69 @@ class StackedAncestors(LoopCase):
         self.assertNotIn('ancestors', {r['card']: r for r in self.sup._reservations()}[12])
 
 
+class PlannedActionsRun(LoopCase):
+    HEAD = 'abc1234' + '0' * 33
+    RED = [{'name': 'offline-suites (ubuntu-latest)', 'detailsUrl': 'https://github.com/acme/toy/actions/runs/123/job/456'}]
+
+    def test_a_clean_review_with_a_red_check_is_rerun_within_a_tick(self):
+        self.in_review(12)
+        self.b.put_note({'last_review': {'round': 1, 'sha': self.HEAD, 'critical': 0, 'important': 0}}, 12)
+
+        def rows():
+            kw = dict(number=12, state='in_review', branch=BRANCH[12], worktree=self.b.worktree, declared_paths=['p12'],
+                      head_sha=self.HEAD, pr=34)
+            if self.b.note(12).get('checks_rerun'):
+                return [dc.candidate('skip', **kw)]
+            return [dc.candidate('rerun_checks', red_checks=self.RED, **kw)]
+        self.rows = rows
+        self.start()
+        self.until(lambda: self.b.note(12).get('checks_rerun'), what='the re-run to be recorded')
+        self.assertIn(('run', 'rerun', '123', '--failed', '--repo', 'acme/toy'), self.b.gh_calls)
+        self.assertEqual(self.b.note(12)['checks_rerun']['sha'], self.HEAD)
+        self.sup.request_stop('drain')
+        self.assertEqual(self.finished(), 0)
+
+    def test_a_planned_action_that_is_not_admitted_leaves_an_event_naming_card_action_and_reason(self):
+        self.sup.scheduler = self.sched
+        self.b.config['limits'] = dict(self.b.config['limits'], concurrency=1)
+        self.in_progress(12)
+        self.in_review(13)
+        self.b.plans({'report': 'implementor-ok', 'post': False, 'sleep': 6})
+        self.rows = lambda: [
+            dc.candidate('continue_implementor', number=12, state='in_progress', branch=BRANCH[12],
+                         worktree=self.b.worktree, declared_paths=['p12']),
+            dc.candidate('fix', number=13, state='in_review', branch=BRANCH[13], worktree=self.b.worktree,
+                         declared_paths=['p13'])]
+        self.start()
+
+        def event():
+            return [e for e in list(self.b.state.events)
+                    if e['type'] == 'not_admitted' and e['payload'].get('card') == 13]
+        found = self.until(event, what='a not_admitted event for card 13')
+        self.assertEqual(found[0]['payload'].get('action'), 'fix')
+        self.assertEqual(found[0]['payload'].get('reason'), 'global capacity')
+        self.sup.request_stop('cancel')
+        self.finished()
+
+
+class TraceUnadmitted(LoopCase):
+    def _events(self):
+        return [e['payload'] for e in list(self.b.state.events) if e['type'] == 'not_admitted']
+
+    def test_a_card_first_held_leaves_its_event_that_cycle_and_a_repeat_or_a_change_is_counted_once(self):
+        rows = [{'number': 13, 'action': 'fix'}]
+
+        def result(reason):
+            return {'waits': [{'number': 13, 'reason': reason}], 'attention': []}
+        self.sup._trace_unadmitted(rows, result('global capacity'), [])
+        self.assertEqual([(e['card'], e['action'], e['reason']) for e in self._events()],
+                         [(13, 'fix', 'global capacity')])
+        self.sup._trace_unadmitted(rows, result('global capacity'), [])
+        self.assertEqual(len(self._events()), 1)
+        self.sup._trace_unadmitted(rows, result('provider capacity'), [])
+        self.assertEqual([e['reason'] for e in self._events()], ['global capacity', 'provider capacity'])
+
+
 if __name__ == '__main__':
     # FLEET_TEST_ONLY=<name> runs that one test method (commands.test_case); a name that matches nothing runs none
     only = os.environ.get('FLEET_TEST_ONLY')

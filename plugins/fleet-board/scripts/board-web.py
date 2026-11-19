@@ -12,8 +12,8 @@ never writes a card file itself. Binds 127.0.0.1 only; the first stdout line is
 Environment: FLEET_BOARD_LOG_DIR (parent of the runtime data, default ~/.fleet-board),
 FLEET_BOARD_CLAUDE (the claude binary the
 import session runs, default `claude`), FLEET_BOARD_CODEX (the codex binary a codex Planner
-chat runs, default `codex`), FLEET_BOARD_PLUGIN_DIR (when set, the import
-session gets `--plugin-dir <value>`), FLEET_BOARD_TEST_IMPORT_ID (tests only: used as
+chat runs, default `codex`), FLEET_BOARD_PLUGIN_DIR (replaces the plugin
+directory the import session loads, by default the plugin root of these scripts: `--plugin-dir <dir>`), FLEET_BOARD_TEST_IMPORT_ID (tests only: used as
 the import id instead of a generated one), FLEET_BOARD_CREATE (tests only: the script
 that creates the previewed cards, in place of import-plan.sh).
 """
@@ -512,9 +512,11 @@ def start_import(plan_text: str, status: str) -> str:
             "Read(//%s/**)" % real_idir.strip("/"),
             "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
         ]
-        plugin_dir = os.environ.get("FLEET_BOARD_PLUGIN_DIR")
-        if plugin_dir:
-            argv += ["--plugin-dir", plugin_dir]
+        # The session loads the plugin this page runs, so the skill sends it to the script path the allow rule above
+        # names: a session that loaded another install (a different version, or the cache while this page runs from a
+        # checkout) was refused its dry run in dontAsk mode. FLEET_BOARD_PLUGIN_DIR overrides it.
+        plugin_dir = os.environ.get("FLEET_BOARD_PLUGIN_DIR") or os.path.dirname(os.path.dirname(scripts_path))
+        argv += ["--plugin-dir", plugin_dir]
         argv.append(prompt)
         # the exact command line, one argument per line and the prompt shortened, so a permission
         # denial can be traced to the options the session really got
@@ -1851,21 +1853,37 @@ def get_transcripts(params, body):
     return 200, out + ended
 
 
+def _running_log(n, stem):
+    """The log path of this card's running session whose file stem is `stem`, from the supervisor status, else
+    None. A session writes its ledger line only when it ends, so the list names it before the ledger can."""
+    sessions = _log_sessions_dir()
+    status = supervisor_status()
+    active = status.get("active") if isinstance(status, dict) else None
+    for a in active if isinstance(active, list) else []:
+        log = a.get("log") if isinstance(a, dict) else None
+        if isinstance(log, str) and log and a.get("card") == n and Path(log).stem == stem and _inside(log, sessions):
+            return log
+    return None
+
+
 def get_transcript(params, body):
-    """The rendered session log of one of this card's ledger lines; the id is the log's file stem."""
+    """The rendered session log of one of this card's ledger lines, or of its running session (a snapshot of the
+    log as read now); the id is the log's file stem."""
     cfg, _ = ctx()
     board_dir = (cfg.get("board") or {}).get("dir") or supervisor_usage.DEFAULT_DIR
     lines, _skipped = supervisor_usage.read(APP["root"], board_dir)
-    for line in lines:
-        log = line.get("log")
-        if line["card"] == params["n"] and log and Path(log).stem == params["id"]:
-            try:
-                return 200, PlainText(supervisor_sessiontext.render(log))
-            except FileNotFoundError:
-                raise ApiError(404, "the log file is missing for session %s" % params["id"])
-            except OSError as exc:
-                raise ApiError(500, "log unreadable: %s" % str(exc)[:200])
-    raise ApiError(404, "no such session for card %d: %s" % (params["n"], params["id"]))
+    log = next((line.get("log") for line in lines
+                if line["card"] == params["n"] and line.get("log") and Path(line["log"]).stem == params["id"]), None)
+    if log is None:   # the supervisor is asked only when the ledger has no such session
+        log = _running_log(params["n"], params["id"])
+    if log is None:
+        raise ApiError(404, "no such session for card %d: %s" % (params["n"], params["id"]))
+    try:
+        return 200, PlainText(supervisor_sessiontext.render(log))
+    except FileNotFoundError:
+        raise ApiError(404, "the log file is missing for session %s" % params["id"])
+    except OSError as exc:
+        raise ApiError(500, "log unreadable: %s" % str(exc)[:200])
 
 
 STUCK_MIN_INTERVAL = 30.0  # seconds: a stuck scan of a large board takes seconds and shells out per card
