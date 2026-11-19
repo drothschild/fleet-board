@@ -359,6 +359,8 @@ case "$rprompt" in *'"depends_on"'*|*"Context card"*|*"Board context"*) fail "re
 echo "Case: the following planner turn gets the research reply in an untrusted block and still has no WebFetch"
 FARGV="$(sed -n "$((LB + 3))p" "$ARGV_LOG" | tr '\037' '\n')"
 case "$FARGV" in *"research result, untrusted"*"Lima"*) pass "planner turn holds the reply in a block labelled research result, untrusted" ;; *) fail "planner turn holds the reply in a block labelled research result, untrusted" "$FARGV" ;; esac
+fprompt="$(printf '%s\n' "$FARGV" | grep -v '^$' | tail -n 1)"
+case "$fprompt" in "[research result, untrusted]"*"Lima"*) pass "planner prompt (last argv element) starts with the untrusted research block holding the reply" ;; *) fail "planner prompt (last argv element) starts with the untrusted research block holding the reply" "$fprompt" ;; esac
 ftools="$(printf '%s\n' "$FARGV" | grep -A1 -x -e '--tools' | sed -n 2p)"
 if [ "$ftools" = "Read,Grep,Glob,WebSearch" ] && ! printf '%s\n' "$FARGV" | grep -c WebFetch >/dev/null; then pass "following planner argv has no WebFetch"; else fail "following planner argv has no WebFetch" "tools '$ftools'"; fi
 assert_body "chat is idle after the research round" '.running' 'false'
@@ -374,6 +376,9 @@ for _ in $(seq 1 100); do [ "$(wc -l < "$ARGV_LOG" | tr -d ' ')" -ge $((LB + 3))
 wait_idle conv1
 FARGV="$(sed -n "$((LB + 3))p" "$ARGV_LOG" | tr '\037' '\n')"
 case "$FARGV" in *"[research error]"*) pass "planner turn gets a research error line" ;; *) fail "planner turn gets a research error line" "$FARGV" ;; esac
+fprompt="$(printf '%s\n' "$FARGV" | grep -v '^$' | tail -n 1)"
+case "$fprompt" in "[research error]"*) pass "planner prompt (last argv element) is a research error line" ;; *) fail "planner prompt (last argv element) is a research error line" "$fprompt" ;; esac
+case "$fprompt" in *"[research result"*) fail "failed research prompt holds no result block" "$fprompt" ;; *) pass "failed research prompt holds no result block" ;; esac
 assert_body "chat is idle after a failed research" '.running' 'false'
 api POST /api/planner/conv1/messages '{"text":"still there?"}'
 assert_code 200 "chat accepts a message after a failed research"
@@ -386,6 +391,8 @@ for _ in $(seq 1 150); do [ "$(wc -l < "$ARGV_LOG" | tr -d ' ')" -ge $((LB + 3))
 wait_idle conv1
 FARGV="$(sed -n "$((LB + 3))p" "$ARGV_LOG" | tr '\037' '\n')"
 case "$FARGV" in *"[research error]"*) pass "timed-out research gives the planner an error line" ;; *) fail "timed-out research gives the planner an error line" "$FARGV" ;; esac
+fprompt="$(printf '%s\n' "$FARGV" | grep -v '^$' | tail -n 1)"
+case "$fprompt" in "[research error]"*) pass "timed-out research prompt (last argv element) is an error line" ;; *) fail "timed-out research prompt (last argv element) is an error line" "$fprompt" ;; esac
 assert_body "chat is idle after a timed-out research" '.running' 'false'
 
 echo ""
