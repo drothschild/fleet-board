@@ -1211,6 +1211,23 @@ def card_reviewers(cfg: dict, card: dict, note) -> list:
         if isinstance(st, dict) and isinstance(st.get("name"), str) and st.get("enabled") is not False:
             req = st.get("required_passes")
             entries.append((st["name"], st.get("advisory") is True, req if is_int(req) and req >= 1 else 1))
+    records = note.get("review_passes") if isinstance(note.get("review_passes"), dict) else {}
+
+    def pass_counts(name, latest, advisory, rnd):
+        """(clean, with findings): the distinct passes of a stage that hold a clean record, and those holding
+        findings, at the head it last reviewed (the sha of its latest record), this round or later."""
+        head = latest.get("sha") if isinstance(latest, dict) else None
+        found, flagged = set(), set()
+        for rec in records.get(name) if isinstance(records.get(name), list) else []:
+            if not (isinstance(rec, dict) and is_int(rec.get("pass")) and head and rec.get("sha") == head
+                    and (rec.get("round") if is_int(rec.get("round")) else 0) >= rnd):
+                continue
+            if advisory or sum(rec.get(k) for k in ("critical", "important") if is_int(rec.get(k))) == 0:
+                found.add(rec["pass"])
+            else:
+                flagged.add(rec["pass"])
+        return len(found), len(flagged)
+
     out = []
     for name, advisory, req in entries:
         r = reviews.get(name)
@@ -1218,8 +1235,11 @@ def card_reviewers(cfg: dict, card: dict, note) -> list:
         if isinstance(r, dict) and (r.get("round") if is_int(r.get("round")) else 0) >= rnd:
             found = sum(r.get(k) for k in ("critical", "important") if is_int(r.get(k)))
             status = "clean" if advisory or found == 0 else "findings"
-        out.append({"name": name, "status": status, "passes": 1 if status == "clean" else 0,
-                    "required_passes": req})
+        passes = 1 if status == "clean" else 0
+        if req > 1:   # N passes: clean only when all N are, findings as soon as one pass reports some
+            passes, bad = pass_counts(name, r, advisory, rnd)
+            status = "findings" if bad or status == "findings" else "clean" if passes >= req else "pending"
+        out.append({"name": name, "status": status, "passes": passes, "required_passes": req})
     return out
 
 
