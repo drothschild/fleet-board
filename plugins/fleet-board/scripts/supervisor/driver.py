@@ -28,7 +28,7 @@ import time
 from collections import namedtuple
 from pathlib import Path
 
-from . import markers as _markers, paths, resolver, roles as _roles, scopes, scripts, usage as _usage
+from . import markers as _markers, paths, repos as _repos, resolver, roles as _roles, scopes, scripts, usage as _usage
 from .state import Action, ledger_column
 
 
@@ -96,7 +96,7 @@ PR_FILES_LIMIT = 100   # gh pr view --json files lists at most this many: a full
 _CONFLICT = re.compile(r'conflict', re.I)
 _SCRIPT_RUNNERS = ('stage-review', 'evidence-review')
 _UNCOUNTED = frozenset(('wait', 'skip'))
-_FLAGS = frozenset(('--all', '--qa-summary', '--role', '--commits-since-review', '--mode', '--by', '--sha', '-'))
+_FLAGS = frozenset(('--all', '--qa-summary', '--role', '--commits-since-review', '--mode', '--by', '--sha', '--pass', '-'))
 _FIXED_BEFORE = ('backlog', 'ready', 'in_progress', 'in_review')
 _MERGING = ('merging',)
 _FIXED_AFTER = ('human_qa', 'blocked', 'done', 'wont_do')
@@ -325,6 +325,7 @@ class _Ctx:
         self.attempts_before = None   # implementor_attempts before this dispatch charged one
         self._files = 0
         self._released = False
+        self._checkout = None
         self.reached_done = False
 
     # values -------------------------------------------------------------------------------------------
@@ -369,8 +370,32 @@ class _Ctx:
             raise _Invalid('stack', value)
         return value
 
+    def foreign(self):
+        """The card's repo when it names one other than the home repo, else None."""
+        card_repo = self.row.get('repo')
+        home = (self.config.get('board') or {}).get('repo')
+        if card_repo and str(card_repo).lower() != str(home or '').lower():
+            return card_repo
+        return None
+
+    def checkout(self):
+        """(root, config) of the card's repo: the home root and config, or the listed checkout's."""
+        if self._checkout is None:
+            repo = self.foreign()
+            if repo is None:
+                self._checkout = (str(self.d.root), self.config)
+            else:
+                def load(root):
+                    from .loop import config_loader
+                    return config_loader(root, run=self.d.run)()
+                found = _repos.resolve(self.d.root, self.config, repo, load)
+                if found.error:
+                    raise _Fail(found.error)
+                self._checkout = (found.root, found.config)
+        return self._checkout
+
     def repo(self):
-        value = (self.config.get('board') or {}).get('repo')
+        value = self.foreign() or (self.config.get('board') or {}).get('repo')
         if not isinstance(value, str) or not _REPO.fullmatch(value) or value.startswith('-'):
             raise _Invalid('repo', value)
         return value
@@ -392,6 +417,10 @@ class _Ctx:
             text = str(arg)
             if text.startswith('-') and text not in _FLAGS:
                 raise _Invalid('argument', text)
+        if name == 'worktree.sh' and self.foreign():
+            root = self.checkout()[0]   # a card of another repo: its worktrees are made in that checkout
+            kw['env'] = dict(kw.get('env') or {}, FLEET_ROOT=root)
+            return self.d.run(root, name, *args, **kw)
         return self.d.run(self.d.root, name, *args, **kw)
 
     def step(self, name, *args, **kw):
@@ -724,6 +753,7 @@ class CardDriver:
                         provider=resolver.provider_for(config, row), paths=list(row.get('declared_paths') or []),
                         started_at=self.clock(), started_mono=time.monotonic(),
                         stage=(row['stage'].get('name') if isinstance(row.get('stage'), dict) else row.get('stage')),
+                        review_pass=row.get('pass') if _posint(row.get('pass')) else None,
                         kind='role' if action_name in ROLE_ACTIONS else 'script')
         if not _posint(number):
             self.state.event('action_failed', card=number, action=action_name, error='invalid number: %s' % (number,))
@@ -958,16 +988,19 @@ class CardDriver:
         return card
 
     @staticmethod
-    def _latest_report(card):
-        """The newest card comment with `## Status` and a VERIFIED: line and no `## Acceptance map`."""
+    def _latest_report(card, built=False):
+        """The newest card comment with `## Status` and a VERIFIED: line and no `## Acceptance map`. With `built`
+        (a stage reviewer's input) only an implementor's or fixer's report counts, one with a `## PR` section, so a
+        stage's report on the card, another pass's included, never reaches a stage reviewer."""
         for comment in reversed(card.get('comments') or []):
             body = comment.get('body') if isinstance(comment, dict) else None
             if (isinstance(body, str) and re.search(r'(?m)^## Status', body) and re.search(r'(?m)^VERIFIED:', body)
-                    and not re.search(r'(?m)^## Acceptance map', body)):
+                    and not re.search(r'(?m)^## Acceptance map', body)
+                    and (not built or re.search(r'(?m)^## PR', body))):
                 return body
         return ''
 
-    def _report_predates_head(self, c, pr, card):
+    def _report_predates_head(self, c, pr, card, built=False):
         """True when the latest report was posted before the PR head's commit. A claim describes the head its
         report was written at, so an older report gives the reviewer nothing to re-check. Unreadable dates
         keep the report, as before."""
@@ -975,7 +1008,8 @@ class CardDriver:
         for comment in reversed(card.get('comments') or []):
             body = comment.get('body') if isinstance(comment, dict) else None
             if (isinstance(body, str) and re.search(r'(?m)^## Status', body) and re.search(r'(?m)^VERIFIED:', body)
-                    and not re.search(r'(?m)^## Acceptance map', body)):
+                    and not re.search(r'(?m)^## Acceptance map', body)
+                    and (not built or re.search(r'(?m)^## PR', body))):
                 posted = comment.get('created_at')
                 break
         head = self.gh(self.root, 'pr', 'view', str(pr), '--repo', c.repo(), '--json', 'commits', '--jq',
@@ -1027,7 +1061,7 @@ class CardDriver:
         card = self._read_card(c)
         inputs = {'number': c.n, 'title': card.get('title'), 'body': card.get('body'),
                   'acceptance': ''.join('- %s\n' % a for a in card.get('acceptance') or []) or 'none',
-                  'config': json.dumps(c.config, indent=2, sort_keys=True), 'scripts': str(self.plugin_dir / 'scripts')}
+                  'config': json.dumps(c.checkout()[1], indent=2, sort_keys=True), 'scripts': str(self.plugin_dir / 'scripts')}
         if role in ('implementor', 'reviewer', 'fixer'):
             inputs['open_cards'] = self._open_cards(c)
         if role == 'implementor':
@@ -1097,13 +1131,15 @@ class CardDriver:
             note.get('last_review') if isinstance(note.get('last_review'), dict) else {})
         previous = last.get('sha') if isinstance(last.get('sha'), str) and _SHA.fullmatch(last['sha']) else None
         findings = self._severe(last.get('findings')) if run.round >= 2 else []
-        report = self._latest_report(card)
-        stale = bool(report) and self._report_predates_head(c, pr, card)
+        report = self._latest_report(card, built=bool(stage))
+        stale = bool(report) and self._report_predates_head(c, pr, card, built=bool(stage))
         accepted = accepted_sha(note)
         if d.runner in _SCRIPT_RUNNERS:
             return self._script_args(c, run, pr, previous, findings, None if stale else report, accepted)
         # A stage reviewer gets its own checkout, so reviewers of one card running together never share one
         extra = (stage,) if name == 'review_stage' and stage else ()
+        if extra and _posint(c.row.get('pass')) and c.row['pass'] > 1:
+            extra += ('--pass', str(c.row['pass']))   # pass i > 1 has its own checkout; pass 1 keeps the stage's
         # A stacked card is reviewed against its parent branch: worktree.sh prints the merge-base with it
         stack = note.get('stack')
         if isinstance(stack, dict):
@@ -1176,6 +1212,10 @@ class CardDriver:
         if sup.get('allow_api_key') is not True:
             env.pop('ANTHROPIC_API_KEY', None)   # the fleet bills the person's login, not a stray key
         env.setdefault('FLEET_BOARD_RUN_ID', str(self.state.run_id))
+        card_repo = c.row.get('repo')
+        home_repo = (self.config_loader().get('board') or {}).get('repo')
+        if card_repo and str(card_repo).lower() != str(home_repo or '').lower():
+            env['FLEET_BOARD_HOME'] = str(self.root)   # a card of another repo: its board is the home board
         argv = self.roles.command(d, run.prompt, c.config, self.plugin_dir, stage_args=run.stage_args)
         mode = None if run.script else ((c.config.get('headless') or {}).get('permission_mode') or 'auto')
         label = 'card-%d-%s-%d-%d' % (c.n, c.row['action'], int(self.clock() * 1000), run.attempt)
