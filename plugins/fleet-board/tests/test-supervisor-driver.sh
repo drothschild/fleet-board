@@ -315,6 +315,57 @@ def case_a_role_session_keeps_anthropic_api_key_when_allow_api_key_is_true(sub):
     assert env.get('PATH') and env.get('FLEET_BOARD_RUN_ID'), sorted(env)
 
 
+# Role sessions and worktrees run in the card's repo (card 423)
+def other_checkout(sub):
+    d = dc.Path(tempfile.mkdtemp(dir=sub)).resolve()
+    dc.subprocess.run(['git', '-C', str(d), 'init', '-q'], check=True)
+    dc.subprocess.run(['git', '-C', str(d), 'remote', 'add', 'origin', 'https://github.com/acme/other.git'],
+                      check=True)
+    (d / '.fleet-board.yml').write_text('board:\n  repo: acme/other\ncommands:\n  test_one: other-runner {file}\n')
+    return d
+
+
+def other_board(sub):
+    other = other_checkout(sub)
+    cfg = dict(dc.CONFIG, board={'repo': 'acme/toy', 'repos': [{'repo': 'acme/other', 'path': str(other)}]},
+               commands={'test_one': 'home-runner {file}'})
+    return dc.board_for(tempfile.mkdtemp(dir=sub), config=cfg), other
+
+
+def case_a_start_for_a_card_of_another_repo_runs_worktree_sh_with_that_repos_root_as_fleet_root(sub):
+    b, other = other_board(sub)
+    seen = []
+    real = b.driver.run
+
+    def spy(root, name, *args, **kw):
+        if name == 'worktree.sh':
+            seen.append((str(root), (kw.get('env') or {}).get('FLEET_ROOT')))
+        return real(root, name, *args, **kw)
+
+    b.driver.run = spy
+    b.plans({'report': 'implementor-ok'})
+    b.stubs['worktree.sh'] = dc.ok(b.worktree + '\n')
+    assert dc.begin(b, 'start', repo='acme/other').kind == 'session'
+    assert seen == [(str(other), str(other))], seen
+
+
+def case_every_gh_call_for_a_card_of_another_repo_passes_repo_as_the_cards_repo(sub):
+    b, other = other_board(sub)
+    assert dc.begin(b, 'mark_ready', state='in_review', repo='acme/other').kind == 'done'
+    assert b.gh_calls, b.gh_calls
+    for call in b.gh_calls:
+        assert call[call.index('--repo') + 1] == 'acme/other', call
+
+
+def case_the_test_command_for_a_card_of_another_repo_comes_from_that_repos_test_one(sub):
+    b, other = other_board(sub)
+    b.plans({'report': 'implementor-ok'})
+    b.stubs['worktree.sh'] = dc.ok(b.worktree + '\n')
+    assert dc.begin(b, 'start', repo='acme/other').kind == 'session'
+    prompt = b.prompt()
+    assert 'other-runner {file}' in prompt and 'home-runner' not in prompt, prompt
+
+
 failed = 0
 for name, fn in sorted(globals().items()):
     if name.startswith('case_'):
