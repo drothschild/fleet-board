@@ -272,9 +272,15 @@ assert_jq "premise-scope-held: a Ready card whose Scope overlaps an open card pl
 assert_jq "premise-scope-held: the reason names the open card" "$(card 12 reason)" '"Scope overlaps #14 on src/calc.js"'
 
 pm_setup "$PM_ON" src/calc.js
+pm_issue 12 ready "$PM_SCOPE" ""; pm_issue 14 ready "$PM_SCOPE" ""
+scope_routes "$PM_DIR" "12 14" ""; run_check "$SCRIPT"
+assert_jq "premise-scope-free: overlapping unstamped cards both plan check_premise" \
+  '[.cards[] | select(.number == 12 or .number == 14) | .action]' '["check_premise","check_premise"]'
+
+pm_setup "$PM_ON" src/calc.js
 pm_issue 12 ready "$PM_SCOPE" ""; pm_issue 14 ready "$PM_OTHER" ""
 scope_routes "$PM_DIR" "12 14" ""; run_check "$SCRIPT"
-assert_jq "premise-scope-free: cards with disjoint Scope both plan check_premise" \
+assert_jq "premise-scope-disjoint: cards with disjoint Scope both plan check_premise" \
   '[.cards[] | select(.number == 12 or .number == 14) | .action]' '["check_premise","check_premise"]'
 
 pm_setup "$PM_ON" src/calc.js
