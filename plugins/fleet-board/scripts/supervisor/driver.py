@@ -1134,6 +1134,11 @@ class CardDriver:
         report = self._latest_report(card, built=bool(stage))
         stale = bool(report) and self._report_predates_head(c, pr, card, built=bool(stage))
         accepted = accepted_sha(note)
+        if (d.runner in _SCRIPT_RUNNERS and stage and previous is None and run.round < 2
+                and name == 'review_stage'):
+            # A stage's first review, before the evidence review has reported: start where the evidence
+            # reviewer's round 1 starts, the merge-base worktree.sh review prints for the stage's checkout
+            previous = self._review_base(c, run, pr, note, stage)
         if d.runner in _SCRIPT_RUNNERS:
             return self._script_args(c, run, pr, previous, findings, None if stale else report, accepted)
         # A stage reviewer gets its own checkout, so reviewers of one card running together never share one
@@ -1158,6 +1163,8 @@ class CardDriver:
             if self.git(data['path'], 'merge-base', '--is-ancestor', accepted, 'HEAD').rc != 0:
                 accepted = None
         prev_sha = previous if (run.round >= 2 or stage) else (accepted or data.get('base'))
+        if stage and previous is None and run.round < 2:
+            prev_sha = data.get('base')
         if not (isinstance(prev_sha, str) and _SHA.fullmatch(prev_sha)):
             raise _Fail('no previous review sha for round %d' % run.round)
         diff = self.gh(self.root, 'pr', 'diff', str(pr), '--repo', c.repo())
@@ -1173,6 +1180,21 @@ class CardDriver:
                           post='Check and post your report in one Bash call: `bash %s/parse-report.sh --role '
                                'stage-reviewer <path> && bash %s/board-comment.sh %d <path>`'
                                % (inputs['scripts'], inputs['scripts'], c.n))
+
+    def _review_base(self, c, run, pr, note, stage):
+        """The merge-base worktree.sh review prints for a stage's checkout (None when it prints none)."""
+        extra = (stage,)
+        if _posint(c.row.get('pass')) and c.row['pass'] > 1:
+            extra += ('--pass', str(c.row['pass']))
+        stack = note.get('stack')
+        if isinstance(stack, dict):
+            sbase = stack.get('base')
+            if not isinstance(sbase, str) or not _BRANCH.fullmatch(sbase):
+                raise _Invalid('stack', stack)
+            extra += (sbase,)
+        data = _json(c.step('worktree.sh', 'review', c.n, pr, *extra).stdout)
+        base = data.get('base') if isinstance(data, dict) else None
+        return base if isinstance(base, str) and _SHA.fullmatch(base) else None
 
     def _script_args(self, c, run, pr, previous, findings, report, accepted=None):
         """argv tail for evidence-review.sh / stage-review.sh (the provider scripts post their own report)."""
