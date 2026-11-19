@@ -80,7 +80,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `merge.ignore_checks` does not cover plans `rerun_checks` (no `checks_rerun` for the PR head: the driver runs
   `gh run rerun <id> --failed` per red check and notes `checks_rerun {sha, checks, at}`) or, with `checks_rerun.sha`
   at the head, `checks_failed` (the driver records the red checks as one Important finding in `last_review`, so the
-  planner plans `fix`). Neither starts an agent. Precedence: failed lookup, invalid note, file_pending,
+  planner plans `fix`). Both rows, in the plan and in `--candidates` (from which the supervisor admits), carry `red_checks` (each red check's `name` and `detailsUrl`); a `review_stage` row there also carries its `pass`. Neither starts an agent. Precedence: failed lookup, invalid note, file_pending,
   the `action_failures` rules, then the table. `action_failures` bound: at `max_rounds`
   consecutive no-progress actions the card is blocked; at `2*max_rounds` (or `max_rounds`
   for a blocked card awaiting unblock) it is skipped for a person, who clears it with
@@ -187,7 +187,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   and the gate pass `--also-base origin/<stack.base>` for a card whose note has `stack`.
   `worktree.sh review <n> <pr> [<stage>] [<base-branch>]`: a `fleet/<n>-<slug>` argument makes `base` the
   merge-base of origin's copy of that branch and the head (exit 1 when origin lacks it); the driver passes
-  `stack.base` for a card with `stack`. Suites: `tests/test-stack-plan.sh`, `test-review-drift.sh`,
+  `stack.base` for a card with `stack`. `update-branch.sh` retargets a stacked card's PR to `stack.base` (`gh pr edit --base`) when the PR targets another branch and origin has `stack.base` (never under `--lane-bump`), and then merges that as its base, so the fixer, which merges the PR's base, merges the branch the update merges; its conflict error names the ref that conflicted. Suites: `tests/test-stack-plan.sh`, `test-review-drift.sh`,
   `test-worktree.sh`, `test-gate.sh`, `driver_cases.py`.
 - **Stack bridge** (`scripts/stack-bridge.sh tree|commit`, pure git, never pushes). `tree <repo>
   <parent-head> <ours> <theirs>` prints the `git merge-tree --write-tree --merge-base` tree;
@@ -214,7 +214,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   before the conflict, fix, update_branch, start_review and review rows (a stale `conflicted_files` does not stop it).
   `land` is a script action that takes a slot, reserves no scope and is never run synchronously in the driver
   (`scheduler`, `driver.SCRIPT_ACTIONS`, `loop._begin`, as `update_branch`): the driver runs `worktree.sh create`
-  then `stack-land.sh`; exits 3 and 4 are not action failures, any other non-zero exit counts one. Suite:
+  then `stack-land.sh`; exits 3 and 4 are not action failures, any other non-zero exit counts one. A landing (exit 0) and a clean `update_branch` clear the note's `conflicted_files`, since the branch then holds every merge. Suite:
   `tests/test-stack-land.sh`.
 - **Stacking display** (no new note field). `status.sh` appends ` · stacked on #<stack.parent>` to a card's
   line when its note has `stack`, then ` · landing needs attention: <stack.attention>` when that is a string; a
@@ -403,8 +403,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
     the supervisor's running ones first (`running: true`, `ended_at: null`), then this repo's usage-ledger entries
     newest first; a log outside the sessions directory is left out. `GET /api/cards/<n>/transcripts/<id>` answers
     the session's rendered log as plain text (`<id>` is the log's file stem). It is 404 `no such session for card <n>: <id>`
-    when no ledger line of that card has that stem, and 404 `the log file is missing for session <id>` when the
-    line exists but its file does not. A running session's text is a snapshot of the log as read at that request. The supervisor status carries `log` on each running action (`active[]`), the
+    when neither a ledger line of that card nor a running action of that card has that stem, and 404 `the log file is missing for session <id>` when
+    the line or running action exists but its file does not. A running session's text is a snapshot of the log as read at that request: `get_transcript` looks in the ledger first, and only when it has no such session for the card asks the supervisor status for a running action of that card whose `log` has that stem inside the sessions directory. The supervisor status carries `log` on each running action (`active[]`), the
     path of that session's log, or null when it has none; the list reads it to find running sessions. Status is
     `Service.status_view()`; `tests/test-supervisor-ui.sh` feeds real service output
     (`fixtures/supervisor/dump_real_shapes.py`) to the DOM harness so UI and service cannot drift.
@@ -504,6 +504,11 @@ no file here. The gate's residual bypasses and false positives are listed in the
   runs all six and prints their combined total, for the whole planner or a card that names it.
   Its second line marks it as an aggregate runner, so CI's `.github/scripts/run-suites.sh`
   skips it and no suite runs twice.
+- `test-supervisor-allowlist.sh` reads every literal `*.sh` name the supervisor package passes to
+  `run`, `soft`, `step`, `spawn` or the script helpers and fails for any name missing from
+  `scripts.ALLOWED`. Driver tests stub scripts by name, so they never run the real allowlist: add a
+  new script to `ALLOWED` when the supervisor first calls it, and raise the `ALLOWED` count that
+  `fixtures/supervisor/candidates_cases.py` pins.
 - After any change under this directory: `bash plugins/fleet-board/tests/test-clean-room.sh`
   must pass.
 - `behavioral-*.sh` are live: they run real headless sessions against `SANDBOX_REPO` and

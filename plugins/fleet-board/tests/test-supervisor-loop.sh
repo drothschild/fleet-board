@@ -8,3 +8,4 @@ FLEET_BOARD_SOCKET_DIR=$(mktemp -d /tmp/fbt.XXXXXX)
 export FLEET_BOARD_SOCKET_DIR
 trap 'rm -rf "$tmp" "$FLEET_BOARD_SOCKET_DIR"' EXIT
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$plugin_dir/scripts" python3 "$plugin_dir/fixtures/supervisor/loop_cases.py" "$tmp"
+# the loop cases (fixtures/supervisor/loop_cases.py) include PlannedActionsRun: a planned rerun_checks runs, and an action that is not admitted leaves an event
