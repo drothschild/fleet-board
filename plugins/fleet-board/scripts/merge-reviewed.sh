@@ -94,9 +94,36 @@ fi
 
 fb_load_config
 
+# resolve_card <n>: sets CARD_REPO (the repo gh is asked about), CARD_ROOT (its checkout), CARD_CFG and
+# CARD_POLICY for card <n>: the home repo's, or, when the card names another repo, the entry of
+# board.repos with that repo and the config of its checkout. Returns 1 (CARD_ERR set) when it cannot.
+resolve_card() {
+  local c_repo path
+  CARD_REPO="$FLEET_REPO"; CARD_ROOT="$FLEET_ROOT"; CARD_CFG="$FLEET_CFG"; CARD_ERR=""; CARD_FOREIGN=false
+  c_repo="$(bash "$FLEET_SCRIPTS/board-read.sh" "$1" </dev/null | jq -r '.repo // empty')" \
+    || { CARD_ERR="cannot read the repo of the card"; return 1; }
+  if [ -n "$c_repo" ] && [ "$(printf '%s' "$c_repo" | tr 'A-Z' 'a-z')" != "$(printf '%s' "$FLEET_REPO" | tr 'A-Z' 'a-z')" ]; then
+    path="$(jq -r --arg r "$c_repo" '[(.board.repos // [])[] | select((.repo | ascii_downcase) == ($r | ascii_downcase)) | .path][0] // empty' <<<"$FLEET_CFG")"
+    [ -n "$path" ] || { CARD_ERR="repo $c_repo is not listed in board.repos"; return 1; }
+    CARD_CFG="$(bash "$FLEET_SCRIPTS/config.sh" --dir "$path")" || { CARD_ERR="config of repo $c_repo ($path) is invalid"; return 1; }
+    CARD_REPO="$c_repo"; CARD_ROOT="$path"; CARD_FOREIGN=true
+  fi
+  CARD_POLICY="$(jq -r '.merge.policy // empty' <<<"$CARD_CFG")"
+}
+
+# in_card_root <command...>: runs the command in the card's checkout, as a script of that repo (its own config)
+in_card_root() {
+  if [ "$CARD_FOREIGN" = true ]; then
+    (cd "$CARD_ROOT" && env -u FLEET_CFG -u FLEET_ROOT -u FLEET_REPO -u FB_CFG_FOR -u FLEET_BOARD_HOME "$@")
+  else
+    "$@"
+  fi
+}
+
 if [ "$INSPECT" = 1 ]; then
+  resolve_card "$CARD_ONLY" || fb_die 3 "cannot inspect merge recovery: $CARD_ERR"
   note="$(bash "$FLEET_SCRIPTS/note.sh" get "$CARD_ONLY" </dev/null)" || fb_die 3 "cannot read merge recovery note"
-  info="$(gh pr view "$EXPECTED_PR" --repo "$FLEET_REPO" --json isDraft,state,mergedAt,statusCheckRollup,headRefOid)" || fb_die 3 "cannot inspect merge recovery PR"
+  info="$(gh pr view "$EXPECTED_PR" --repo "$CARD_REPO" --json isDraft,state,mergedAt,statusCheckRollup,headRefOid)" || fb_die 3 "cannot inspect merge recovery PR"
   jq -nc --arg key "$OPERATION_KEY" --argjson pr "$EXPECTED_PR" --arg head "$EXPECTED_HEAD" --argjson note "$note" --argjson info "$info" '
     ($note.merge_operation // $note.pending_merge // null) as $marker
     | if $marker == null then
@@ -112,7 +139,12 @@ if [ "$INSPECT" = 1 ]; then
   exit 0
 fi
 
-[ "$(fb_cfg merge.policy)" = auto ] || exit 0
+# A card of another repo merges under that repo's merge.policy, so a home board that is not auto
+# still has cards to look at when board.repos lists another repo.
+HOME_POLICY="$(fb_cfg merge.policy)"
+if [ "$HOME_POLICY" != auto ] && [ "$(jq -r '((.board.repos // []) | length) > 0' <<<"$FLEET_CFG")" != true ]; then exit 0; fi
+PLAN_CFG="$FLEET_CFG"
+[ "$HOME_POLICY" = auto ] || PLAN_CFG="$(jq -c '.merge.policy = "auto"' <<<"$FLEET_CFG")" # judged per card below
 
 warn() { printf 'fleet-board: warning: %s\n' "$1" >&2; }
 VERIFY="${FLEET_BOARD_VERIFY_MAIN:-$FLEET_SCRIPTS/verify-main.sh}"
@@ -155,7 +187,7 @@ merge_note() { # <card> <json patch>
 while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
   bash "$FLEET_SCRIPTS/board-cache-clear.sh" </dev/null >/dev/null || fb_die 3 "cannot refresh board state"
   # shellcheck disable=SC2086 # validated card numbers, intentional splitting
-  PLAN="$(bash "$FLEET_SCRIPTS/tick-plan.sh" --settle-merge $NUMS </dev/null)" || fb_die 3 "cannot refresh the merge plan"
+  PLAN="$(FLEET_CFG="$PLAN_CFG" FB_CFG_FOR="$PWD" bash "$FLEET_SCRIPTS/tick-plan.sh" --settle-merge $NUMS </dev/null)" || fb_die 3 "cannot refresh the merge plan"
   # An unreadable card could hold an unverified earlier merge: fail closed.
   jq -e '.cards | type == "array"' <<<"$PLAN" >/dev/null 2>&1 || fb_die 3 "cannot parse the merge plan"
   if jq -e 'any(.cards[]; .action == "skip" and (.reason | test("^(lookup failed|invalid manager note)")))' <<<"$PLAN" >/dev/null; then
@@ -191,6 +223,9 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
   for candidate in $NUMS; do [ "$candidate" = "$n" ] || REST="$REST $candidate"; done
   NUMS="$REST"
   case "$(jq -r '.state' <<<"$card")" in in_review|review_*|merging) ;; *) continue ;; esac
+  if ! resolve_card "$n"; then fail "$n" "$CARD_ERR; not merged"; continue; fi
+  # the policy of the card's repo decides, not the home board's
+  if [ "$(jq -r '.action' <<<"$card")" = merge ] && [ "$CARD_POLICY" != auto ]; then continue; fi
 
   if [ "$(jq -r '.action' <<<"$card")" = merge ]; then
     case "$head" in ''|*[!0-9a-fA-F]*) fb_die 3 "missing or invalid planned head for #$n" ;; esac
@@ -203,7 +238,7 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
     # Card numbers are not GitHub numbers: a closing keyword in the title, body or
     # a commit message would close an unrelated issue or PR. After the marker, so
     # the keyed form's refusal is observed on the open PR at the planned head.
-    if ! bash "$FLEET_SCRIPTS/pr-closing-check.sh" "$pr" --repo "$FLEET_REPO" </dev/null 2>"$TMPD/closing.err"; then
+    if ! bash "$FLEET_SCRIPTS/pr-closing-check.sh" "$pr" --repo "$CARD_REPO" </dev/null 2>"$TMPD/closing.err"; then
       if grep -q 'closing keyword' "$TMPD/closing.err"; then
         fail "$n" "PR #$pr holds a GitHub closing keyword before an issue reference (title, body or a commit message); not merged"
       else
@@ -214,10 +249,10 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
     fi
     # A PR whose base is not the default branch would land in its parent's PR
     # unreviewed: refuse it, and refuse when the base cannot be read.
-    default_branch="$(git -C "$FLEET_ROOT" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" || default_branch=""
+    default_branch="$(git -C "$CARD_ROOT" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" || default_branch=""
     default_branch="${default_branch#origin/}"
     [ -n "$default_branch" ] || default_branch=main
-    if ! base="$(gh pr view "$pr" --repo "$FLEET_REPO" --json baseRefName </dev/null 2>/dev/null | jq -er '.baseRefName | strings | select(length > 0)' 2>/dev/null)"; then
+    if ! base="$(gh pr view "$pr" --repo "$CARD_REPO" --json baseRefName </dev/null 2>/dev/null | jq -er '.baseRefName | strings | select(length > 0)' 2>/dev/null)"; then
       fail "$n" "PR #$pr base branch could not be read; not merged"
       continue
     fi
@@ -228,8 +263,8 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
     # supervisor.version_bump: merge - the lane raises the versions: bring the branch up to date
     # with its base, set the version files above the base, push, and merge at the new head
     merge_head="$head"
-    if [ "$(jq -r '.supervisor.version_bump // "pr"' <<<"$FLEET_CFG")" = merge ] \
-       && [ "$(jq -r '(.supervisor.version_files // []) | length' <<<"$FLEET_CFG")" != 0 ]; then
+    if [ "$(jq -r '.supervisor.version_bump // "pr"' <<<"$CARD_CFG")" = merge ] \
+       && [ "$(jq -r '(.supervisor.version_files // []) | length' <<<"$CARD_CFG")" != 0 ]; then
       if ! labels="$(bash "$FLEET_SCRIPTS/board-read.sh" "$n" </dev/null | jq -c '.labels // []')"; then
         fail "$n" "cannot read the card labels for the version bump; not merged"
         continue
@@ -247,8 +282,8 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
         fail "$n" "the card's branch is unknown, so the lane cannot raise the versions; not merged"
         continue
       fi
-      wt_dir="$(fb_cfg worktrees.dir)"; [ -n "$wt_dir" ] || wt_dir=../.fleet-worktrees
-      case "$wt_dir" in /*) ;; *) wt_dir="$FLEET_ROOT/$wt_dir" ;; esac
+      wt_dir="$(jq -r '.worktrees.dir // empty' <<<"$CARD_CFG")"; [ -n "$wt_dir" ] || wt_dir=../.fleet-worktrees
+      case "$wt_dir" in /*) ;; *) wt_dir="$CARD_ROOT/$wt_dir" ;; esac
       # Resolved as worktree.sh resolves its base: it refuses a path with a ".." segment, and
       # this repository's own worktrees.dir is ../.fleet-worktrees
       if ! wt_dir="$(mkdir -p "$wt_dir" && cd "$wt_dir" && pwd -P)"; then
@@ -257,9 +292,9 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
       fi
       bump_wt="$wt_dir/${bump_branch#fleet/}"
       bump_err="$TMPD/bump.stderr"
-      if ! bash "$FLEET_SCRIPTS/worktree.sh" create "$n" "$bump_branch" "$bump_wt" </dev/null >/dev/null 2>"$bump_err" \
-         || ! bash "$FLEET_SCRIPTS/update-branch.sh" "$n" "$pr" "$bump_branch" "$bump_wt" \
-              --lane-bump "$level" --bump-paths "$(jq -c '.supervisor.version_bump_paths // ["**"]' <<<"$FLEET_CFG")" </dev/null >/dev/null 2>>"$bump_err"; then
+      if ! in_card_root bash "$FLEET_SCRIPTS/worktree.sh" create "$n" "$bump_branch" "$bump_wt" </dev/null >/dev/null 2>"$bump_err" \
+         || ! in_card_root bash "$FLEET_SCRIPTS/update-branch.sh" "$n" "$pr" "$bump_branch" "$bump_wt" \
+              --lane-bump "$level" --bump-paths "$(jq -c '.supervisor.version_bump_paths // ["**"]' <<<"$CARD_CFG")" </dev/null >/dev/null 2>>"$bump_err"; then
         # git's progress output (the "To https://..." push line) stays out of our stderr; the failing step's own
         # lines are quoted before the lane's reason, which is the last line written
         grep -v '^To ' "$bump_err" | sed 's/^/  /' >&2
@@ -276,22 +311,22 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
     fi
     merge_rc=0
     merge_err="$TMPD/merge.stderr"
-    gh pr merge "$pr" --repo "$FLEET_REPO" --squash --match-head-commit "$merge_head" </dev/null >/dev/null 2>"$merge_err" || merge_rc=$?
+    gh pr merge "$pr" --repo "$CARD_REPO" --squash --match-head-commit "$merge_head" </dev/null >/dev/null 2>"$merge_err" || merge_rc=$?
     cat "$merge_err" >&2
     # GitHub refuses a merge with "Base branch was modified" when another PR lands during it. If the
     # PR is still open at the same head, retry once after a short wait; a second failure is a refusal.
     if [ "$merge_rc" -ne 0 ] && grep -q 'Base branch was modified' "$merge_err"; then
-      retry_info="$(gh pr view "$pr" --repo "$FLEET_REPO" --json isDraft,state,mergedAt,statusCheckRollup,headRefOid 2>/dev/null)" || retry_info=""
+      retry_info="$(gh pr view "$pr" --repo "$CARD_REPO" --json isDraft,state,mergedAt,statusCheckRollup,headRefOid 2>/dev/null)" || retry_info=""
       if [ "$(jq -r '.state // empty' <<<"$retry_info" 2>/dev/null)" = OPEN ] \
         && [ "$(jq -r '.headRefOid // empty' <<<"$retry_info" 2>/dev/null)" = "$merge_head" ]; then
         sleep "${FLEET_BOARD_MERGE_RETRY_WAIT:-5}"
         merge_rc=0
-        gh pr merge "$pr" --repo "$FLEET_REPO" --squash --match-head-commit "$merge_head" </dev/null >/dev/null || merge_rc=$?
+        gh pr merge "$pr" --repo "$CARD_REPO" --squash --match-head-commit "$merge_head" </dev/null >/dev/null || merge_rc=$?
       fi
     fi
     # Both exit paths are ambiguous: success may mean queued, while a lost
     # response may follow a completed merge. Only MERGED permits verification.
-    state="$(gh pr view "$pr" --repo "$FLEET_REPO" --json isDraft,state,mergedAt,statusCheckRollup,headRefOid \
+    state="$(gh pr view "$pr" --repo "$CARD_REPO" --json isDraft,state,mergedAt,statusCheckRollup,headRefOid \
       | jq -er '.state')" || fb_die 3 "#$n: cannot resolve merge result; recovery required"
     case "$state" in
       MERGED) ;;
@@ -313,7 +348,7 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
       || fb_die 3 "#$n: keyed operation is not a merge or verification recovery"
   fi
 
-  if ! main_check="$(bash "$VERIFY" "$n" "$pr" </dev/null 2>"$TMPD/verify.err")"; then
+  if ! main_check="$(in_card_root bash "$VERIFY" "$n" "$pr" </dev/null 2>"$TMPD/verify.err")"; then
     cat "$TMPD/verify.err" >&2
     fb_die 3 "#$n: verify-main.sh failed; stopping merge drain"
   fi
