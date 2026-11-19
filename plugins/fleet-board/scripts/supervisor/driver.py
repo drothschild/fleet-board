@@ -2315,7 +2315,11 @@ class CardDriver:
         review = dict(last, round=max(rounds, last.get('round') if _posint(last.get('round')) else 0),
                       sha=head, critical=0, important=1, stage=None, agent=None, provider=None,
                       findings=findings)
-        c.merge(dict(_RESET, last_review=review, reviews=None, stage=None, reviewed_stages=[]))
+        # The failure is the evidence reviewer's finding. Every other reviewer's record stays: wiping them made the
+        # planner re-run all reviewers, they reported clean over the finding, and checks_failed fired again.
+        reviews = dict(note['reviews']) if isinstance(note.get('reviews'), dict) else {}
+        reviews['evidence'] = review
+        c.merge(dict(_RESET, last_review=review, reviews=reviews, stage=None, reviewed_stages=[]))
 
     def _do_unblock(self, c):
         c.move('ready')

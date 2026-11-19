@@ -81,8 +81,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
   with `merge.policy: auto`, a non-draft PR, no human QA need, no pending check and a red check that
   `merge.ignore_checks` does not cover plans `rerun_checks` (no `checks_rerun` for the PR head: the driver runs
   `gh run rerun <id> --failed` per red check and notes `checks_rerun {sha, checks, at}`) or, with `checks_rerun.sha`
-  at the head, `checks_failed` (the driver records the red checks as one Important finding in `last_review`, so the
-  planner plans `fix`). Both rows, in the plan and in `--candidates` (from which the supervisor admits), carry `red_checks` (each red check's `name` and `detailsUrl`); a `review_stage` row there also carries its `pass`. Neither starts an agent. Precedence: failed lookup, invalid note, file_pending,
+  at the head, `checks_failed` (the driver records the red checks as one Important finding in `last_review` and as the
+  evidence record in `reviews`, keeping every other reviewer's record, so the planner plans `fix`). Both rows, in the plan and in `--candidates` (from which the supervisor admits), carry `red_checks` (each red check's `name` and `detailsUrl`); a `review_stage` row there also carries its `pass`. Neither starts an agent. Precedence: failed lookup, invalid note, file_pending,
   the `action_failures` rules, then the table. `action_failures` bound: at `max_rounds`
   consecutive no-progress actions the card is blocked; at `2*max_rounds` (or `max_rounds`
   for a blocked card awaiting unblock) it is skipped for a person, who clears it with
