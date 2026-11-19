@@ -38,6 +38,10 @@ run_merge() {
     jq -c --argjson l "$(jq -R . "$FX/extra-labels" | jq -sc .)" '.labels += $l' "$REPO/.fleet-board/cards/12.json" > "$FX/card-12.new" \
       && mv "$FX/card-12.new" "$REPO/.fleet-board/cards/12.json"
   fi
+  if [ -f "$FX/card-repo" ]; then
+    jq -c --arg r "$(cat "$FX/card-repo")" '.repo = $r' "$REPO/.fleet-board/cards/12.json" > "$FX/card-12.new" \
+      && mv "$FX/card-12.new" "$REPO/.fleet-board/cards/12.json"
+  fi
   cp "$REPO/.fleet-board/cards/12.json" "$FAKE_GH_DIR/card-12.before" 2>/dev/null || : > "$FAKE_GH_DIR/card-12.before"
   local e; e="$(mktemp)"
   "$BASH_EXE" "$SCRIPT" "$@" > /dev/null 2> "$e" </dev/null
@@ -938,6 +942,47 @@ run_merge
 assert_exit "head moved after base-moved failure: exit 1" 1
 assert_eq "head moved after base-moved failure: no retry" "$(cnt "pr merge 34 ")" 1
 unset FAKE_MERGE_FAILS FAKE_MERGE_MOVE_HEAD
+
+# foreign_case <home policy> <other policy>: card 12 belongs to acme/other, a checkout listed in board.repos
+foreign_case() {
+  setup_case "$1"
+  OTHER="$(mktemp -d)"; CLEANUP_DIRS+=("$OTHER")
+  git init -q "$OTHER"
+  printf 'board:\n  repo: acme/other\nworktrees:\n  dir: .fw\nmerge:\n  policy: %s\nreview:\n  stages:\n    - name: documentation\n      enabled: false\n    - name: blast_radius\n      enabled: false\n' "$2" > "$OTHER/.fleet-board.yml"
+  awk -v o="$OTHER" '{print} /^  repo: acme\/toy$/ {print "  repos:"; print "    - repo: acme/other"; print "      path: " o}' \
+    "$REPO/.fleet-board.yml" > "$FX/home.yml" && mv "$FX/home.yml" "$REPO/.fleet-board.yml"
+  card 12 in_review "$CLEAN"
+  pr 34 false "$GREEN"
+  grep -F 'pr view 34 --repo acme/toy' "$R" | sed 's#acme/toy#acme/other#' >> "$R"
+  printf 'acme/other' > "$FX/card-repo"
+  printf '#!/usr/bin/env bash\npwd -P > "%s/verify-pwd"\nprintf '"'"'{"commit":"abc1234","ok":true,"results":[]}\\n'"'"'\n' "$FX" > "$FX/verify-main.sh"
+  finalize
+}
+
+echo "a card of another repo: gh pr merge passes that repo"
+foreign_case auto auto
+run_merge
+assert_exit "other repo, both auto: exit 0" 0
+assert_eq "other repo: gh pr merge 34 --repo acme/other --squash ran once" "$(cnt "pr merge 34 --repo acme/other --squash")" 1
+assert_eq "other repo: no gh pr merge goes to the home repo" "$(cnt "pr merge 34 --repo acme/toy")" 0
+
+echo "a card whose repo has merge.policy human: no gh pr merge even when the home board is auto"
+foreign_case auto human
+run_merge
+assert_exit "other human, home auto: exit 0" 0
+assert_eq "other human, home auto: no gh pr merge" "$(cnt "pr merge")" 0
+assert_eq "other human, home auto: no move to done" "$(moved_done)" 0
+
+echo "a card whose repo has merge.policy auto is merged while the home board is human"
+foreign_case human auto
+run_merge
+assert_exit "other auto, home human: exit 0" 0
+assert_eq "other auto, home human: gh pr merge 34 --repo acme/other --squash ran once" "$(cnt "pr merge 34 --repo acme/other --squash")" 1
+
+echo "verify-main runs in the checkout of the card's repo"
+foreign_case auto auto
+run_merge
+assert_eq "verify-main ran in the other repo's checkout" "$(cat "$FX/verify-pwd" 2>/dev/null)" "$(cd "$OTHER" && pwd -P)"
 
 echo ""
 echo "-----------------------------------"
