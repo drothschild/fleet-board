@@ -1611,7 +1611,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
       ($c.pr_info.headRefOid // "") as $lh
       | ([$c.pr_info | red_checks | .[].name] | unique) as $lc
       | (($n.review_laps | type) == "object" and ($lh | type) == "string" and ($lh | test("^[0-9a-f]{40}$"))
-         and $n.review_laps.sha == $lh and ((($n.review_laps.checks // []) | unique) == $lc)
+         and $n.review_laps.sha == $lh and (($n.review_laps.checks // []) | type == "array")
+         and ((($n.review_laps.checks // []) | unique) == $lc)
          and (($n.review_laps.count // 0) | type == "number" and . >= 3)) as $looping
       | [if $c.state == "in_review" and ($row.action == "fix" or $row.action == "review" or $row.action == "review_stage") then
         if ($ps | length) == 0 then
