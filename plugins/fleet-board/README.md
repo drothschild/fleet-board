@@ -136,6 +136,7 @@ More on how planning, notes, follow-ups and the `main` check work: [docs/config.
 | `human_qa_paths` | `[]` | a PR touching any of these globs sends its card to Human QA |
 | `merge.policy` | `human` | `human` or `auto` ([details](docs/config.md#mergepolicy)) |
 | `merge.persona` / `merge.persona_append` | `null` / `null` | the merger's instructions: a path relative to the repo root (default `.fleet-board/merger.md` when present), and text added after it ([details](#merger-and-deploys)) |
+| `implementor.persona` / `implementor.persona_append` | `null` / `null` | project rules added to the implementor's inputs: a path relative to the repo root, and inline text added after it ([details](docs/config.md#implementorpersona-and-implementorpersona_append)) |
 | `merge.ignore_checks` | `[]` | red checks treated as green, each with `name`, `reason` and `until` ([details](docs/config.md#mergepersona-mergepersona_append-and-mergeignore_checks)) |
 | `review.mutation` | `true` | the reviewer runs mutation testing against the diff |
 | `review.verify_claim` | `true` | the reviewer re-runs one claim from the implementor's report |
