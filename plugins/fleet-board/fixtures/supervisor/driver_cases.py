@@ -2892,6 +2892,33 @@ def test_a_fixer_report_clears_the_lap_count(base):
     assert b.note().get('review_laps') is None, b.note().get('review_laps')
 
 
+def test_a_not_reproducible_fixer_report_clears_the_lap_count(base):
+    b = board_for(base, 'in_review')
+    seed_fix(b, review_laps={'sha': HEAD40, 'checks': ['test-suite'], 'count': 2, 'seen': ['evidence']})
+    b.git_result = ok('0\n')
+    b.plans({'report': 'fixer-not-reproducible'})
+    run_role(b, begin(b, 'fix', state='in_review'))
+    assert b.note().get('review_laps') is None, b.note().get('review_laps')
+
+
+def test_each_required_pass_of_a_stage_is_its_own_reviewer_in_a_lap(base):
+    # pass 1 of security already reported at the head in this lap; pass 2 joins the lap, it does not end it
+    b = board_for(base, 'in_review')
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'b', 'provider': None,
+             'required_passes': 3}
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'stage': None, 'branch': BRANCH, 'worktree': b.worktree,
+                'last_review': LAST_REVIEW,
+                'review_laps': {'sha': HEAD40, 'checks': [], 'count': 1, 'seen': ['evidence', 'security#1']}})
+    b.stubs['worktree.sh'] = lambda *a: ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': HEAD40,
+                                                       'base': 'bace000'}) if a[0] == 'review' else b.worktree + '\n')
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'stage-reviewer-ok'})
+    run_role(b, begin(b, 'review_stage', state='in_review', stage=stage, round=1, head_sha=HEAD40, red_checks=[],
+                      **{'pass': 2}))
+    laps = b.note()['review_laps']
+    assert laps == {'sha': HEAD40, 'checks': [], 'count': 1, 'seen': ['evidence', 'security#1', 'security#2']}, laps
+
+
 def test_a_review_loop_block_moves_the_card_with_one_comment_naming_head_checks_and_release(base):
     b = _loop_board(base, review_laps={'sha': HEAD40, 'checks': ['test-suite'], 'count': 3, 'seen': ['evidence']})
     reason = 'review loop: reviewed 3 times at abc1234 with no fixer between; red checks: test-suite'

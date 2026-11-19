@@ -421,6 +421,13 @@ lp_plan loop-other-head "$LP_LOOP,\"review_laps\":{\"sha\":\"def5678000000000000
 assert_jq "review loop: laps counted at another head do not block" "$LP_ROWS" '["review"]'
 lp_plan loop-other-checks "$LP_LOOP,\"review_laps\":{\"sha\":\"$LH\",\"checks\":[\"lint\"],\"count\":5}}"
 assert_jq "review loop: laps counted with other red checks do not block" "$LP_ROWS" '["review"]'
+# the evidence record is clean at the head and only the stages are left: their review_stage rows block too
+lp_plan loop-stages-only "{$LP_BASE,\"last_review\":$(lp_rec null),\"reviews\":{\"evidence\":$(lp_rec null)},\"review_laps\":{\"sha\":\"$LH\",\"checks\":[\"test-suite\"],\"count\":3}}"
+assert_jq "review loop: three laps with only review_stage rows left plan one block" "$LP_ROWS" '["block"]'
+# a hand-edited review_laps whose checks is not a list never fails the plan
+lp_plan loop-bad-checks "$LP_LOOP,\"review_laps\":{\"sha\":\"$LH\",\"checks\":\"test-suite\",\"count\":3}}"
+assert_exit "review loop: review_laps.checks as a string: exit" 0
+assert_jq "review loop: review_laps.checks as a string does not block" "$LP_ROWS" '["review"]'
 lp_plan loop-review-rows "$LP_LOOP}"
 assert_jq "review loop: the evidence review row carries the red checks the driver counts laps by" "[$(card 12 red_checks)[]?.name]" '["test-suite"]'
 
