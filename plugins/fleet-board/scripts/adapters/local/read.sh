@@ -34,6 +34,11 @@ RES="$(jq -cr --arg m "$FB_MARKER" --arg me "$ME" --arg url "$(fl_url "$1")" --a
              and ($p.at | type) == "string"
              and (["create","edit","move","check","approve"] | index($p.by)) != null
           then $p else null end),
+      followup: (.followup as $f
+        | if ($f | type) == "object" and (["pending","done","failed"] | index($f.draft)) != null
+             and (["bug","out_of_scope"] | index($f.kind)) != null and ($f.entry | type) == "object"
+             and ($f.from | type) == "number"
+          then $f else null end),
       labels: (.labels // []),
       manager_note: (if $n then ($n.body | sub("^[^\n]*\n"; "")) else null end),
       manager_note_id: (if $n then $n.id else null end),

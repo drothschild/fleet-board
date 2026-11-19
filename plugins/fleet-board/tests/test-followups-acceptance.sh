@@ -138,7 +138,7 @@ setup_case() {
   git init -q "$REPO"
   git -C "$REPO" config user.email "test@example.com"
   git -C "$REPO" config user.name "Test User"
-  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\npremise_check:\n  enabled: false\n' > "$REPO/.fleet-board.yml"
   # files the fixture items name, so a follow-up derives a Scope from them (scope_lines keeps existing paths)
   mkdir -p "$REPO/tests"; : > "$REPO/calc.js"; : > "$REPO/cli.sh"; : > "$REPO/tests/round.sh"
   git -C "$REPO" add .fleet-board.yml calc.js cli.sh tests/round.sh
@@ -419,7 +419,7 @@ if grep -qF '## `followups.status`' "$DOCS" && grep -qF 'followups.status: backl
 # file, with the why-comment on that card; only the PR comment is routed in gh
 # (the PR file lookup fl_names_unmerged_path makes is also one gh call, and fails)
 setup_case
-printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\npremise_check:\n  enabled: false\n' > "$REPO/.fleet-board.yml"
 mkdir -p "$REPO/.fleet-board/cards"
 echo 9 > "$REPO/.fleet-board/next"
 jq -n '{number: 12, title: "The card", body: "b", state: "in_progress", labels: [], next_comment_id: 1, comments: [], created_at: "2026-11-01T00:00:00Z"}' \

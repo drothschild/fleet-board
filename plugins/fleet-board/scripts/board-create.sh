@@ -35,13 +35,19 @@ while [ $# -gt 0 ]; do
     fb_valid_number "$1" || fb_die 2 "--blocked-by must be a card number, got: $1"
     LABELS+=("--blocked-by" "$1")
     shift
+  elif [ "$1" = "--followup-file" ]; then
+    shift
+    [ $# -gt 0 ] || fb_die 2 "usage: board-create.sh <title> <body-file> [--followup-file F]"
+    [ -f "$1" ] || fb_die 2 "file not found: $1"
+    LABELS+=("--followup-file" "$1")
+    shift
   elif [ "$1" = "--repo" ]; then
     shift
     [ $# -gt 0 ] && [ -n "$1" ] || fb_die 2 "usage: board-create.sh <title> <body-file> [--repo OWNER/NAME]"
     LABELS+=("--repo" "$1")
     shift
   else
-    fb_die 2 "usage: board-create.sh <title> <body-file> [--label L]... [--state S] [--acceptance-file F] [--blocked-by N]... [--repo R]"
+    fb_die 2 "usage: board-create.sh <title> <body-file> [--label L]... [--state S] [--acceptance-file F] [--blocked-by N]... [--repo R] [--followup-file F]"
   fi
 done
 
