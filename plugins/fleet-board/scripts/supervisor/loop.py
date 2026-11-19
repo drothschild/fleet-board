@@ -787,7 +787,7 @@ class Supervisor:
     def _active_claims(self):
         """The running actions as the scheduler sees them; `action` lets a read-only one leave scope free."""
         claims = [{'number': a.card, 'provider': a.provider, 'paths': list(a.paths), 'action': a.action,
-                   'stage': a.stage}
+                   'stage': a.stage, 'pass': a.review_pass}
                   for a in self.state.all_actions()]
         for claim in claims:
             self._with_repo(claim, claim['number'])
