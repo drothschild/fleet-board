@@ -1642,12 +1642,12 @@ import web_cases as wc  # pops the temp dir off sys.argv, as web_cases does when
 
 class BoardReviewers(wc.SupervisorWebContract):
 
-    def write_review_card(self, n, state, reviews, round_=2, extra=None):
+    def write_review_card(self, n, state, reviews, round_=2, extra=None, labels=None):
         fence = "`" * 3
         note = dict({"round": round_, "pr": 41, "reviews": reviews}, **(extra or {}))
         body = "<!-- fleet-board:manager-note -->\n%sjson\n%s\n%s\n" % (fence, json.dumps(note), fence)
         (self.repo / ".fleet-board" / "cards" / ("%d.json" % n)).write_text(json.dumps(
-            {"number": n, "title": "card %d" % n, "state": state, "labels": [], "body": "",
+            {"number": n, "title": "card %d" % n, "state": state, "labels": labels or [], "body": "",
              "updated_at": "2026-11-11T10:00:00Z", "next_comment_id": 2,
              "comments": [{"id": 1, "author": "web-test", "body": body}]}), encoding="utf-8")
 
@@ -1658,7 +1658,7 @@ class BoardReviewers(wc.SupervisorWebContract):
             "    - name: perf\n      agent: reviewer\n      label: review-perf\n", encoding="utf-8")
         self.write_review_card(1, "in_review", {
             "evidence": {"round": 2, "sha": "abc123", "critical": 0, "important": 0},
-            "security": {"round": 2, "sha": "abc123", "critical": 1, "important": 0}})
+            "security": {"round": 2, "sha": "abc123", "critical": 1, "important": 0}}, labels=["review-perf"])
         self.write_review_card(2, "in_progress", {})
         self.start_web()
         code, body = self.http("GET", "/api/board")
@@ -1692,6 +1692,47 @@ class BoardReviewers(wc.SupervisorWebContract):
         self.assertEqual({k: sec(1)[k] for k in ("status", "passes", "required_passes")},
                          {"status": "pending", "passes": 2, "required_passes": 3})
         self.assertEqual((sec(2)["status"], sec(2)["passes"]), ("findings", 2))
+
+    STAGES_YML = ("board:\n  repo: acme/toy\nreview:\n  stages:\n"
+                  "    - name: docs\n      agent: reviewer\n      default: false\n"
+                  "    - name: blast\n      agent: reviewer\n      default: true\n"
+                  "    - name: sec\n      agent: reviewer\n      label: review-security\n")
+
+    def reviewer_names(self, n, by_n):
+        mine = ("evidence", "docs", "blast", "sec")   # the built-in stages are merged in too; look only at these
+        return {r["name"]: r["status"] for r in by_n[n]["reviewers"] if r["name"] in mine}
+
+    def board_by_n(self):
+        self.start_web()
+        code, body = self.http("GET", "/api/board")
+        self.assertEqual(code, 200, body)
+        return {c["number"]: c for c in body["cards"]}
+
+    def test_board_in_review_card_with_no_stage_label_and_no_record_lists_evidence_and_default_true_stages_only(self):
+        self.config.write_text(self.STAGES_YML, encoding="utf-8")
+        self.write_review_card(1, "in_review", {})
+        got = self.reviewer_names(1, self.board_by_n())
+        self.assertEqual(got, {"evidence": "pending", "blast": "pending"})
+
+    def test_board_in_review_card_carrying_a_default_false_stage_label_lists_that_stage_as_pending(self):
+        self.config.write_text(self.STAGES_YML, encoding="utf-8")
+        self.write_review_card(1, "in_review", {}, labels=["needs-docs-review"])
+        got = self.reviewer_names(1, self.board_by_n())
+        self.assertEqual(got, {"evidence": "pending", "docs": "pending", "blast": "pending"})
+
+    def test_board_in_review_card_with_no_label_and_a_record_from_a_default_false_stage_lists_it_with_the_status_its_record_gives(self):
+        self.config.write_text(self.STAGES_YML, encoding="utf-8")
+        self.write_review_card(1, "in_review", {"docs": {"round": 2, "sha": "abc", "critical": 0, "important": 0}})
+        got = self.reviewer_names(1, self.board_by_n())
+        self.assertEqual(got, {"evidence": "pending", "docs": "clean", "blast": "pending"})
+
+    def test_board_in_review_stage_with_its_own_label_is_listed_for_that_label_and_not_for_needs_name_review(self):
+        self.config.write_text(self.STAGES_YML, encoding="utf-8")
+        self.write_review_card(1, "in_review", {}, labels=["review-security"])
+        self.write_review_card(2, "in_review", {}, labels=["needs-sec-review"])
+        by_n = self.board_by_n()
+        self.assertIn("sec", self.reviewer_names(1, by_n))
+        self.assertNotIn("sec", self.reviewer_names(2, by_n))
 
 
 names = [n for n in dir(BoardReviewers) if n.startswith("test_board_in_review")]
