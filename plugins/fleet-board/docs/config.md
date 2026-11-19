@@ -278,6 +278,23 @@ Left empty (the default), none of this runs and every conflict goes to the fixer
 
 `board.port` is the port the board page listens on, on `127.0.0.1`. The default is `8765`. It must be an integer from 1024 to 65535. `board-web.sh --port N` overrides it for one run.
 
+## `board.repos`
+
+`board.repos` lets one board hold cards for more than one repository. The default is an empty list: every card belongs to `board.repo`. Each entry is an object with two keys:
+
+```yaml
+board:
+  repo: user/myProject
+  repos:
+    - repo: user/otherProject
+      path: /Users/me/Projects/otherProject
+```
+
+- `repo` is `OWNER/NAME` and must differ from `board.repo`. A repository appears at most once.
+- `path` is the local checkout of that repository. It must be absolute, and it must not contain a `..` segment.
+
+A card names its repository in its `repo` field. A card with no `repo` field belongs to `board.repo`. Set it when you create the card with `board-create.sh <title> <body-file> --repo OWNER/NAME`. `config.sh` exits 5 with the entry's index when `board.repos` is not a list or an entry breaks these rules.
+
 ## `board.terminal_command`
 
 `board.terminal_command` is the command the board's "Open terminal" link runs, as a list of strings. `{dir}` in any item is replaced by the card's directory (its worktree). It must be a list of strings and at least one item must contain `{dir}`; `config.sh` exits 5 otherwise. The default is `["open", "-a", "Terminal", "{dir}"]`. To use iTerm instead:
