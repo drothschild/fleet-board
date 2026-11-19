@@ -292,6 +292,27 @@ assert_true "review-stage-ux again: the security checkout is untouched" test -f 
 run_wt review 12 7 "bad stage"
 assert_exit "review-stage: a stage name with a space is a usage error" 2
 
+# review --pass <i>: pass i > 1 gets its own checkout beside the stage's, pass 1 keeps the stage checkout
+printf 'p1\n' > "$BASE/12-review-security/pass-sentinel"
+run_wt review 12 7 security --pass 2
+assert_exit "review-pass-2: exit" 0
+assert_eq "review-pass-2: its own path" "$(jqc .path)" "\"$BASE/12-review-security-2\""
+assert_eq "review-pass-2: its own copy" "$(jqc .copy)" "\"$BASE/12-review-security-2-copy\""
+assert_eq "review-pass-2: sha is the PR head" "$(jqc .sha)" "\"$SHA_P2\""
+assert_true "review-pass-2: git worktree list shows it" wt_listed "$BASE/12-review-security-2"
+assert_true "review-pass-2: pass 1's checkout stays beside it" wt_listed "$BASE/12-review-security"
+assert_true "review-pass-2: pass 1's checkout is untouched" test -f "$BASE/12-review-security/pass-sentinel"
+assert_false "review-pass-2: pass 2 does not hold pass 1's files" test -e "$BASE/12-review-security-2/pass-sentinel"
+printf 'p2\n' > "$BASE/12-review-security-2/pass-sentinel"
+run_wt review 12 7 security --pass 1
+assert_exit "review-pass-1: exit" 0
+assert_eq "review-pass-1: keeps the stage checkout" "$(jqc .path)" "\"$BASE/12-review-security\""
+assert_true "review-pass-1: pass 2's checkout is untouched" test -f "$BASE/12-review-security-2/pass-sentinel"
+run_wt review 12 7 security --pass 0
+assert_exit "review-pass: 0 is a usage error" 2
+run_wt review 12 7 --pass 2
+assert_exit "review-pass: without a stage is a usage error" 2
+
 # ---------------------------------------------------------------------------
 # remove refuses paths outside the normalized base, before removing anything
 mkdir -p "${BASE}2/x"
@@ -372,6 +393,9 @@ assert_false "remove: review worktree gone" test -e "$RV"
 assert_false "remove: copy gone" test -e "$RC"
 assert_false "remove: stage review worktree gone" test -e "$BASE/12-review-security"
 assert_false "remove: stage review copy gone" test -e "$BASE/12-review-security-copy"
+assert_false "remove: pass 2 checkout gone" test -e "$BASE/12-review-security-2"
+assert_false "remove: pass 2 copy gone" test -e "$BASE/12-review-security-2-copy"
+assert_false "remove: pass 2 listing gone" wt_listed "$BASE/12-review-security-2"
 assert_false "remove: stage review worktree listing gone" wt_listed "$BASE/12-review-ux"
 assert_false "remove: worktree list no longer shows the card worktree" wt_listed "$WT12"
 assert_false "remove: worktree list no longer shows the review worktree" wt_listed "$RV"
@@ -533,6 +557,20 @@ assert_true "prune: security checkout untouched" test -f "$BASE/12-review-securi
 assert_true "prune: security copy untouched" test -f "$BASE/12-review-security-copy/sentinel"
 assert_true "prune: evidence checkout untouched" test -f "$BASE/12-review/sentinel"
 assert_true "prune: evidence copy untouched" test -f "$BASE/12-review-copy/sentinel"
+
+# the pass checkouts of a dropped stage go too, a configured stage's stay
+stage_yaml security ux
+run_wt review 12 7 ux --pass 2
+run_wt review 12 7 security --pass 2
+assert_exit "prune-pass: both pass checkouts made: exit" 0
+printf 'keep\n' > "$BASE/12-review-security-2/sentinel"
+stage_yaml security
+run_wt review 12 7 security
+assert_exit "prune-pass: stage dropped from config: exit" 0
+assert_false "prune-pass: the dropped stage's pass checkout is removed" test -e "$BASE/12-review-ux-2"
+assert_false "prune-pass: the dropped stage's pass copy is removed" test -e "$BASE/12-review-ux-2-copy"
+assert_false "prune-pass: git worktree list no longer shows 12-review-ux-2" wt_listed "$BASE/12-review-ux-2"
+assert_true "prune-pass: a configured stage's pass checkout stays" test -f "$BASE/12-review-security-2/sentinel"
 
 # a symlink resolving outside the base is refused and left in place
 mkdir -p "$TMPROOT/outside-ux"

@@ -78,11 +78,17 @@ def _stage_of(item):
     return stage.get('name') if isinstance(stage, dict) else stage
 
 
+def _reviewer_of(item):
+    """The reviewer an action stands for: its action, its stage and, for a stage run in several passes, the pass."""
+    return (item.get('action'), _stage_of(item), item.get('pass'))
+
+
 def _share_card(row, other):
     """True when two actions of one card may run together: both are reviewer actions and they are not the same
-    reviewer (the planner keeps planning a reviewer that has not reported yet, so a running one is not run twice)."""
+    reviewer (the planner keeps planning a reviewer that has not reported yet, so a running one is not run twice).
+    Two passes of one stage are two reviewers."""
     return (row.get('action') in REVIEWER_ACTIONS and other.get('action') in REVIEWER_ACTIONS
-            and (row.get('action'), _stage_of(row)) != (other.get('action'), _stage_of(other)))
+            and _reviewer_of(row) != _reviewer_of(other))
 
 
 def _ancestors(row):
@@ -423,6 +429,9 @@ class Scheduler:
                 item.setdefault('repo', c['repo'])
             item.setdefault('number', number); item.setdefault('provider', provider); item.setdefault('paths', paths)
             item.setdefault('action', c.get('action'))
+            for key in ('stage', 'pass'):   # which reviewer, so a second row of the same one waits behind it
+                if c.get(key) is not None:
+                    item.setdefault(key, c[key])
             admitted.append(c)
             if free:
                 continue

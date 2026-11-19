@@ -32,6 +32,7 @@ class Action:
     marker: Any = None  # the card's active marker path once a session or merge child was launched
     pgid: Any = None    # the process group this action owns; end() removes a marker naming it or no usable pgid
     stage: Any = None   # a review_stage action's stage name: one card's reviewers run together, one per stage
+    review_pass: Any = None  # a review_stage action's pass of required_passes: two passes of one stage run together
     work_column: Any = None  # the column the card is in while the role session runs; set in _launch and by the merge lane
 
 

@@ -1642,9 +1642,9 @@ import web_cases as wc  # pops the temp dir off sys.argv, as web_cases does when
 
 class BoardReviewers(wc.SupervisorWebContract):
 
-    def write_review_card(self, n, state, reviews, round_=2):
+    def write_review_card(self, n, state, reviews, round_=2, extra=None):
         fence = "`" * 3
-        note = {"round": round_, "pr": 41, "reviews": reviews}
+        note = dict({"round": round_, "pr": 41, "reviews": reviews}, **(extra or {}))
         body = "<!-- fleet-board:manager-note -->\n%sjson\n%s\n%s\n" % (fence, json.dumps(note), fence)
         (self.repo / ".fleet-board" / "cards" / ("%d.json" % n)).write_text(json.dumps(
             {"number": n, "title": "card %d" % n, "state": state, "labels": [], "body": "",
@@ -1672,6 +1672,26 @@ class BoardReviewers(wc.SupervisorWebContract):
         self.assertEqual(got["perf"]["status"], "pending")
         self.assertEqual((got["perf"]["passes"], got["perf"]["required_passes"]), (0, 1))
         self.assertEqual(by_n[2].get("reviewers"), [])
+
+    def test_board_in_review_card_counts_the_clean_pass_records_at_the_head(self):
+        self.config.write_text(
+            "board:\n  repo: acme/toy\nreview:\n  stages:\n"
+            "    - name: security\n      agent: reviewer\n      label: review-security\n      required_passes: 3\n", encoding="utf-8")
+        head = "a" * 40
+        other = "b" * 40
+        rec = lambda i, sha, crit=0: {"pass": i, "round": 2, "sha": sha, "critical": crit, "important": 0}
+        self.write_review_card(1, "in_review", {"security": {"round": 2, "sha": head, "critical": 0, "important": 0, "pass": 2}},
+                               extra={"review_passes": {"security": [rec(1, head), rec(2, head), rec(3, other)]}})
+        self.write_review_card(2, "in_review", {"security": {"round": 2, "sha": head, "critical": 1, "important": 0, "pass": 3}},
+                               extra={"review_passes": {"security": [rec(1, head), rec(2, head), rec(3, head, 1)]}})
+        self.start_web()
+        code, body = self.http("GET", "/api/board")
+        self.assertEqual(code, 200, body)
+        by_n = {c["number"]: c for c in body["cards"]}
+        sec = lambda n: [r for r in by_n[n]["reviewers"] if r["name"] == "security"][0]
+        self.assertEqual({k: sec(1)[k] for k in ("status", "passes", "required_passes")},
+                         {"status": "pending", "passes": 2, "required_passes": 3})
+        self.assertEqual((sec(2)["status"], sec(2)["passes"]), ("findings", 2))
 
 
 names = [n for n in dir(BoardReviewers) if n.startswith("test_board_in_review")]
@@ -2020,6 +2040,53 @@ assert_body "detail payload: stacked_on is 11 for a stacked card" '.stacked_on' 
 assert_body "detail payload: stack_attention for a stacked card" '.stack_attention' 'parent closed unmerged'
 api GET /api/cards/2
 assert_body "detail payload: stacked_on is null for an unstacked card" '.stacked_on|tojson' null
+stop_server
+
+# --- premise proposal: payload keys and the three premise routes ---
+PR_REPO="$(new_repo "$LOCAL_YML")"
+mkdir -p "$PR_REPO/.fleet-board/cards" "$PR_REPO/.fleet-board/active"
+echo 10 > "$PR_REPO/.fleet-board/next"
+PR_HEAD="0123456789abcdef0123456789abcdef01234567"
+REPO="$PR_REPO" seed_card 1 blocked "Rewrite me" "b"
+jq --arg h "$PR_HEAD" '.proposal = {kind: "rewrite", scope: "- src/a.sh", acceptance: ["a works"], summary: "tighten", head: $h, at: "2026-01-01T00:00:00Z"}' "$PR_REPO/.fleet-board/cards/1.json" > "$TMP/pr1.json" && mv "$TMP/pr1.json" "$PR_REPO/.fleet-board/cards/1.json"
+REPO="$PR_REPO" seed_card 2 blocked "Already built" "b"
+jq --arg h "$PR_HEAD" '.proposal = {kind: "close", evidence: [{item: 1, command: "ls", output: "x"}], head: $h, at: "2026-01-01T00:00:00Z"}' "$PR_REPO/.fleet-board/cards/2.json" > "$TMP/pr2.json" && mv "$TMP/pr2.json" "$PR_REPO/.fleet-board/cards/2.json"
+REPO="$PR_REPO" seed_card 3 blocked "Malformed proposal" "b"
+jq '.proposal = {kind: "rewrite", scope: 7}' "$PR_REPO/.fleet-board/cards/3.json" > "$TMP/pr3.json" && mv "$TMP/pr3.json" "$PR_REPO/.fleet-board/cards/3.json"
+REPO="$PR_REPO" seed_card 4 ready "No proposal" "b"
+PR_SCRIPTS="$TMP/pr-scripts"
+cp -R "$SCRIPTS" "$PR_SCRIPTS"
+PR_LOG="$TMP/premise-calls.log"
+: > "$PR_LOG"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nif [ "$2" = 7 ]; then echo "card #7 has no close proposal to confirm" >&2; exit 1; fi\nexit 0\n' "$PR_LOG" > "$PR_SCRIPTS/premise-settle.sh"
+SERVER_PY="$PR_SCRIPTS/board-web.py" SCRIPTS="$PR_SCRIPTS" start_server "$PR_REPO"
+api GET /api/cards/1
+assert_body "GET /api/cards/<n> carries the rewrite proposal" '.proposal.kind' rewrite
+assert_body "GET /api/cards/<n> carries premise (null when unset)" 'has("premise")' true
+api GET /api/cards/2
+assert_body "GET /api/cards/<n> carries the close proposal" '.proposal.kind' close
+api GET /api/cards/3
+assert_body "a card with a malformed proposal reports proposal null" '.proposal|tojson' null
+api GET /api/cards/4
+assert_body "a card with no proposal reports proposal null" '.proposal|tojson' null
+api GET /api/board
+assert_body "board summary proposal_kind is rewrite" '.cards[]|select(.number==1)|.proposal_kind' rewrite
+assert_body "board summary proposal_kind is close" '.cards[]|select(.number==2)|.proposal_kind' close
+assert_body "board summary proposal_kind is null for a malformed proposal" '.cards[]|select(.number==3)|.proposal_kind|tojson' null
+assert_body "board summary proposal_kind is null for no proposal" '.cards[]|select(.number==4)|.proposal_kind|tojson' null
+api POST /api/cards/1/premise/approve '{}'
+assert_code 200
+api POST /api/cards/2/premise/confirm '{}'
+assert_code 200
+api POST /api/cards/1/premise/reject '{}'
+assert_code 200
+if [ "$(cat "$PR_LOG")" = "$(printf 'approve 1\nconfirm 2\nreject 1')" ]; then pass "each premise route runs its premise-settle.sh verb once"; else fail "each premise route runs its premise-settle.sh verb once" "log: $(cat "$PR_LOG")"; fi
+REPO="$PR_REPO" seed_card 7 blocked "Settle fails" "b"
+api POST /api/cards/7/premise/confirm '{}'
+assert_code 409
+assert_body "a premise verb that exits non-zero gives its stderr in the 409" '.error' '*has no close proposal to confirm*'
+api POST /api/cards/99/premise/approve '{}'
+assert_code 404
 stop_server
 
 echo ""
