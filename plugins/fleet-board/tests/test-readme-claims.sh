@@ -104,8 +104,14 @@ check "README lists board.terminal_command and the Open terminal link" "$r"
 
 # The "Stacked pull requests" section names the switch, the git floor and the three stop cases.
 stack_sec="$(awk '/^#+ Stacked pull requests/{f=1;next} f && /^## /{exit} f' "$README")"
-r=bad; printf '%s\n' "$stack_sec" | grep -cF 'stacking.enabled' >/dev/null && r=ok
-check "README Stacked pull requests section names stacking.enabled" "$r"
+r=ok; printf '%s\n' "$stack_sec" | grep -qF 'stacking.enabled' && r=bad
+check "README Stacked pull requests section does not name stacking.enabled" "$r"
+r=ok; printf '%s\n' "$stack_sec" | grep -qi 'off by default' && r=bad
+check "README Stacked pull requests section does not say stacking is off by default" "$r"
+r=ok; grep -qF 'stacking.enabled' "$CONFIG_MD" "$(dirname "$README")/CLAUDE.md" && r=bad
+check "config.md and the plugin CLAUDE.md no longer name stacking.enabled" "$r"
+r=ok; grep -qiE 'stacking[^.]*default false|off changes nothing' "$CONFIG_MD" "$(dirname "$README")/CLAUDE.md" && r=bad
+check "config.md and the plugin CLAUDE.md do not say stacking is off by default" "$r"
 r=bad; printf '%s\n' "$stack_sec" | grep -cF 'git 2.40' >/dev/null && r=ok
 check "README Stacked pull requests section names git 2.40" "$r"
 r=bad; printf '%s\n' "$stack_sec" | grep -ci 'closed unmerged' >/dev/null && r=ok

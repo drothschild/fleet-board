@@ -191,10 +191,15 @@ board() {
 
 board ""
 run_check "$SCRIPT"
-assert_exit "off: exit" 0
-assert_jq "off: card 12 waits with today's reason" "$(card 12 action)+\" \"+$(card 12 reason)" '"wait waits for acme/toy#11 (in_review)"'
-assert_jq "off: stack is null" "$(card 12 stack)" 'null'
-assert_jq "off: every row carries the stack key" '[.cards[] | has("stack")] | all' 'true'
+assert_exit "no stacking key: exit" 0
+assert_jq "no stacking key: card 12 is a stacked start" "$(card 12 action)+\" \"+$(card 12 reason)" '"start ready, stacked on #11"'
+assert_jq "no stacking key: stack names the parent" "$(card 12 stack)" '{"parent":11,"base":"fleet/11-card","ancestors":[11]}'
+assert_jq "no stacking key: every row carries the stack key" '[.cards[] | has("stack")] | all' 'true'
+
+board "$(printf 'stacking:\n  enabled: false')"
+run_check "$SCRIPT"
+assert_exit "stacking enabled false still in config: exit" 0
+assert_jq "stacking enabled false still in config: card 12 is a stacked start" "$(card 12 action)+\" \"+$(card 12 reason)" '"start ready, stacked on #11"'
 
 board "$ON"
 run_check "$SCRIPT"
@@ -358,7 +363,7 @@ assert_jq "land: not planned while the parent card is in review" "$(card 12 acti
 
 land_board in_review "$(note in_review 12 "$(stack_of 11)")" done ""
 run_check "$SCRIPT"
-assert_jq "land: stacking off, the row is not planned" "$(card 12 action) != \"land\"" 'true'
+assert_jq "land: with no stacking key the row is planned" "$(card 12 action)" '"land"'
 
 assert_eq "tick-plan.sh passes --landing to review-drift.sh" "$([ "$(grep -c -- '--landing' "$SCRIPTS_ABS/tick-plan.sh")" -ge 1 ] && echo yes || echo no)" yes
 assert_eq "the gate passes --landing to review-drift.sh" "$([ "$(grep -c -- '--landing' "$SCRIPTS_ABS/../hooks/gate.sh")" -ge 1 ] && echo yes || echo no)" yes

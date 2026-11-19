@@ -1046,14 +1046,12 @@ invalid_field_case "board.terminal_command not a list" '  terminal_command: "ope
 invalid_field_case "board.terminal_command list of non-strings" '  terminal_command: ["open", 5, "{dir}"]' "$TC_MSG"
 invalid_field_case "board.terminal_command list with no {dir}" '  terminal_command: ["open", "-a", "iTerm"]' "$TC_MSG"
 
-# Test 33: stacking.enabled defaults to false, accepts true, refuses anything else
+# Test 33: stacking is always on; a config that still carries the retired key loads
 REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" stacking.enabled
-assert_stdout_exact "fb_cfg stacking.enabled prints false with no config key" "false"
-REPO="$(printf 'board:\n  repo: a/b\nstacking: { enabled: true }\n' | make_inline_repo)"
-CLEANUP_DIRS+=("$REPO"); run_config "$REPO" stacking.enabled
-assert_stdout_exact "fb_cfg stacking.enabled prints true with stacking: { enabled: true }" "true"
-check_case "stacking: { enabled: \"yes\" } is refused as a config error" 'stacking: { enabled: "yes" }' 5 "stacking.enabled must be boolean"
+assert_stdout_exact "fb_cfg stacking.enabled is no longer a defined key (prints nothing)" ""
+check_case "stacking: { enabled: \"yes\" } still loads: the retired key is ignored" 'stacking: { enabled: "yes" }' 0
+check_case "stacking: { enabled: false } still loads: the retired key is ignored" 'stacking: { enabled: false }' 0
 
 # premise_check.enabled defaults to true, accepts false, refuses anything else; models.checker defaults to sonnet
 REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
