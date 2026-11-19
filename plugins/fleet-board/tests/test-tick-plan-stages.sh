@@ -524,4 +524,51 @@ assert_jq "required_passes: a finding plans no further review_stage row for the 
 rp_plan old
 assert_jq "required_passes: three clean pass records at an older head do not count; three new rows at the current head" "$SEC_ROWS" '[1,2,3]'
 
+# Built-in stages on (TP_KEEP_BUILTINS=1), as every new project has them: documentation and
+# blast_radius are routed to every card. Cases are built here from in-review-merge-auto
+# (open PR, green checks, head abc1234); the evidence record is clean at the head.
+BI="$(mktemp -d)"; CLEANUP_DIRS+=("$BI")
+ln -s "$TICK_REAL/common" "$BI/common"
+bi_rec() { # <stage or null> <important> <critical>
+  jq -cn --arg s "$1" --argjson i "$2" --argjson c "${3:-0}" \
+    '{round:1,sha:"abc1234",critical:$c,important:$i,findings:[],stage:(if $s == "null" then null else $s end)}'
+}
+bi_case() { # <name> <reviews json object>
+  local d="$BI/bi-$1" note
+  mkdir -p "$d"
+  sed -e "s/in-review-merge-auto/bi-$1/" -e "s|../../labels/|$TICK_REAL/../labels/|" "$TICK_REAL/in-review-merge-auto/routes" > "$d/routes"
+  note="$(jq -cn --argjson r "$2" --argjson ev "$(bi_rec null 0)" \
+    '{state:"in_review",branch:"fleet/12-add-subtract",pr:34,round:1,last_review:$ev,reviews:({evidence:$ev} + $r)}')"
+  jq -cn --arg n "$note" '[{id:555,user:{login:"fleet-bot"},body:("<!-- fleet-board:manager-note -->\n### fleet-board manager note\nState: x\n\n```json\n"+$n+"\n```\n"),created_at:"2026-09-28T00:01:00Z"}]' > "$d/comments-12.json"
+}
+bi_plan() { TICK="$BI"; TP_KEEP_BUILTINS=1; plan "bi-$1" "$AUTO"; unset TP_KEEP_BUILTINS; TICK="$TICK_REAL"; }
+bi_case none '{}'
+bi_case clean "$(jq -cn --argjson d "$(bi_rec documentation 0)" --argjson b "$(bi_rec blast_radius 0)" '{documentation:$d,blast_radius:$b}')"
+bi_case blast-finding "$(jq -cn --argjson d "$(bi_rec documentation 0)" --argjson b "$(bi_rec blast_radius 1)" '{documentation:$d,blast_radius:$b}')"
+# The note checks_failed leaves (a red check a re-run did not clear): the evidence record is the CI finding, the
+# stage records are kept and clean at the head. The planner plans the fixer, not another round of every reviewer.
+bi_case_ev() { # <name> <reviews json object> <evidence record>
+  local d="$BI/bi-$1" note
+  mkdir -p "$d"
+  sed -e "s/in-review-merge-auto/bi-$1/" -e "s|../../labels/|$TICK_REAL/../labels/|" "$TICK_REAL/in-review-merge-auto/routes" > "$d/routes"
+  note="$(jq -cn --argjson r "$2" --argjson ev "$3" \
+    '{state:"in_review",branch:"fleet/12-add-subtract",pr:34,round:1,last_review:$ev,reviews:({evidence:$ev} + $r)}')"
+  jq -cn --arg n "$note" '[{id:555,user:{login:"fleet-bot"},body:("<!-- fleet-board:manager-note -->\n### fleet-board manager note\nState: x\n\n```json\n"+$n+"\n```\n"),created_at:"2026-09-28T00:01:00Z"}]' > "$d/comments-12.json"
+}
+CI_EV="$(jq -cn '{round:1,sha:"abc1234",critical:0,important:1,findings:[{severity:"Important",text:"CI failed at abc1234: test-suite (url)"}],stage:null}')"
+bi_case_ev ci-finding "$(jq -cn --argjson d "$(bi_rec documentation 0)" --argjson b "$(bi_rec blast_radius 0)" '{documentation:$d,blast_radius:$b}')" "$CI_EV"
+bi_plan ci-finding
+assert_jq "built-ins on: a CI finding as the evidence record, stage records clean at the head, plans fix" "$(card 12 action)" '"fix"'
+assert_jq "built-ins on: a CI finding with clean stage records plans no review_stage or review row" '[.cards[] | select(.number == 12 and (.action == "review_stage" or .action == "review"))] | length' '0'
+assert_jq "built-ins on: the fix row carries the CI failure as its finding" '[(.cards[] | select(.number == 12 and .action == "fix")).findings[].text] | any(startswith("CI failed at abc1234"))' 'true'
+
+bi_plan none
+assert_exit "built-ins on: exit" 0
+assert_jq "built-ins on: a clean evidence record and no stage records plans review_stage for documentation and blast_radius" "[.cards[] | select(.number == 12 and .action == \"review_stage\") | .stage.name] | sort" '["blast_radius","documentation"]'
+assert_jq "built-ins on: a clean evidence record and no stage records plans no advance_stage" '[.cards[] | select(.action == "advance_stage")] | length' '0'
+bi_plan clean
+assert_jq "built-ins on: clean documentation and blast_radius records at the head plan merge under auto with green checks" "$(card 12 action)" '"merge"'
+bi_plan blast-finding
+assert_jq "built-ins on: an Important blast_radius finding at the head does not plan merge" '[.cards[] | select(.number == 12 and .action == "merge")] | length' '0'
+
 tp_finish

@@ -234,6 +234,9 @@ def run():
     test_scope_ignore_cleans_the_path_side()
     test_glob_segments_and_jq_parity()
     test_one_cards_reviewers_are_admitted_together()
+    test_three_passes_of_one_stage_are_admitted_together()
+    test_one_pass_is_never_run_twice()
+    test_passes_count_toward_global_capacity()
     test_a_writer_and_the_reviewers_of_one_card_exclude_each_other()
     test_a_stacked_child_is_not_held_by_its_ancestors_scope()
     test_a_parent_fix_is_not_held_by_the_scope_of_a_card_stacked_on_it()
@@ -259,7 +262,7 @@ def test_every_planned_action_is_classified():
     expected = {0: ['continue_implementor', 'fix', 'review', 'review_stage'],
                 1: ['start_review', 'unblock', 'update_branch', 'land', 'advance_stage', 'to_human_qa', 'mark_ready',
                     'verify_main', 'finish', 'block', 'file_pending', 'merge', 'after_merge', 'merge_refusal',
-                    'move_to_review', 'check_premise', 'rerun_checks', 'checks_failed'],
+                    'move_to_review', 'check_premise', 'draft_followup', 'rerun_checks', 'checks_failed'],
                 2: ['start']}
     for klass, actions in expected.items():
         for action in actions:
@@ -616,6 +619,36 @@ def test_one_cards_reviewers_are_admitted_together():
     # global capacity still bounds them
     r = Scheduler(clock=lambda: 0).admit(rows, limits=dict(LIMITS, **{'global': 2}))
     assert len(r['admitted']) == 2 and r['waits'][0]['reason'] == 'global capacity', r
+
+
+def _pass_row(number, stage, pass_no):
+    return dict(candidate(number, 'review_stage', paths=[]), stage=stage, **{'pass': pass_no})
+
+
+def test_three_passes_of_one_stage_are_admitted_together():
+    rows = [_pass_row(12, 'security', i) for i in (1, 2, 3)]
+    r = Scheduler(clock=lambda: 0).admit(rows, limits=LIMITS)
+    assert [x.get('pass') for x in r['admitted']] == [1, 2, 3], r
+    assert r['waits'] == [], r
+    # a pass already running does not hold the card's other passes back
+    running = [{'number': 12, 'provider': 'claude', 'paths': [], 'action': 'review_stage', 'stage': 'security', 'pass': 1}]
+    r = Scheduler(clock=lambda: 0).admit(rows, active=running, limits=LIMITS)
+    assert [x.get('pass') for x in r['admitted']] == [2, 3], r
+    assert [w['reason'] for w in r['waits']] == ['card already has an active claim'], r
+
+
+def test_one_pass_is_never_run_twice():
+    rows = [_pass_row(12, 'security', 2), _pass_row(12, 'security', 2)]
+    r = Scheduler(clock=lambda: 0).admit(rows, limits=LIMITS)
+    assert len(r['admitted']) == 1, r
+    assert [w['reason'] for w in r['waits']] == ['card capacity'], r
+
+
+def test_passes_count_toward_global_capacity():
+    rows = [_pass_row(12, 'security', i) for i in (1, 2, 3)]
+    r = Scheduler(clock=lambda: 0).admit(rows, limits=dict(LIMITS, **{'global': 2}))
+    assert [x.get('pass') for x in r['admitted']] == [1, 2], r
+    assert [w['reason'] for w in r['waits']] == ['global capacity'], r
 
 
 def test_a_writer_and_the_reviewers_of_one_card_exclude_each_other():

@@ -266,20 +266,22 @@ assert_jq "premise-no-scope: no Scope paths waits" "$(card 12 action)" '"wait"'
 assert_jq "premise-no-scope: the reason" "$(card 12 reason)" '"Scope lists no paths"'
 
 pm_setup "$PM_ON" src/calc.js
+pm_issue 12 ready "$PM_SCOPE" ""; pm_issue 14 in_review "$PM_SCOPE" ""
+scope_routes "$PM_DIR" "12" "14"; run_check "$SCRIPT"
+assert_jq "premise-scope-held: a Ready card whose Scope overlaps an open card plans wait, not check_premise" "$(card 12 action)" '"wait"'
+assert_jq "premise-scope-held: the reason names the open card" "$(card 12 reason)" '"Scope overlaps #14 on src/calc.js"'
+
+pm_setup "$PM_ON" src/calc.js
 pm_issue 12 ready "$PM_SCOPE" ""; pm_issue 14 ready "$PM_SCOPE" ""
 scope_routes "$PM_DIR" "12 14" ""; run_check "$SCRIPT"
 assert_jq "premise-scope-free: overlapping unstamped cards both plan check_premise" \
   '[.cards[] | select(.number == 12 or .number == 14) | .action]' '["check_premise","check_premise"]'
 
-# A card held by an open card's Scope waits; it plans no check until the holder is gone
 pm_setup "$PM_ON" src/calc.js
-pm_issue 11 in_review "$PM_SCOPE" "$PM_HEAD"
-pm_issue 12 ready "$PM_SCOPE" ""
-scope_review_note "$PM_DIR" 11
-scope_routes "$PM_DIR" "12" "11"
-run_check "$SCRIPT"
-assert_jq "premise-scope-held: a card whose Scope overlaps an open card waits, no check" "$(card 12 action)" '"wait"'
-assert_jq "premise-scope-held: the reason names the holder" "$(card 12 reason | sed 's/^/(/; s/$/ | contains("#11"))/')" 'true'
+pm_issue 12 ready "$PM_SCOPE" ""; pm_issue 14 ready "$PM_OTHER" ""
+scope_routes "$PM_DIR" "12 14" ""; run_check "$SCRIPT"
+assert_jq "premise-scope-disjoint: cards with disjoint Scope both plan check_premise" \
+  '[.cards[] | select(.number == 12 or .number == 14) | .action]' '["check_premise","check_premise"]'
 
 pm_setup "$PM_ON" src/calc.js
 pm_issue 12 ready "$PM_SCOPE" ""

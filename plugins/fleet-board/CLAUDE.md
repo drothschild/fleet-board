@@ -56,7 +56,9 @@ no file here. The gate's residual bypasses and false positives are listed in the
   note; `merge` refuses to overwrite a stored invalid one. Review-stage fields: `stage`
   (null or a stage name), `reviewed_stages` (list of names), `last_review.stage` and
   `last_review.provider` (null for an In Review or agent-stage record), each validated
-  against `^[a-z][a-z0-9_]*$` (`provider` also allows `-`). `reviews` (null or an object) keeps
+  against `^[a-z][a-z0-9_]*$` (`provider` also allows `-`). `review_passes` (null or an object) counts, per
+  reviewer, the clean passes at the current head; `finding_rounds` (null or an object) counts, per reviewer,
+  its own rounds with findings. `reviews` (null or an object) keeps
   each reviewer's latest report beside `last_review`, keyed `evidence` (the In Review evidence reviewer) or
   the stage name, so parallel reviewers at one head never overwrite each other. In in_review the planner
   and the driver (`driver.review_for`) judge a stage on `reviews[<stage>]` and the evidence reviewer on
@@ -75,12 +77,12 @@ no file here. The gate's residual bypasses and false positives are listed in the
 - **Tick plan** (`scripts/tick-plan.sh`). Prints one JSON plan: an action per card from a
   single jq decision table (start, continue_implementor, start_review, review, fix,
   mark_ready, merge, verify_main, finish, after_merge, merge_refusal, rerun_checks, checks_failed, to_human_qa, file_pending, block, unblock,
-  skip, skip_no_acceptance, skip_card_lint, wait, advance_stage, review_stage, check_premise). A clean, current review in In Review
+  skip, skip_no_acceptance, skip_card_lint, wait, advance_stage, review_stage, check_premise, draft_followup). With `premise_check.enabled` it also lists Backlog and keeps only the rows whose `followup_draft` is `pending` before any per-card read; such a card plans `draft_followup` (reason `follow-up awaits a draft`; `skip` once `action_failures` reaches `review.max_rounds`). A clean, current review in In Review
   with `merge.policy: auto`, a non-draft PR, no human QA need, no pending check and a red check that
   `merge.ignore_checks` does not cover plans `rerun_checks` (no `checks_rerun` for the PR head: the driver runs
   `gh run rerun <id> --failed` per red check and notes `checks_rerun {sha, checks, at}`) or, with `checks_rerun.sha`
-  at the head, `checks_failed` (the driver records the red checks as one Important finding in `last_review`, so the
-  planner plans `fix`). Both rows, in the plan and in `--candidates` (from which the supervisor admits), carry `red_checks` (each red check's `name` and `detailsUrl`); a `review_stage` row there also carries its `pass`. Neither starts an agent. Precedence: failed lookup, invalid note, file_pending,
+  at the head, `checks_failed` (the driver records the red checks as one Important finding in `last_review` and as the
+  evidence record in `reviews`, keeping every other reviewer's record, so the planner plans `fix`). Both rows, in the plan and in `--candidates` (from which the supervisor admits), carry `red_checks` (each red check's `name` and `detailsUrl`); a `review_stage` row there also carries its `pass`. Neither starts an agent. Precedence: failed lookup, invalid note, file_pending,
   the `action_failures` rules, then the table. `action_failures` bound: at `max_rounds`
   consecutive no-progress actions the card is blocked; at `2*max_rounds` (or `max_rounds`
   for a blocked card awaiting unblock) it is skipped for a person, who clears it with
@@ -113,7 +115,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   dependency) asks `premise.sh moved <n>` and plans `check_premise` instead when it returns
   `moved` true, with its reason (`ground moved: <path>`, `no premise stamp`, `premise stamp commit is
   unknown`) as the plan reason. `moved` is false with no default head (no `origin`). The `Scope lists
-  no paths` wait still comes first, and so does the Scope-overlap wait: a card held by an open card's Scope plans `wait`, not `check_premise`, until the holder is gone. The supervisor runs
+  no paths` wait still comes first, and the Scope-overlap wait applies too: a card held by an open card's Scope plans `wait` (`Scope overlaps #<n>`), not `check_premise`, until the holder is gone. The supervisor runs
   `check_premise` (`CardDriver._do_check_premise`): `worktree.sh premise <n>` makes a detached checkout
   `<base>/<n>-premise_check` of the default branch, and a session with no agent file (`Read,Write,Bash,Grep,Glob`
   through `--tools`, placed before `--permission-mode`; `models.checker`) gets the instructions in
@@ -126,6 +128,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   is kept at launch and compared at the end: a change drops the verdict (one `premise` event, no stamp, no move,
   no failure); a comment or note write is not a change. A checker's `Out of scope:` and `Bugs found:` lines file
   nothing. `tests/tick-plan-lib.sh` `setup_case` writes `premise_check.enabled: false` unless the case's extra YAML sets the key.
+- **Follow-up drafts** (`premise_check.enabled`). `file-followups.sh` files every new card in Backlog (whatever `followups.status` says) with `--followup-file`, which `board-create.sh` and `adapters/local/create.sh` store as the card's `followup`: `{draft: pending|done|failed, kind: bug|out_of_scope, entry: <the parsed item>, from: <card number>}`, and posts neither "Filed in Backlog" comment. With the check off the card is filed as before and has no `followup` field. `board-read.sh` returns `followup` (a record of another shape reads as `null`) and `board-list.sh` rows carry `followup_draft`. `draft_followup` (`CardDriver._do_draft_followup`, role `checker`, mode `draft`) runs the check session with the entry, the filing card's number and a `#<n> <state> <title>` line for every other card, closed ones included. `_settle_draft` acts on the verdict: `duplicate` #n (must exist and not be the card; else a failed draft) and `fixed` move the card to Won't do with `Follow-up draft: duplicate of #<n>.` or `Follow-up draft: already fixed on the default branch.` plus the evidence; `drafted` runs `premise.sh apply-draft <n> <file>` (writes `## Why` and `## Scope`, replaces the acceptance, sets `followup.draft` done, no stamp), `card-lint.sh <n>` (via `c.soft`: exit 1 is a lint failure) and `premise.sh stamp <n> --by check --sha <head>`. The card goes to Ready only for `followup.kind: bug`, a repro result `failed`, a passing lint, `followups.auto_ready: bugs` (`none` keeps every draft in Backlog) and `State.take_auto_ready(followups.auto_ready_cap)` (default 5, counted per supervisor run and shown in the snapshot as `followups_auto_ready: {count, cap}`); else one comment `Drafted; left in Backlog: <reason>.` names the first reason. A draft that fails (`action_failures`) `review.max_rounds` times runs `premise.sh set-followup <n> failed` and comments `Follow-up draft failed after <count> attempts; left as filed. A person writes the criteria and moves it to Ready.`; the card is then not planned again.
 - **Declared Scope parsing.** `tick-plan.sh` reads a card's `## Scope` section for backticked
   spans and plain-text path tokens (no whitespace, holding a `/` or ending in an extension;
   leading `(` and trailing `.,:;)` stripped). A token ending in `/` is a directory scope.
@@ -134,7 +137,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   paths hold new starts, while existing work can continue. Selected starts reserve
   scope in ascending card-number order; a waiting card reserves nothing. Normalized
   directory scopes cover descendants with path-boundary matching. `start_review`, `review`,
-  `review_stage`, `update_branch`, `land`, `after_merge`, `merge_refusal`, `merge`, `rerun_checks`, `checks_failed` and `check_premise` (`scheduler.SCOPE_FREE_ACTIONS`) reserve no scope and are never
+  `review_stage`, `update_branch`, `land`, `after_merge`, `merge_refusal`, `merge`, `rerun_checks`, `checks_failed`, `check_premise` and `draft_followup` (`scheduler.SCOPE_FREE_ACTIONS`) reserve no scope and are never
   scope-checked against other cards; they still take a slot and one action per card, except that one card's
   reviewer actions (`scheduler.REVIEWER_ACTIONS`: `start_review`, `review`, `review_stage`) run together, one per
   reviewer (the evidence reviewer, one per stage): the scheduler holds a running reviewer's own row, and holds
@@ -239,6 +242,11 @@ no file here. The gate's residual bypasses and false positives are listed in the
   after its own `review.stages`. A project stage of the same name replaces the built-in; a
   stage entry `{name: <built-in>, enabled: false}` removes it and is itself dropped. `enabled`
   must be boolean. With a provider `models.reviewer` the built-ins carry model `sonnet`.
+- **Required passes, fixer pass, round limits.** A stage with `required_passes: N` is met at N clean
+  reports at the current head, planned and run side by side. One pass with findings sends the card to the
+  fixer. One fixer pass gets every reviewer's findings once every routed reviewer has reported, then every
+  routed reviewer reviews the new head. Each reviewer's `max_rounds` limits its own `finding_rounds`; a
+  clean reviewer never blocks.
 - **Review stages** (`scripts/review-stages.sh route|match|next|setup`). `route <n> <pr>` adds
   each stage's routing label (path glob match or the label already on the card; never
   removes one) and prints the routed stage names; exit 1 on a failed read. The driver runs

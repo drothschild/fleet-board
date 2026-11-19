@@ -55,7 +55,7 @@ Then run `/fleet-board:init`, get `.fleet-board.yml` onto the default branch (ro
    | review | In Review | The reviewer's report on the card |
    | hand-off | Human QA, or a ready PR | Human QA with a "What to check" comment, or the PR marked ready for review |
 
-   With `review.stages` configured and a PR that matches a stage, the stage reviews in parallel with the evidence reviewer while the card stays In Review, and its report appears on the card. Human QA or the ready PR follows once every routed reviewer is clean at the head ([details](docs/config.md#reviewstages)). Under `merge.policy: auto` a clean, green PR that needs no Human QA goes to `merging` and is merged instead.
+   With `review.stages` configured and a PR that matches a stage, the stage reviews in parallel with the evidence reviewer while the card stays In Review, and its report appears on the card. A stage with `required_passes` runs that many passes side by side and needs each clean. When reviewers report findings, one shared fixer pass takes all of them, then every routed reviewer reviews the new head. Human QA or the ready PR follows once every routed reviewer is clean at the head ([details](docs/config.md#reviewstages)). Under `merge.policy: auto` a clean, green PR that needs no Human QA goes to `merging` and is merged instead.
 
 8. **Release Human QA by hand** on the board page: check the change, merge the PR, and move the card to Done (or back to Ready). No agent can do this; the gate blocks it.
 
@@ -120,6 +120,7 @@ More on how planning, notes, follow-ups and the `main` check work: [docs/config.
 | `board.repo` | none (required) | `owner/name` of the repo the PRs live in |
 | `board.dir` | `.fleet-board` | where the cards live, relative to the repo root; no `..`, not absolute ([details](docs/config.md#boarddir-and-boardport)) |
 | `board.port` | `8765` | the port of the board page, 1024 to 65535 ([details](docs/config.md#boarddir-and-boardport)) |
+| `board.repos` | `[]` | other repositories whose cards this board holds: a list of `repo` and absolute `path`; a card names its repository in its `repo` field ([details](docs/config.md#boardrepos)) |
 | `board.terminal_command` | `["open", "-a", "Terminal", "{dir}"]` | the command the card's "Open terminal" link runs; `{dir}` is the card's directory ([details](docs/config.md#boardterminal_command)) |
 | `board.states` | `{}` | maps a state to the name the board shows ([details](docs/config.md#boardstates)) |
 | `commands.test_one` | none | runs one test file; `{file}` is replaced by its path |

@@ -138,7 +138,7 @@ setup_case() {
   git init -q "$REPO"
   git -C "$REPO" config user.email "test@example.com"
   git -C "$REPO" config user.name "Test User"
-  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\npremise_check:\n  enabled: false\n' > "$REPO/.fleet-board.yml"
   # files the fixture items name, so a follow-up derives a Scope from them (scope_lines keeps existing paths)
   mkdir -p "$REPO/tests"; : > "$REPO/calc.js"; : > "$REPO/cli.sh"; : > "$REPO/tests/round.sh"
   git -C "$REPO" add .fleet-board.yml calc.js cli.sh tests/round.sh
@@ -271,7 +271,7 @@ local_card() {
 }
 setup_local() {
   setup_case
-  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\npremise_check:\n  enabled: false\n' > "$REPO/.fleet-board.yml"
   mkdir -p "$REPO/.fleet-board/cards"
   echo 70 > "$REPO/.fleet-board/next"
   local_card 12 "The card" in_progress "$RECENT"

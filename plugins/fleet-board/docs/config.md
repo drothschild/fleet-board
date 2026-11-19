@@ -102,7 +102,7 @@ review:
       max_rounds: 2                   # default: review.max_rounds
       default: false                  # true routes the stage to every card
       enabled: true                   # false never routes it
-      required_passes: 1              # 1 to 5; accepted and validated
+      required_passes: 1              # 1 to 5; passes run side by side
       brief: "Focus on authz, secrets, injection."  # optional; passed verbatim
     - name: compliance
       provider: openai                # instead of agent
@@ -121,7 +121,7 @@ review:
     - {name: blast_radius, enabled: false}
 ```
 
-`default: true` routes a stage to every card; `enabled: false` never routes it. `required_passes` (1 to 5) is accepted and validated; today one clean report meets a stage. A stage is not a board state: a `board.states.review_<name>` key is warned about.
+`default: true` routes a stage to every card; `enabled: false` never routes it. `required_passes` (1 to 5) sets how many clean reports meet a stage: a stage with `required_passes: 3` needs 3 clean reports at the current head. The passes are planned and run side by side, each a fresh session in its own checkout. One pass with findings sends the card to the fixer. A stage is not a board state: a `board.states.review_<name>` key is warned about.
 
 **Routing.** A stage applies to a card when `default: true` is set, the card carries the stage's label, or a file the PR changes matches one of its `paths` globs (the rule `needs-human-qa.sh` uses). A stage with `enabled: false` never applies. `review-stages.sh route <card> <pr>` adds each missing label and never removes one. It runs when the card moves from In Progress to In Review, before the move, so a failure leaves the card in In Progress and the next plan retries. A person can add a label to force a stage. When `gh` lists fewer files than the PR changes, every stage is routed, with a warning.
 
@@ -129,7 +129,9 @@ review:
 
 **Setup.** After adding or changing stages, run `bash <scripts>/review-stages.sh setup` (`init.sh` prints this command when it finishes; it does not run it). On the local store there is nothing to create (routing labels are added to a card when it is routed), so it exits 0.
 
-**Flow.** A card whose evidence review is clean moves to the first routed stage (`advance_stage`) and is reviewed there next. Critical or Important findings go to the fixer and the same stage re-reviews, up to the stage's `max_rounds`; then the card is Blocked. A clean stage moves the card to the next routed stage, then to Human QA, a ready PR or a merge exactly as before.
+**Flow.** A card whose evidence review is clean moves to the first routed stage (`advance_stage`) and is reviewed there next. Critical or Important findings go to the fixer and the stage re-reviews, up to the stage's `max_rounds` of its own rounds with findings; then the card is Blocked. A clean stage moves the card to the next routed stage, then to Human QA, a ready PR or a merge exactly as before.
+
+**Fixer pass and round limits.** One fixer pass gets every reviewer's findings once every routed reviewer has reported, labelled by reviewer. Then every routed reviewer reviews the fixed head. Each reviewer's `max_rounds` counts that reviewer's own rounds with findings (`finding_rounds`), so a stage routed late still gets its full fix attempts. A clean reviewer never blocks a card.
 
 **Advisory.** An `advisory: true` stage posts its report and its findings are read as clean: its findings never send the card to a fixer or block it. A provider stage fails closed even when advisory: a diff over `max_diff_bytes` or with no text hunks (`stage-review.sh` exit 7) blocks the card, and repeated provider failures (exits 1, 3 and 6 count as report errors) block it under the `action_failures` rule like any other stage.
 
@@ -275,6 +277,23 @@ Left empty (the default), none of this runs and every conflict goes to the fixer
 `board.dir` is where the cards live: `<board.dir>/cards/<n>.json`, the `next` counter, and the `active/` markers. The default is `.fleet-board`. It is relative to the repo root, so it cannot be absolute or contain `..`; `config.sh` exits 5 for either.
 
 `board.port` is the port the board page listens on, on `127.0.0.1`. The default is `8765`. It must be an integer from 1024 to 65535. `board-web.sh --port N` overrides it for one run.
+
+## `board.repos`
+
+`board.repos` lets one board hold cards for more than one repository. The default is an empty list: every card belongs to `board.repo`. Each entry is an object with two keys:
+
+```yaml
+board:
+  repo: user/myProject
+  repos:
+    - repo: user/otherProject
+      path: /Users/me/Projects/otherProject
+```
+
+- `repo` is `OWNER/NAME` and must differ from `board.repo`. A repository appears at most once.
+- `path` is the local checkout of that repository. It must be absolute, and it must not contain a `..` segment.
+
+A card names its repository in its `repo` field. A card with no `repo` field belongs to `board.repo`. Set it when you create the card with `board-create.sh <title> <body-file> --repo OWNER/NAME`. `config.sh` exits 5 with the entry's index when `board.repos` is not a list or an entry breaks these rules.
 
 ## `board.terminal_command`
 

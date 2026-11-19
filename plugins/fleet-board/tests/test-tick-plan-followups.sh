@@ -215,5 +215,39 @@ plan list-failure
 assert_exit "list-failure: exit 1" 1
 assert_stdout_exact "list-failure: no plan printed" ""
 
+# ---------------------------------------------------------------------------
+# A follow-up filed in Backlog awaits a draft (card 477): with premise_check.enabled it plans draft_followup.
+# fu_case <extra YAML> <draft value | NONE (a null followup) | ABSENT (no field)>: card 12 in Backlog
+FU_ON="$(printf 'premise_check:\n  enabled: true')"
+FU_OFF="$(printf 'premise_check:\n  enabled: false')"
+fu_case() {
+  setup_case ready-start "$1"
+  FU_DIR="$FAKE_GH_DIR/fu"; mkdir -p "$FU_DIR"
+  scope_issue "$FU_DIR" 12 backlog '- Modify `src/calc.js`: the change'
+  case "$2" in
+    ABSENT) ;;
+    NONE) jq -c '.followup = null' "$FU_DIR/issue-12.json" > "$FU_DIR/issue-12.new" && mv "$FU_DIR/issue-12.new" "$FU_DIR/issue-12.json" ;;
+    *) jq -c --arg d "$2" '.followup = {draft: $d, kind: "bug", entry: {title: "t", repro: "r", expected: "e", observed: "o"}, from: 7}' \
+         "$FU_DIR/issue-12.json" > "$FU_DIR/issue-12.new" && mv "$FU_DIR/issue-12.new" "$FU_DIR/issue-12.json" ;;
+  esac
+  scope_routes "$FU_DIR" "" ""
+  printf 'api repos/acme/toy/issues/12\t0\t%s/issue-12.json\napi --paginate repos/acme/toy/issues/12/comments\t0\t%s/common/empty.json\n' "$FU_DIR" "$TICK" >> "$FU_DIR/routes"
+  run_check "$SCRIPT"
+}
+fu_case "$FU_ON" pending
+assert_exit "followup-pending: exit" 0
+assert_jq "followup-pending: a pending Backlog card plans draft_followup" "$(card 12 action)" '"draft_followup"'
+assert_jq "followup-pending: the reason" "$(card 12 reason)" '"follow-up awaits a draft"'
+fu_case "$FU_ON" done
+assert_jq "followup-done: a card with the draft done has no row" '[.cards[] | select(.number == 12)] | length' 0
+fu_case "$FU_ON" failed
+assert_jq "followup-failed: a card with the draft failed has no row" '[.cards[] | select(.number == 12)] | length' 0
+fu_case "$FU_ON" NONE
+assert_jq "followup-null: a Backlog card whose followup is null has no row" '[.cards[] | select(.number == 12)] | length' 0
+fu_case "$FU_ON" ABSENT
+assert_jq "followup-absent: a Backlog card with no followup record has no row" '[.cards[] | select(.number == 12)] | length' 0
+fu_case "$FU_OFF" pending
+assert_jq "followup-pending-disabled: a pending card with the check disabled has no row" '[.cards[] | select(.number == 12)] | length' 0
+
 
 tp_finish
