@@ -112,6 +112,7 @@ _STAGE = re.compile(r'[a-z][a-z0-9_]*')
 _AFTER_MERGE = re.compile(r'(?m)^##[ \t]+After merge[ \t]*$')
 _NO_PROGRESS = re.compile(r'no progress after (\d+) attempts?: (.*)', re.S)
 _RESET = {'action_failures': 0, 'last_action_error': None}
+_REVIEW_LOOP = 'review loop:'   # the planner's reason prefix for a block at an unchanged head (tick-plan.sh)
 CHECK_INSTRUCTIONS = Path(__file__).resolve().parent / 'defaults' / 'premise-check-prompt.md'
 _CHECK_FAILED = 'premise check failed: %s; move the card to Ready to start it without a check'
 _CHECK_FAILED_PREFIX = 'premise check failed: '
@@ -1500,6 +1501,9 @@ class CardDriver:
                     counts[run.stage or 'evidence'] = {'count': (mine.get('count') if isinstance(mine.get('count'), int)
                                                                  else 0) + 1, 'last_round': run.round}
                     patch['finding_rounds'] = counts
+            laps = self._review_laps(note, run, c.row, patch['last_review'].get('sha'))
+            if laps is not None:
+                patch['review_laps'] = laps
             # A card a person moved out of Blocked still has state blocked in its note; this review is the one
             # the planner asked for, so record the column the card is in, or the planner plans it again
             if note.get('state') == 'blocked' and status != 'blocked' and run.prior in c.states() \
@@ -1519,6 +1523,8 @@ class CardDriver:
         if status == 'blocked':
             self._blocked(run, parsed, final)
         self._followups(run, parsed, note)
+        if role == 'fixer':
+            final['review_laps'] = None   # a fixer ran: the reviewers' next reports start a fresh lap count
         if status == 'done' and role == 'fixer':
             if run.conflict:
                 self._conflict_done(run, final)
@@ -1530,6 +1536,28 @@ class CardDriver:
         elif status == 'not_reproducible':
             final['last_fix'] = {'status': 'not_reproducible', 'round': run.round}
         (c.merge if role == 'fixer' else c.merge_soft)(final)
+
+    @staticmethod
+    def _review_laps(note, run, row, sha):
+        """The note's review_laps after this reviewer's report: {sha, checks, count, seen}. A lap ends when a
+        reviewer reports again at a head it already reported at in this lap (with the same red checks): the count
+        rises and `seen` starts over with it. A new head or other red checks start at 1; a fixer clears it. None
+        (leave it as it is) when the record's head is not a full sha."""
+        if not (isinstance(sha, str) and re.fullmatch(r'[0-9a-f]{40}', sha)):
+            return None
+        checks = sorted({chk['name'] for chk in (row.get('red_checks') or [])
+                         if isinstance(chk, dict) and isinstance(chk.get('name'), str)})
+        key = run.stage or 'evidence'
+        if run.stage and _posint(row.get('pass')):
+            key = '%s#%d' % (run.stage, row['pass'])
+        old = note.get('review_laps') if isinstance(note.get('review_laps'), dict) else {}
+        seen = [k for k in (old.get('seen') or []) if isinstance(k, str)]
+        count = old.get('count') if _posint(old.get('count')) else 0
+        if old.get('sha') != sha or sorted(old.get('checks') or []) != checks or not count:
+            return {'sha': sha, 'checks': checks, 'count': 1, 'seen': [key]}
+        if key in seen:
+            return {'sha': sha, 'checks': checks, 'count': count + 1, 'seen': [key]}
+        return {'sha': sha, 'checks': checks, 'count': count, 'seen': seen + [key]}
 
     def _settle_premise(self, c, run, parsed):
         """Act on a checker's verdict. Its follow-up lines (Out of scope, Bugs found) are ignored: a check files
@@ -1878,6 +1906,8 @@ class CardDriver:
                            'Last error: `%s`\n\nA person must fix the cause and then move the card back.'
                            % (match.group(1), ' '.join(match.group(2).split())))
             return
+        if reason.startswith(_REVIEW_LOOP):
+            return self._block_review_loop(c, reason, came_from, left)
         review = review_for(c.note(), None, c.row.get('state'))
         found = [{'severity': f['severity'], 'text': f.get('text', '')}
                  for f in ((review or {}).get('findings') or [])
@@ -1887,6 +1917,26 @@ class CardDriver:
         c.merge_soft(dict(_RESET, state='blocked', blocked_from=came_from, blocked_findings=entries, **left))
         c.comment_soft('Blocked: ' + reason + '\n\n' + '\n'.join('- [%s] %s' % (e['severity'], e['text'])
                                                                for e in entries))
+
+    def _block_review_loop(self, c, reason, came_from, left):
+        """The reviewers keep re-reviewing one head with the same red checks and no fixer: stop for a person. The
+        lap count is cleared, so a person who moves the card back gets a fresh count."""
+        head = c.row.get('head_sha')
+        if not (isinstance(head, str) and re.fullmatch(r'[0-9a-f]{40}', head)):
+            raise _Invalid('head_sha', head)
+        checks = [chk for chk in (c.row.get('red_checks') or [])
+                  if isinstance(chk, dict) and isinstance(chk.get('name'), str)]
+        c.move('blocked')
+        c.merge_soft(dict(_RESET, state='blocked', blocked_from=came_from, review_laps=None,
+                          blocked_findings=[{'severity': 'Important', 'text': reason}], **left))
+        lines = ['- `%s`%s' % (chk['name'], ' (%s)' % chk['detailsUrl'] if isinstance(chk.get('detailsUrl'), str)
+                                else '') for chk in checks] or ['- none']
+        c.comment_soft(
+            'Blocked: %s\n\nThe reviewers reviewed PR head `%s` again and again with no fixer between them, and the '
+            'red checks did not change:\n\n%s\n\nAnother review of this head would only repeat the last one.\n\n'
+            'To release the card: fix the cause on the PR branch (or re-run the checks once it is fixed elsewhere), '
+            'then move the card back to In Review. Moving it back starts the lap count again.'
+            % (reason, head, '\n'.join(lines)))
 
     def _qa_summary(self, command, worktree):
         try:
