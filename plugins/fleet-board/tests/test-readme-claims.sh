@@ -53,7 +53,8 @@ check "config table has a review.stages row" "$r"
 DOCS_DIR="${SCRIPT_DIR}/../docs"
 GATES="${GATES_FILE:-${DOCS_DIR}/gates.md}"
 # The upgrade notes may say it was removed; nothing else in the README names it.
-r=bad; awk '/^### Upgrading from an earlier version$/{u=1;next} u && /^#/{u=0} !u' "$README" | grep -c 'settle\.sh' >/dev/null || r=ok
+# A name ending in -settle.sh is a different, live script and does not count.
+r=bad; awk '/^### Upgrading from an earlier version$/{u=1;next} u && /^#/{u=0} !u' "$README" | grep -Ec '(^|[^-])settle\.sh' >/dev/null || r=ok
 check "README does not mention settle.sh outside its upgrade notes" "$r"
 r=bad; grep -q 'settle\.sh' "$GATES" || r=ok
 check "gates.md does not mention settle.sh" "$r"

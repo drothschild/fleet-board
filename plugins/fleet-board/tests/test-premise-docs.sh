@@ -12,6 +12,6 @@ section="$(awk '/^## Premise check[[:space:]]*$/ {on=1; next} /^## / {on=0} on' 
 if [ -n "$section" ]; then ok "README has a ## Premise check section"; else bad "README has no ## Premise check section"; fi
 for term in 'premise_check.enabled' 'models.checker' 'followups.auto_ready' 'followups.auto_ready_cap' \
             'premise-settle.sh approve' 'premise-settle.sh confirm' 'fleet:closed-as-built'; do
-  if printf '%s\n' "$section" | grep -qF -- "$term"; then ok "section names $term"; else bad "section does not name $term"; fi
+  if printf '%s\n' "$section" | grep -cF -- "$term" >/dev/null; then ok "section names $term"; else bad "section does not name $term"; fi
 done
 exit "$fail"
