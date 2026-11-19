@@ -884,6 +884,22 @@ run_check_in "$REPO" bash -c '. "$1/board-lib.sh"; fb_load_config; shift; exec b
 assert_exit "a blocked_by naming a card of another repo on this board is accepted" 0
 assert_card_json 3 '.blocked_by|map(tostring)|join(",")' 2
 
+# --- FLEET_BOARD_HOME: a checkout of another repo writes to the home board ---
+setup_case
+HOME_REPO="$REPO"
+seed_card 1 in_progress 'Home card' 'body'
+setup_case
+OTHER_REPO="$REPO"
+rm -rf "$OTHER_REPO/.fleet-board"
+hc="$(mktemp)"; CLEANUP_DIRS+=("$hc"); echo 'from the other checkout' > "$hc"
+REPO="$HOME_REPO"
+FLEET_BOARD_HOME="$HOME_REPO" run_check_in "$OTHER_REPO" "$SCRIPTS/board-comment.sh" 1 "$hc"
+assert_exit "FLEET_BOARD_HOME: board-comment.sh in another checkout exits 0" 0
+assert_card_json 1 '.comments|length' 1
+assert_card_json 1 '.comments[0].body' 'from the other checkout'
+if [ ! -e "$OTHER_REPO/.fleet-board" ]; then pass "FLEET_BOARD_HOME: the other checkout gets no board"
+else fail "FLEET_BOARD_HOME: the other checkout gets no board" "$OTHER_REPO/.fleet-board exists"; fi
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
