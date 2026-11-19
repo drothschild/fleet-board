@@ -159,6 +159,61 @@ run_lint
 check "path outside ## Creates exits 1" "$RC" "1"
 has "path outside ## Creates is flagged with the path" "$OUT" "src/gone.js is not on main"
 hasnt "## Creates path still not flagged beside a flagged one" "$OUT" "src/fresh.js"
+echo "# missing-file: a ## Creates path counts card-wide and for dependents"
+newset; card 1 "## Acceptance\n- \`src/fresh.js\` exists\n\n## Scope\n- \`src/fresh.js\`\n\n## Creates\n- \`src/fresh.js\`\n"
+run_lint
+check "a path under ## Creates is not flagged in the card's Scope or Acceptance" "$RC" "0"
+hasnt "the card's own ## Creates path is not named in the output" "$OUT" "src/fresh.js"
+newset
+card 1 "$GOOD\n## Creates\n- \`src/fresh.js\`\n"
+card 2 "## Acceptance\n- \`src/fresh.js\` keeps its first line\n\n## Scope\n- \`src/fresh.js\`\n\n## Depends on\n- #1\n"
+card 3 "## Acceptance\n- \`src/fresh.js\` is removed\n"
+run_lint
+has "a card that does not depend on the creator is still flagged" "$OUT" "#3: missing-file: src/fresh.js"
+check "a card depending on the creator is not flagged" "$(printf '%s\n' "$OUT" | grep -c '^#2: missing-file')" "0"
+check "the creating card itself is not flagged" "$(printf '%s\n' "$OUT" | grep -c '^#1: missing-file')" "0"
+newset
+card 1 "$GOOD\n## Creates\n- \`src/fresh.js\`\n"
+card 2 "$GOOD\n## Depends on\n- #1\n"
+card 3 "## Acceptance\n- \`src/fresh.js\` is removed\n\n## Depends on\n- #2\n"
+run_lint
+check "a card two dependencies away from the creator is not flagged" "$(printf '%s\n' "$OUT" | grep -c '^#3: missing-file')" "0"
+newset
+card 3 "$GOOD\n## Creates\n- \`src/fresh.js\`\n"
+card 2 "$GOOD\n## Depends on\n- #3\n"
+card 1 "## Acceptance\n- \`src/fresh.js\` is removed\n\n## Depends on\n- #2\n"
+run_lint
+check "a chain is followed whichever card is linted first" "$(printf '%s\n' "$OUT" | grep -c '^#1: missing-file')" "0"
+newset; card 1 "## Acceptance\n- \`src/fresh.js\` exists\n\n## CREATES\n- \`src/fresh.js\`\n\n## Scope\n- \`src/fresh.js\`\n"
+run_lint
+check "the ## Creates heading is matched without regard to case, card-wide too" "$RC" "0"
+newset; card 1 "## Acceptance\n- \`src/old.js\` is gone\n\n## Creates\n- \`src/new.js\` (moved from \`src/old.js\`)\n"
+run_lint
+check "only the first path of a ## Creates line is exempt: a second path there is still flagged elsewhere" "$RC" "1"
+has "the second path on a Creates line is reported" "$OUT" "src/old.js is not on main"
+hasnt "the first path on a Creates line is not reported" "$OUT" "src/new.js"
+newset; card 1 "## Acceptance\n- \`src/a.js\` exists\n\n## Creates   \n- \`src/a.js\`\n"
+run_lint
+check "trailing spaces after the ## Creates heading still count" "$RC" "0"
+newset; card 1 "## Acceptance\n- \`src/a.js\` exists\n\n## Creates\n- \`lib/src/a.js\`\n"
+run_lint
+check "a created lib/src/a.js does not exempt src/a.js (whole-line match)" "$RC" "1"
+has "the shorter path is reported" "$OUT" "src/a.js is not on main"
+jq -n '{number: 21, title: "t", body: "Makes the file.\n\n## Creates\n- `src/chain.js`\n", acceptance: ["x"], blocked_by: [], state: "in_progress", labels: [], next_comment_id: 1, comments: []}' > "$ROOT/.fleet-board/cards/21.json"
+jq -n '{number: 22, title: "t", body: "", acceptance: ["x"], blocked_by: [21], state: "in_progress", labels: [], next_comment_id: 1, comments: []}' > "$ROOT/.fleet-board/cards/22.json"
+jq -n '{number: 23, title: "t", body: "", acceptance: ["`src/chain.js` is edited"], blocked_by: [21], state: "ready", labels: [], next_comment_id: 1, comments: []}' > "$ROOT/.fleet-board/cards/23.json"
+jq -n '{number: 24, title: "t", body: "", acceptance: ["`src/chain.js` is removed"], blocked_by: [22], state: "ready", labels: [], next_comment_id: 1, comments: []}' > "$ROOT/.fleet-board/cards/24.json"
+jq -n '{number: 25, title: "t", body: "", acceptance: ["`src/chain.js` is removed"], blocked_by: [], state: "ready", labels: [], next_comment_id: 1, comments: []}' > "$ROOT/.fleet-board/cards/25.json"
+BOUT="$(cd "$ROOT" && PATH="$STUBS:$PATH" bash "$SCRIPT" 23 2>"$SB/err")"; BRC=$?
+check "board card: linting a card alone follows its dependency's ## Creates on the board" "$BRC" "0"
+BOUT="$(cd "$ROOT" && PATH="$STUBS:$PATH" bash "$SCRIPT" 24 2>"$SB/err")"; BRC=$?
+check "board card: a dependency two cards away is followed too" "$BRC" "0"
+BOUT="$(cd "$ROOT" && PATH="$STUBS:$PATH" bash "$SCRIPT" 25 2>"$SB/err")"; BRC=$?
+check "board card: a card with no dependency on the creator is still flagged" "$BRC" "1"
+rm -f "$ROOT/.fleet-board/cards/2"[1-5].json
+SKILL_MD="$(dirname "$SCRIPT")/../skills/lint/SKILL.md"
+check "the lint skill documents the ## Creates rule" "$(grep -q '## Creates' "$SKILL_MD" && echo yes || echo no)" "yes"
+check "the lint skill no longer describes the old create/add word list" "$(grep -c 'lines that create or add a file' "$SKILL_MD")" "0"
 check "lint.sh has no create/new/add word-list skip" "$(grep -cE 'create\|new\|add' "$SCRIPT")" "0"
 check "lint.sh missing-file check names no create/new/adds word list" "$(grep -cE '\(create|\|new\||adds\?' "$SCRIPT")" "0"
 
