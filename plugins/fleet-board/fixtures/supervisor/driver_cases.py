@@ -876,7 +876,7 @@ def test_reviewer_report_with_findings_on_a_card_moved_out_of_blocked_sets_state
 
 
 def test_reviewer_round_one_uses_the_base_even_after_an_earlier_review(base):
-    # Retargeted from the manager agent's review row (test-weakened-test-scope.sh, test-weakened-test-examples.sh):
+    # Retargeted from the manager agent's review row:
     # in round 1 prev_sha is the base from worktree.sh review, never note.last_review.sha.
     b = board_for(base, 'in_review')
     b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree,
