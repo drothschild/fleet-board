@@ -28,7 +28,7 @@ check_rule() { # <label> <file>
   else
     fail "$label: a mutant on a line the test never reaches is a wrong target, re-aimed, not scored"
   fi
-  if has "$f" 'score the item as survived'; then
+  if has "$f" "score the item as survived" || has "$f" "scores the item as survived"; then
     pass "$label: when no change to reached code breaks the behavior, the item is a survivor"
   else
     fail "$label: when no change to reached code breaks the behavior, the item is a survivor"
