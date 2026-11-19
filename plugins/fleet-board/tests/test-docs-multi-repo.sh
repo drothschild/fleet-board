@@ -30,7 +30,7 @@ section() {
 sec="$(section | tr '\n' ' ' | tr -s ' ')"
 
 has() {
-  printf '%s' "$sec" | grep -qF -- "$1" && echo ok || echo bad
+  printf '%s' "$sec" | grep -cF -- "$1" >/dev/null && echo ok || echo bad
 }
 
 check "config.md has a board.repos section that names the card repo field" \
