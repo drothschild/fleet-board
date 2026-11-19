@@ -52,9 +52,9 @@
 #                   branch with git reset --keep to the head it had before this
 #                   run, so the next run merges again instead of finding nothing
 #                   to do. A refused reset --keep is reported; the exit stays 1.
-# A stacked card (manager note stack.base, a fleet/<n>-<slug> branch with an origin copy) then
-# also merges origin/<stack.base> after a clean base merge, with the same conflict and failure
-# handling.
+# A stacked card (manager note stack.base, a fleet/<n>-<slug> branch with an origin copy) whose
+# PR targets another branch is first retargeted to <stack.base> (gh pr edit --base), which is
+# then the base this script merges; never under --lane-bump. A failed edit exits 1 before any merge.
 # Before it merges the base, the script brings the branch up to origin/<branch>: behind it
 # fast-forwards, ahead (unpushed commits) it keeps them and pushes them, diverged it exits 1
 # with a message naming the branch and changes nothing.
@@ -92,6 +92,21 @@ BASE="$(gh pr view "$PR" --repo "$FLEET_REPO" --json baseRefName --jq .baseRefNa
 case "$BASE" in
   ''|*[!A-Za-z0-9/._-]*) fb_die 1 "unexpected base branch for PR #$PR: $BASE" ;;
 esac
+
+# A stacked card (note.stack.base, a fleet/<n>-<slug> branch) whose PR does not target its parent
+# branch is retargeted to it when origin has that branch. The fixer resolves a conflict by merging
+# the PR's base, so the PR must target the branch this script merges; a card that reached review
+# without start_review (moved by hand) still targets the default branch. The merge lane
+# (--lane-bump) never retargets: merge-reviewed.sh checked the PR's base before it called this.
+SNOTE="$(bash "$FLEET_SCRIPTS/note.sh" get "$N" </dev/null 2>/dev/null)" || SNOTE=""
+SBASE="$(jq -r 'if (.stack | type) == "object" and (.stack.base | type) == "string"
+                   and (.stack.base | test("\\Afleet/[0-9]+-[a-z0-9-]{1,40}\\z")) then .stack.base else "" end' <<<"$SNOTE" 2>/dev/null)" || SBASE=""
+if [ -z "$LANE_BUMP" ] && [ -n "$SBASE" ] && [ "$SBASE" != "$BASE" ] \
+   && git -C "$WT" ls-remote --exit-code --heads origin "$SBASE" >/dev/null 2>&1; then
+  gh pr edit "$PR" --repo "$FLEET_REPO" --base "$SBASE" >/dev/null \
+    || fb_die 1 "cannot retarget PR #$PR to its parent branch $SBASE"
+  BASE="$SBASE"
+fi
 
 VFILES="$(jq -c '.supervisor.version_files // []' <<<"$FLEET_CFG")" || fb_die 1 "cannot read supervisor.version_files"
 JQ_LIB="$(cat "$FLEET_SCRIPTS/path-glob.jq" "$FLEET_SCRIPTS/versions.jq")" || fb_die 1 "cannot read path-glob.jq or versions.jq"
@@ -296,23 +311,7 @@ if [ -n "$CONFLICTS" ]; then
   fi
 fi
 
-# A stacked card (note.stack.base) also merges origin's copy of its parent branch, once the
-# base is merged clean; a conflict there is handled like one with the base.
 MREF="origin/$BASE"
-if [ "$RC" -eq 0 ] && [ -z "$CONFLICTS" ]; then
-  SNOTE="$(bash "$FLEET_SCRIPTS/note.sh" get "$N" </dev/null 2>/dev/null)" || SNOTE=""
-  SBASE="$(jq -r 'if (.stack | type) == "object" and (.stack.base | type) == "string"
-                     and (.stack.base | test("\\Afleet/[0-9]+-[a-z0-9-]{1,40}\\z")) then .stack.base else "" end' <<<"$SNOTE" 2>/dev/null)" || SBASE=""
-  if [ -n "$SBASE" ] && git -C "$WT" rev-parse -q --verify "refs/remotes/origin/$SBASE" >/dev/null 2>&1; then
-    MREF="origin/$SBASE"
-    git -C "$WT" merge --no-edit "$MREF" >/dev/null 2>&1
-    RC=$?
-    CONFLICTS="$(git -C "$WT" diff --name-only --diff-filter=U)"
-    if [ -n "$CONFLICTS" ]; then
-      if vc_resolve "$CONFLICTS"; then RC=0; CONFLICTS=""; else WHY="$(cat "$TMPD/why")"; fi
-    fi
-  fi
-fi
 
 if [ "$RC" -ne 0 ] || [ -n "$CONFLICTS" ]; then
   [ -n "$CONFLICTS" ] || fb_die 1 "git merge $MREF failed in $WT without a conflict"
@@ -333,7 +332,7 @@ if [ "$RC" -ne 0 ] || [ -n "$CONFLICTS" ]; then
     || fb_die 1 "cannot build the note patch for #$N"
   bash "$FLEET_SCRIPTS/note.sh" merge "$N" "$TMP" || fb_die 1 "cannot update the note on #$N"
   if [ "$VFILES" != '[]' ] && [ -n "$WHY" ]; then
-    fb_die 1 "merge of origin/$BASE into $BRANCH conflicts; not version-only ($WHY); recorded the files for the fixer"
+    fb_die 1 "merge of $MREF into $BRANCH conflicts; not version-only ($WHY); recorded the files for the fixer"
   fi
   fb_die 1 "merge of $MREF into $BRANCH conflicts; recorded the files for the fixer"
 fi
