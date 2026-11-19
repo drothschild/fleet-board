@@ -64,7 +64,11 @@ no file here. The gate's residual bypasses and false positives are listed in the
   and the driver (`driver.review_for`) judge a stage on `reviews[<stage>]` and the evidence reviewer on
   `last_review`, unless that holds a stage's record, then on `reviews.evidence`. An accept.sh baseline
   or a refused merge's record in `last_review` is therefore kept. A conflict resolution and a refused
-  merge reset `reviews`.
+  merge reset `reviews`. `review_laps` (null or `{sha, checks, count, seen}`) counts review laps at one head:
+  each reviewer report at a 40-hex head adds its key (`evidence`, the stage name, or `<stage>#<pass>`) to
+  `seen`; a key already in `seen` ends the lap (`count + 1`, `seen` restarts with it); another head or another
+  set of red checks (the row's `red_checks` names) restarts at 1; every fixer report and a review-loop block
+  set it to null.
   Stacking fields (config `stacking.enabled`, default false, boolean): `stack` (null, else
   `parent` positive integer, `base` a `fleet/<n>-<slug>` branch, `start` 40-hex, `attention` null
   or at most 300 characters without a control character) and `landed` (null, else `parent`
@@ -82,7 +86,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `merge.ignore_checks` does not cover plans `rerun_checks` (no `checks_rerun` for the PR head: the driver runs
   `gh run rerun <id> --failed` per red check and notes `checks_rerun {sha, checks, at}`) or, with `checks_rerun.sha`
   at the head, `checks_failed` (the driver records the red checks as one Important finding in `last_review` and as the
-  evidence record in `reviews`, keeping every other reviewer's record, so the planner plans `fix`). Both rows, in the plan and in `--candidates` (from which the supervisor admits), carry `red_checks` (each red check's `name` and `detailsUrl`); a `review_stage` row there also carries its `pass`. Neither starts an agent. Precedence: failed lookup, invalid note, file_pending,
+  evidence record in `reviews`, keeping every other reviewer's record, so the planner plans `fix`). Both rows, in the plan and in `--candidates` (from which the supervisor admits), carry `red_checks` (each red check's `name` and `detailsUrl`), as do `review` and `review_stage` rows (the checks a lap is counted against); a `review_stage` row there also carries its `pass`. Neither starts an agent. Review loop: an in_review card whose planned rows hold a `review` or `review_stage` while `review_laps.count` is 3 or more at the PR head with the same red check names plans one `block` instead (reason `review loop: reviewed <count> times at <sha7> with no fixer between; red checks: <names or none>`, carrying `red_checks`); the driver moves it to Blocked, clears `review_laps` and posts one comment naming the full head sha, each red check and its URL, and how to release the card (fix the cause on the PR branch, then move it back to In Review). Precedence: failed lookup, invalid note, file_pending,
   the `action_failures` rules, then the table. `action_failures` bound: at `max_rounds`
   consecutive no-progress actions the card is blocked; at `2*max_rounds` (or `max_rounds`
   for a blocked card awaiting unblock) it is skipped for a person, who clears it with

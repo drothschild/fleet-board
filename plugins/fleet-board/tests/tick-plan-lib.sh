@@ -610,7 +610,7 @@ mutating_calls() {
   done
   echo "$n"
 }
-# variant <name> <pr json file under common> <note json>
+# variant <name> <pr json file under common> <note json> [extra YAML]
 variant() {
   local d="$VROOT/tick/$1"
   mkdir -p "$d"
@@ -618,7 +618,7 @@ variant() {
   jq -c --argjson note "$3" '
     .[1].body = ("<!-- fleet-board:manager-note -->\n### fleet-board manager note\n\n```json\n" + ($note | tojson) + "\n```\n")
   ' "$TICK/in-review-fix/comments-12.json" > "$d/comments-12.json"
-  TICK="$VROOT/tick" plan "$1"
+  TICK="$VROOT/tick" plan "$1" "${4:-}"
 }
 LR='"last_review":{"round":1,"sha":"abc1234","critical":0,"important":1,"findings":[{"severity":"Important","text":"subtract ignores negatives"}]}'
 BASE_NOTE='"branch":"fleet/12-add-subtract","pr":34,"round":1'

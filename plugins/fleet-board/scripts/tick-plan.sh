@@ -1564,8 +1564,11 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
        findings: (if $d.action == "fix" and conflict_files($n) != []
                   then [conflict_files($n)[] | {severity: "Important", text: "merge conflict in \(.)"}]
                   else null end),
-       # rerun_checks / checks_failed: the red checks the driver re-runs or reports
-       red_checks: (if $d.action == "rerun_checks" or $d.action == "checks_failed" then ($c.pr_info | red_checks) else null end),
+       # rerun_checks / checks_failed: the red checks the driver re-runs or reports; review / review_stage: the red
+       # checks each reviewer report counts its lap against (note.review_laps)
+       red_checks: (if $d.action == "rerun_checks" or $d.action == "checks_failed" or $d.action == "review"
+                       or $d.action == "review_stage"
+                    then ($c.pr_info | red_checks) else null end),
        drift: ($c.drift // null),
        # advance_stage: the stage being entered; a stage column: its stage
        stage: (if $d.action == "advance_stage"
@@ -1603,7 +1606,15 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
                   reason: (if $held then "stage \($sn): \($cfg.providers[$sg.provider].api_key_env) is not set"
                            else "round \($round) of \($sn) not reviewed yet; reviews run in parallel at this head" end),
                   findings: null};
-      if $c.state == "in_review" and ($row.action == "fix" or $row.action == "review" or $row.action == "review_stage") then
+      # A review loop: the reviewers reported again and again at this head with the same red checks and no fixer
+      # between (the driver counts the laps in note.review_laps). A third lap plans one block instead of reviewers.
+      ($c.pr_info.headRefOid // "") as $lh
+      | ([$c.pr_info | red_checks | .[].name] | unique) as $lc
+      | (($n.review_laps | type) == "object" and ($lh | type) == "string" and ($lh | test("^[0-9a-f]{40}$"))
+         and $n.review_laps.sha == $lh and (($n.review_laps.checks // []) | type == "array")
+         and ((($n.review_laps.checks // []) | unique) == $lc)
+         and (($n.review_laps.count // 0) | type == "number" and . >= 3)) as $looping
+      | [if $c.state == "in_review" and ($row.action == "fix" or $row.action == "review" or $row.action == "review_stage") then
         if ($ps | length) == 0 then
           (if $row.action == "review" then $row
            elif $row.action == "fix" and $row.findings != null then $row
@@ -1626,7 +1637,11 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
         else
           ((if $row.action == "review" then $row else empty end), stage_rows)
         end
-      else $row end
+      else $row end] as $rows
+      | if $c.state == "in_review" and $looping and any($rows[]; .action == "review" or .action == "review_stage")
+        then $row + {action: "block", stage: null, findings: null, pass: null, red_checks: ($c.pr_info | red_checks),
+                     reason: "review loop: reviewed \($n.review_laps.count) times at \($lh[0:7]) with no fixer between; red checks: \(if $lc == [] then "none" else ($lc | join(", ")) end)"}
+        else $rows[] end
   ] as $planned
   # --candidates --card: a single card is planned without the board, so it never starts
   | ($planned | map(if $no_start and .action == "start"

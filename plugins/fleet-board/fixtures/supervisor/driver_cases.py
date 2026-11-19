@@ -1736,6 +1736,60 @@ def test_agent_stage_dispatches_the_stage_agent_with_its_brief(base):
     assert review['model'] == 'opus' and review['sha'] == 'abc1234', review
 
 
+def _first_stage_board(base, stage, last_review=None, round_=1):
+    b = board_for(base, 'in_review')
+    note = {'round': round_, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree}
+    if last_review:
+        note['last_review'] = last_review
+    b.put_note(note)
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    return b
+
+
+def test_a_round_1_agent_stage_with_no_record_and_no_last_review_starts_from_the_worktree_base(base):
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'b', 'provider': None}
+    b = _first_stage_board(base, stage)
+    b.env['FAKE_ROLE_ROLE'] = 'stage-reviewer'
+    b.plans({'report': 'stage-reviewer-ok'})
+    started = begin(b, 'review_stage', state='in_review', stage=stage, round=1)
+    assert started.kind == 'session', b.state.events
+    assert 'bace000' in b.prompt(), b.prompt()
+
+
+def test_a_round_1_provider_stage_with_no_record_and_no_last_review_passes_the_worktree_base(base):
+    stage = {'name': 'security', 'provider': 'codex', 'model': 'gpt-5', 'agent': None}
+    b = _first_stage_board(base, stage)
+    b.gh_result = ok('abc1234\n')
+    out = {'status': 'posted', 'report_file': report_file(b, 'stage-reviewer-ok'), 'parsed': {},
+           'provider': 'codex', 'model': 'gpt-5', 'input_tokens': 5, 'output_tokens': 6, 'attempts': 1}
+    fake_plugin(b, 0, json.dumps(out))
+    started = begin(b, 'review_stage', state='in_review', stage=stage, round=1)
+    assert started.kind == 'session', b.state.events
+    run_role(b, started)
+    args = (b.fake / 'args.txt').read_text().split('\n')
+    assert args[args.index('--prev-sha') + 1] == 'bace000', args
+    assert b.note()['action_failures'] == 0, b.note()
+
+
+def test_a_round_1_stage_with_a_last_review_and_no_record_still_gets_the_last_review_sha(base):
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'b', 'provider': None}
+    b = _first_stage_board(base, stage, last_review=dict(LAST_REVIEW, sha='feed123'))
+    b.env['FAKE_ROLE_ROLE'] = 'stage-reviewer'
+    b.plans({'report': 'stage-reviewer-ok'})
+    begin(b, 'review_stage', state='in_review', stage=stage, round=1)
+    prompt = b.prompt()
+    assert 'feed123' in prompt and 'bace000' not in prompt, prompt
+
+
+def test_a_round_2_stage_with_no_previous_sha_still_fails_with_no_previous_review_sha(base):
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'b', 'provider': None}
+    b = _first_stage_board(base, stage, round_=2)
+    started = begin(b, 'review_stage', state='in_review', stage=stage, round=2)
+    assert started.kind == 'done', started
+    assert 'no previous review sha' in b.note()['last_action_error'], b.note()
+
+
 def test_the_evidence_and_a_stage_report_of_one_card_both_reach_note_reviews(base):
     # Both reviewers are launched from the same starting note and report back to back: each is applied to the
     # note the other left, so note.reviews ends with both entries
@@ -2780,6 +2834,130 @@ def test_checks_failed_keeps_every_reviewers_record(base):
     assert reviews['evidence']['important'] == 1 and reviews['evidence']['stage'] is None, reviews
     assert note['last_review']['important'] == 1 and note['last_review']['stage'] is None, note['last_review']
     assert 'test-suite' in reviews['evidence']['findings'][0]['text'], reviews['evidence']
+
+
+BUILTIN_CONFIG = {'board': {'repo': 'acme/toy'}, 'commands': {},
+                  'review': {'stages': [{'name': 'documentation', 'agent': 'fleet-board:documentation-reviewer',
+                                         'model': 'sonnet'},
+                                        {'name': 'blast_radius', 'agent': 'fleet-board:blast-radius-reviewer',
+                                         'model': 'sonnet'}]}}
+
+
+def _clean_at(stage, sha=HEAD40):
+    return {'round': 1, 'sha': sha, 'critical': 0, 'important': 0, 'findings': [], 'stage': stage, 'agent': None,
+            'model': None, 'provider': None}
+
+
+def _loop_board(base, **note):
+    """An in_review card with the built-in stages on, both stage records clean at HEAD40 and no evidence record,
+    as card 478's note was during its review loop; worktree.sh review reports HEAD40 as the head."""
+    b = board_for(base, 'in_review', config=BUILTIN_CONFIG)
+    b.put_note(dict({'round': 1, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree,
+                     'last_review': _clean_at('blast_radius'),
+                     'reviews': {'documentation': _clean_at('documentation'),
+                                 'blast_radius': _clean_at('blast_radius')}}, **note))
+    b.stubs['worktree.sh'] = lambda *a: ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': HEAD40,
+                                                       'base': 'bace000'}) if a[0] == 'review' else b.worktree + '\n')
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    return b
+
+
+def test_a_clean_evidence_review_with_builtin_stages_keeps_its_record_beside_the_stage_records(base):
+    b = _loop_board(base)
+    b.plans({'report': 'reviewer-ok'})
+    run_role(b, begin(b, 'review', state='in_review', round=1, head_sha=HEAD40, red_checks=RED))
+    reviews = b.note()['reviews']
+    assert set(reviews) == {'evidence', 'documentation', 'blast_radius'}, reviews
+    assert reviews['evidence']['sha'] == HEAD40 and reviews['evidence']['stage'] is None, reviews['evidence']
+    assert reviews['evidence']['critical'] == 0 and reviews['evidence']['important'] == 0, reviews['evidence']
+    assert reviews['documentation'] == _clean_at('documentation'), reviews
+
+
+def test_a_reviewer_report_at_a_new_head_starts_the_lap_count(base):
+    b = _loop_board(base)
+    b.plans({'report': 'reviewer-ok'})
+    run_role(b, begin(b, 'review', state='in_review', round=1, head_sha=HEAD40, red_checks=RED))
+    laps = b.note()['review_laps']
+    assert laps == {'sha': HEAD40, 'checks': ['test-suite'], 'count': 1, 'seen': ['evidence']}, laps
+
+
+def test_a_reviewer_reporting_again_at_the_head_counts_one_more_lap(base):
+    b = _loop_board(base, review_laps={'sha': HEAD40, 'checks': ['test-suite'], 'count': 1,
+                                       'seen': ['documentation', 'blast_radius', 'evidence']})
+    b.plans({'report': 'reviewer-ok'})
+    run_role(b, begin(b, 'review', state='in_review', round=1, head_sha=HEAD40, red_checks=RED))
+    laps = b.note()['review_laps']
+    assert laps == {'sha': HEAD40, 'checks': ['test-suite'], 'count': 2, 'seen': ['evidence']}, laps
+
+
+def test_a_reviewer_first_at_the_head_in_this_lap_joins_it(base):
+    b = _loop_board(base, review_laps={'sha': HEAD40, 'checks': ['test-suite'], 'count': 2, 'seen': ['documentation']})
+    b.plans({'report': 'reviewer-ok'})
+    run_role(b, begin(b, 'review', state='in_review', round=1, head_sha=HEAD40, red_checks=RED))
+    laps = b.note()['review_laps']
+    assert laps == {'sha': HEAD40, 'checks': ['test-suite'], 'count': 2, 'seen': ['documentation', 'evidence']}, laps
+
+
+def test_laps_at_another_head_or_with_other_red_checks_start_again(base):
+    import tempfile
+    other = 'def5678' + '0' * 33
+    # each case on its own board directory
+    for old in ({'sha': other, 'checks': ['test-suite'], 'count': 2, 'seen': ['evidence']},
+                {'sha': HEAD40, 'checks': ['lint'], 'count': 2, 'seen': ['evidence']}):
+        b = _loop_board(tempfile.mkdtemp(dir=str(base)), review_laps=old)
+        b.plans({'report': 'reviewer-ok'})
+        run_role(b, begin(b, 'review', state='in_review', round=1, head_sha=HEAD40, red_checks=RED))
+        laps = b.note()['review_laps']
+        assert laps == {'sha': HEAD40, 'checks': ['test-suite'], 'count': 1, 'seen': ['evidence']}, (old, laps)
+
+
+def test_a_fixer_report_clears_the_lap_count(base):
+    b = board_for(base, 'in_review')
+    seed_fix(b, review_laps={'sha': HEAD40, 'checks': ['test-suite'], 'count': 2, 'seen': ['evidence']})
+    b.plans({'report': 'fixer-ok'})
+    run_role(b, begin(b, 'fix', state='in_review', round=1))
+    assert b.note().get('review_laps') is None, b.note().get('review_laps')
+
+
+def test_a_not_reproducible_fixer_report_clears_the_lap_count(base):
+    b = board_for(base, 'in_review')
+    seed_fix(b, review_laps={'sha': HEAD40, 'checks': ['test-suite'], 'count': 2, 'seen': ['evidence']})
+    b.git_result = ok('0\n')
+    b.plans({'report': 'fixer-not-reproducible'})
+    run_role(b, begin(b, 'fix', state='in_review'))
+    assert b.note().get('review_laps') is None, b.note().get('review_laps')
+
+
+def test_each_required_pass_of_a_stage_is_its_own_reviewer_in_a_lap(base):
+    # pass 1 of security already reported at the head in this lap; pass 2 joins the lap, it does not end it
+    b = board_for(base, 'in_review')
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'b', 'provider': None,
+             'required_passes': 3}
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'stage': None, 'branch': BRANCH, 'worktree': b.worktree,
+                'last_review': LAST_REVIEW,
+                'review_laps': {'sha': HEAD40, 'checks': [], 'count': 1, 'seen': ['evidence', 'security#1']}})
+    b.stubs['worktree.sh'] = lambda *a: ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': HEAD40,
+                                                       'base': 'bace000'}) if a[0] == 'review' else b.worktree + '\n')
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'stage-reviewer-ok'})
+    run_role(b, begin(b, 'review_stage', state='in_review', stage=stage, round=1, head_sha=HEAD40, red_checks=[],
+                      **{'pass': 2}))
+    laps = b.note()['review_laps']
+    assert laps == {'sha': HEAD40, 'checks': [], 'count': 1, 'seen': ['evidence', 'security#1', 'security#2']}, laps
+
+
+def test_a_review_loop_block_moves_the_card_with_one_comment_naming_head_checks_and_release(base):
+    b = _loop_board(base, review_laps={'sha': HEAD40, 'checks': ['test-suite'], 'count': 3, 'seen': ['evidence']})
+    reason = 'review loop: reviewed 3 times at abc1234 with no fixer between; red checks: test-suite'
+    assert begin(b, 'block', state='in_review', reason=reason, head_sha=HEAD40, red_checks=RED).kind == 'done'
+    assert b.card()['state'] == 'blocked'
+    note = b.note()
+    assert note['state'] == 'blocked' and note['blocked_from'] == 'in_review', note
+    assert note.get('review_laps') is None, 'a person who moves the card back starts a fresh count'
+    assert note['blocked_findings'] == [{'severity': 'Important', 'text': reason}], note['blocked_findings']
+    (comment,) = b.comments()
+    assert HEAD40 in comment and 'test-suite' in comment and RED[0]['detailsUrl'] in comment, comment
+    assert 'To release' in comment and 'In Review' in comment, comment
 
 
 def test_rerun_checks_and_checks_failed_reserve_no_scope(base):
