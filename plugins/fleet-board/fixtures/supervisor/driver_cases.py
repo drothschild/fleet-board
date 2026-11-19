@@ -1787,6 +1787,48 @@ def test_a_stage_report_carrying_pass_is_recorded_in_review_passes_beside_review
     assert note['reviews']['security']['pass'] == 2, note['reviews']
 
 
+def test_pass_2_of_a_stage_starts_in_its_own_checkout_and_its_prompt_holds_no_other_pass_report(base):
+    head = 'a' * 40
+    b = board_for(base, 'in_review')
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'Look for token leaks.',
+             'provider': None, 'required_passes': 3}
+    card = b.card()
+    report = '## Status\n%s\n\n## Findings\n- none\n\n## For the card\nx\n\nVERIFIED: `t` -> 1 test\n'
+    card['comments'] = [{'id': 1, 'author': 'a', 'body': report % 'done IMPLEMENTOR-REPORT-MARK', 'created_at': '2026-01-01T00:00:00Z'},
+                        {'id': 2, 'author': 'a', 'body': report % 'done PASS-ONE-REPORT-MARK', 'created_at': '2026-01-01T00:01:00Z'}]
+    card['next_comment_id'] = 3
+    (b.root / '.fleet-board' / 'cards' / '12.json').write_text(json.dumps(card))
+    first = {'pass': 1, 'round': 1, 'sha': head, 'critical': 0, 'important': 0, 'findings': []}
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'stage': None, 'branch': BRANCH,
+                'worktree': b.worktree, 'last_review': LAST_REVIEW, 'review_passes': {'security': [first]}})
+    b.stubs['worktree.sh'] = lambda *a: ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': head, 'base': 'bace000'})
+                                           if a[0] == 'review' else b.worktree + '\n')
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'stage-reviewer-ok', 'sleep': 1})
+    started = begin(b, 'review_stage', state='in_review', stage=stage, round=1, head_sha=head, **{'pass': 2})
+    assert started.kind == 'session', [e['payload'] for e in b.state.events]
+    assert ('worktree.sh', 'review', '12', '34', 'security', '--pass', '2') in b.calls, b.calls
+    prompt = b.prompt()
+    assert 'PASS-ONE-REPORT-MARK' not in prompt, 'pass 2 sees no other pass report'
+    assert 'IMPLEMENTOR-REPORT-MARK' in prompt, 'the implementor report is still given'
+    b.driver.finish(started.action, wait_for(started))
+
+
+def test_pass_1_of_a_stage_passes_no_pass_flag_to_worktree_review(base):
+    b = board_for(base, 'in_review')
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'x', 'provider': None,
+             'required_passes': 3}
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'stage': None, 'branch': BRANCH,
+                'worktree': b.worktree, 'last_review': LAST_REVIEW})
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'stage-reviewer-ok', 'sleep': 1})
+    started = begin(b, 'review_stage', state='in_review', stage=stage, round=1, **{'pass': 1})
+    assert started.kind == 'session'
+    assert ('worktree.sh', 'review', '12', '34', 'security') in b.calls, b.calls
+    b.driver.finish(started.action, wait_for(started))
+
+
 def test_a_stage_report_without_pass_leaves_review_passes_alone(base):
     b = board_for(base, 'in_review')
     stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'Look for token leaks.',

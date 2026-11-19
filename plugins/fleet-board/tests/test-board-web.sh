@@ -1642,9 +1642,9 @@ import web_cases as wc  # pops the temp dir off sys.argv, as web_cases does when
 
 class BoardReviewers(wc.SupervisorWebContract):
 
-    def write_review_card(self, n, state, reviews, round_=2):
+    def write_review_card(self, n, state, reviews, round_=2, extra=None):
         fence = "`" * 3
-        note = {"round": round_, "pr": 41, "reviews": reviews}
+        note = dict({"round": round_, "pr": 41, "reviews": reviews}, **(extra or {}))
         body = "<!-- fleet-board:manager-note -->\n%sjson\n%s\n%s\n" % (fence, json.dumps(note), fence)
         (self.repo / ".fleet-board" / "cards" / ("%d.json" % n)).write_text(json.dumps(
             {"number": n, "title": "card %d" % n, "state": state, "labels": [], "body": "",
@@ -1672,6 +1672,26 @@ class BoardReviewers(wc.SupervisorWebContract):
         self.assertEqual(got["perf"]["status"], "pending")
         self.assertEqual((got["perf"]["passes"], got["perf"]["required_passes"]), (0, 1))
         self.assertEqual(by_n[2].get("reviewers"), [])
+
+    def test_board_in_review_card_counts_the_clean_pass_records_at_the_head(self):
+        self.config.write_text(
+            "board:\n  repo: acme/toy\nreview:\n  stages:\n"
+            "    - name: security\n      agent: reviewer\n      label: review-security\n      required_passes: 3\n", encoding="utf-8")
+        head = "a" * 40
+        other = "b" * 40
+        rec = lambda i, sha, crit=0: {"pass": i, "round": 2, "sha": sha, "critical": crit, "important": 0}
+        self.write_review_card(1, "in_review", {"security": {"round": 2, "sha": head, "critical": 0, "important": 0, "pass": 2}},
+                               extra={"review_passes": {"security": [rec(1, head), rec(2, head), rec(3, other)]}})
+        self.write_review_card(2, "in_review", {"security": {"round": 2, "sha": head, "critical": 1, "important": 0, "pass": 3}},
+                               extra={"review_passes": {"security": [rec(1, head), rec(2, head), rec(3, head, 1)]}})
+        self.start_web()
+        code, body = self.http("GET", "/api/board")
+        self.assertEqual(code, 200, body)
+        by_n = {c["number"]: c for c in body["cards"]}
+        sec = lambda n: [r for r in by_n[n]["reviewers"] if r["name"] == "security"][0]
+        self.assertEqual({k: sec(1)[k] for k in ("status", "passes", "required_passes")},
+                         {"status": "pending", "passes": 2, "required_passes": 3})
+        self.assertEqual((sec(2)["status"], sec(2)["passes"]), ("findings", 2))
 
 
 names = [n for n in dir(BoardReviewers) if n.startswith("test_board_in_review")]
