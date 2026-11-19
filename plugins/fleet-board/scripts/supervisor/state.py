@@ -82,6 +82,8 @@ class State:
         # a restarted supervisor counts afresh. `_auto_ready_cap` is the cap the last take_auto_ready call saw.
         self.followups_auto_ready = 0
         self._auto_ready_cap = None
+        # premise-check verdicts settled in this run; `checked` counts go, needs, built and stale together
+        self.premise = {'checked': 0, 'go': 0, 'needs': 0, 'built': 0, 'stale': 0, 'drafted': 0, 'failed': 0}
         self._sequence = 0
         self._lock = threading.RLock()
 
@@ -329,6 +331,16 @@ class State:
             self.followups_auto_ready += 1
             return True
 
+    def count_premise(self, kind):
+        """Count one settled premise verdict (go, needs, built, stale, drafted) or one failed check or draft."""
+        with self._lock:
+            if kind not in self.premise or kind == 'checked':
+                raise ValueError('unknown premise count: %s' % kind)
+            self.premise[kind] += 1
+            if kind in ('go', 'needs', 'built', 'stale'):
+                self.premise['checked'] += 1
+            self._bump()
+
     def snapshot(self):
         with self._lock:
             return copy.deepcopy({
@@ -349,4 +361,5 @@ class State:
                 'run_budget': {'tokens': self.run_budget, 'partial': self.budget_unknown > 0, 'cap': self.budget_cap,
                                'label': BUDGET_LABEL},
                 'followups_auto_ready': {'count': self.followups_auto_ready, 'cap': self._auto_ready_cap},
+                'premise': self.premise,
             })

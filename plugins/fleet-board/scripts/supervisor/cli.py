@@ -438,6 +438,14 @@ def _human_status(status):
         else:
             text = "budget: %d tokens %s (no limit; cache reads not counted)" % (budget["tokens"], label)
         lines.append(text + (" [partial]" if budget.get("partial") else ""))
+    premise = status.get("premise")
+    if isinstance(premise, dict):
+        auto = status.get("followups_auto_ready") if isinstance(status.get("followups_auto_ready"), dict) else {}
+        cap = auto.get("cap")
+        lines.append("Premise checks: %s run, %s go, %s needs, %s built, %s stale; follow-ups: %s drafted, %s of %s to Ready"
+                     % (premise.get("checked", 0), premise.get("go", 0), premise.get("needs", 0), premise.get("built", 0),
+                        premise.get("stale", 0), premise.get("drafted", 0), auto.get("count", 0),
+                        cap if cap is not None else "?"))
     return "\n".join(lines)
 
 

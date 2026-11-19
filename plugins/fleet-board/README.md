@@ -214,6 +214,29 @@ To clear a stop, fix the cause (reopen or replace the parent, or resolve the con
 
 The reviewer catches 6 of 6 seeded defect classes at least 2 of 3 times (opus, `review.mutation` on), measured by a harness in `tests/eval/` on defects such as an off-by-one the tests miss, a weakened assertion and a mocked-away bug. The method, the exact commands, and the results table (measured catch rate per defect class, with and without `review.mutation`, per model, plus cost per run) are in [docs/reviewer-eval.md](docs/reviewer-eval.md).
 
+## Premise check
+
+Before the supervisor starts a Ready card, it checks that the card still makes sense on the default branch. A card whose acceptance already holds, or whose Scope names a file that moved, would otherwise cost an implementor session and end in a blocked report.
+
+**The stamp.** A card carries a premise stamp: the default-branch commit and time at which its acceptance and Scope were last known to hold. Creating a card, editing its acceptance or Scope, moving it to Ready, or a `go` verdict writes the stamp. A card with no stamp, or whose Scope paths changed on the default branch since the stamp, is checked before it starts.
+
+**When a check runs.** Only for a card that would otherwise start (Ready, dependencies met). The check is a `checker` session (`models.checker`, default `sonnet`) in a throwaway checkout of the default branch. It reads the card and runs the commands in its acceptance. It changes nothing in the repo and files no follow-ups.
+
+**The four verdicts:**
+
+- `go`: the card is stamped and starts as normal.
+- `needs`: the card needs another card that is on its way (Ready, In progress, In review, merging or Requires Human QA). The supervisor adds it as a dependency and the card waits. If that card is in Backlog, closed, missing, or depends on this one, the card moves to Blocked with a question.
+- `built`: every acceptance item already holds. The card moves to Blocked with the command and output for each item. Nothing is closed without a person.
+- `stale`: the card names things that moved. The card moves to Blocked with a proposed rewrite of its Scope and acceptance (or just the summary, when the checker proposed none).
+
+**Deciding.** Only a person settles a proposal, from a terminal or the board page: `premise-settle.sh approve <n>` applies a rewrite and moves the card to Ready; `premise-settle.sh confirm <n>` closes a built card as done with the label `fleet:closed-as-built`; `premise-settle.sh reject <n>` keeps the card as it is. To overrule any verdict, move the card to Ready yourself, and it starts without waiting for the check. Confirm and reject are recorded in `premise-decisions.jsonl` in the board directory.
+
+**Follow-ups.** With the check on, follow-ups that roles file land in Backlog and are drafted by the same checker: it closes a duplicate or an already-fixed item as Won't do with the reason, or writes the card's Why, Scope and acceptance. A bug whose repro fails on the default branch goes to Ready, and any other draft stays in Backlog with a comment naming the reason. Two keys control this: `followups.auto_ready` (`bugs`, the default, or `none` to keep every draft in Backlog) and `followups.auto_ready_cap` (default 5, the most drafts sent to Ready in one supervisor run).
+
+**Seeing what it did.** Every settled verdict adds one supervisor event, `premise #<n>: <verdict> -> <what was done>`, and `supervisor status` prints one line: `Premise checks: <checked> run, <go> go, <needs> needs, <built> built, <stale> stale; follow-ups: <drafted> drafted, <auto_ready> of <cap> to Ready`. Checker sessions appear in `supervisor usage` like any other role.
+
+**Turning it off.** Set `premise_check.enabled: false` in `.fleet-board.yml`. No card is checked, and follow-ups are filed as before. It is on by default.
+
 ## Running the supervisor
 
 The supervisor dispatches the board's work until you stop it. Run it from anywhere in the repo; it runs from the repo root (the main checkout, even from a worktree):
