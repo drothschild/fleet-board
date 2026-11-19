@@ -180,7 +180,7 @@ class MergeLane:
         merged_at = seen.get('merge_head') if seen and isinstance(seen.get('merge_head'), str) else None
         merged_at = merged_at or (seen.get('planned_head') if seen else None)
         if seen and seen.get('state') == 'OPEN' and _same_head(seen.get('observed_head'), merged_at):
-            required = self._required_check(candidate['pr'])
+            required = self._required_check(candidate)
             if required:
                 detail['required_check'] = required
             try:
@@ -194,8 +194,9 @@ class MergeLane:
             return MergeOutcome(number, 'refused', detail)
         return MergeOutcome(number, 'unclear', detail)
 
-    def _required_check(self, pr):
-        repo = self.repo() if callable(self.repo) else self.repo
+    def _required_check(self, candidate):
+        pr = candidate['pr']
+        repo = candidate.get('repo') or (self.repo() if callable(self.repo) else self.repo)
         if not isinstance(repo, str) or not repo:
             return None
         try:
