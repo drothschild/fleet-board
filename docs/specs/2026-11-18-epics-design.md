@@ -487,7 +487,29 @@ it earlier.
 - **The chat.** Markdown replies, the conversation list, sample links, the attach control,
   and Approve on a proposed design.
 
-### 10. Status and docs
+### 10. How cards and epics are written
+
+The owner decided this on 2026-11-18, after the design was approved.
+
+An epic is written `E<id>` and a card `C<n>`, so `#<n>` alone always means a pull request.
+This is scoped to what a person reads and types:
+
+- **Shown as `C<n>`** on the board page, in `fleet-board status`, and in every string the
+  epics work adds (the epic page, the report, the export, the Architect's chat, new plan
+  reasons, events and errors).
+- **Accepted in both forms** wherever a person, the Architect or a role writes a card
+  reference that a script reads: a `## Depends on` bullet, a report's `## Card` or
+  `## Affects` section, the page's dependency editor.
+- **Unchanged underneath.** Stored comments and role reports keep the text they were
+  written with, and the page shows a comment as written, because inside free text a card
+  cannot be told from a pull request. Branch names, JSON, the gate's messages, the strings
+  the supervisor already writes, and the clean-room files keep `#<n>`.
+
+A full rename was considered and set aside: 40 scripts write the old form, 127 test and
+fixture files assert on it, and five clean-room files use it and could only be changed by
+re-authoring them.
+
+### 11. Status and docs
 
 `fleet-board status` gains a short epics section: each open epic with its counts. The README
 and `docs/config.md` document epics, the Architect, the new config keys and the renamed

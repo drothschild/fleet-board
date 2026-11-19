@@ -28,10 +28,11 @@
 - Nothing may assume this repository's test layout. Fixtures use the neutral example project the existing suites use.
 - Each task updates the matching contract lines in `plugins/fleet-board/CLAUDE.md` for what it adds.
 - An epic is written `E<id>` wherever a person reads it, and as the bare integer in JSON.
+- A card is written `C<n>` in every string this plan adds that a person reads (plan reasons, events, errors, prompt text). Strings that exist today keep `#<n>`; the cards plan's Task 20 changes what the page and `status` show. Where this plan reads a card reference that a session wrote (the record report's `## Affects`), `C<n>` and `#<n>` are both accepted. `#<n>` alone, in new copy, always means a pull request.
 - User-visible copy, exact:
   - plan reason: `merged child of E<id> is not recorded`;
   - log attention reasons: `not recorded: the record session failed 3 times`, `contradicts the intent: <text>`;
-  - errors: `epic E<id> does not exist`, `card #<n> is already recorded in E<id>`, `E<id> is at design revision <a>, not <b>`;
+  - errors: `epic E<id> does not exist`, `card C<n> is already recorded in E<id>`, `E<id> is at design revision <a>, not <b>`;
   - gate: `fleet-board gate: only a person or the supervisor changes an epic; use the board page or a terminal`.
 
 ## Before Task 1: re-check the plan against the code
@@ -172,11 +173,11 @@ In `tests/test-board-local.sh`, the assertions that pin whole list rows gain `"e
 | `## Departures` | bullets, or `none` | `departures: [<string>]` |
 | `## Design` | the single word `revised` or `unchanged` | `design: "revised"\|"unchanged"` |
 | `## Intent` | the single word `holds`, or one paragraph | `intent: null` for `holds`, else the paragraph |
-| `## Affects` | `#<n>` references separated by spaces or commas, or `none` | `affects: [<int>]` |
+| `## Affects` | card references, each `C<n>` or `#<n>`, separated by spaces or commas, or `none` | `affects: [<int>]` |
 
-- Rejections (exit 1, each stderr line with the `parse-report: ` prefix), worded like the checker's so `driver._RULES` does not match them by an earlier wildcard row: `architect status <s> is not allowed in mode record`, `architect report needs ## <section>`, `## Design must be revised or unchanged`, `## Affects must list card numbers (#<n>) or none`, `architect status no_change cannot carry decisions, departures, a revised design or affected cards`.
+- Rejections (exit 1, each stderr line with the `parse-report: ` prefix), worded like the checker's so `driver._RULES` does not match them by an earlier wildcard row: `architect status <s> is not allowed in mode record`, `architect report needs ## <section>`, `## Design must be revised or unchanged`, `## Affects must list cards (C<n> or #<n>) or none`, `architect status no_change cannot carry decisions, departures, a revised design or affected cards`.
 
-- [ ] **Step 1: Write the failing tests** in `tests/test-parse-report.sh`: one accepted fixture for `recorded` with a revised design, bullets under Decisions and Departures and `## Affects` of `#12, #14`, asserting each JSON key with `jq` (`affects == [12,14]`, `intent == null`); one accepted `no_change` fixture (`decisions == []`, `design == "unchanged"`, `affects == []`); one accepted fixture whose `## Intent` is a paragraph (`intent` equals it); one rejected fixture per message above, asserting exit 1 and the exact line; `--role architect` with no `--mode` exits 2; `--role architect --mode check` exits 2; a reviewer status (`clean`) is rejected.
+- [ ] **Step 1: Write the failing tests** in `tests/test-parse-report.sh`: one accepted fixture for `recorded` with a revised design, bullets under Decisions and Departures and `## Affects` of `C12, #14`, asserting each JSON key with `jq` (`affects == [12,14]`, `intent == null`); one accepted `no_change` fixture (`decisions == []`, `design == "unchanged"`, `affects == []`); one accepted fixture whose `## Intent` is a paragraph (`intent` equals it); one rejected fixture per message above, asserting exit 1 and the exact line; `--role architect` with no `--mode` exits 2; `--role architect --mode check` exits 2; a reviewer status (`clean`) is rejected.
 - [ ] **Step 2: Run** `bash plugins/fleet-board/tests/test-parse-report.sh`. Expected: the new cases fail with the unknown-role usage error.
 - [ ] **Step 3: Implement** the role in the usage text, the role and mode checks and the section handling, following how the checker is done.
 - [ ] **Step 4: Run** the suite. Expected: `failed: 0`.
@@ -201,10 +202,10 @@ In `tests/test-board-local.sh`, the assertions that pin whole list rows gain `"e
   - Second shape: appends `{card, pr, at, unrecorded: true}` and the attention entry `not recorded: the record session failed 3 times`.
   - Third shape: appends `{card, pr, at, skipped: <string>}` and no attention entry.
   - All of it happens under the epic's lock, and the log line and the design are written together or not at all: every check below runs before the first write.
-  - Refusals, exit 1, nothing written: the card's `epic` is not this id; the log already has a line for the card (`card #<n> is already recorded in E<id>`); `--design-file` is missing or empty; `--expect-rev` differs from the stored `design_rev` (`E<id> is at design revision <a>, not <b>`, exit 4 so the driver can tell it apart). Exit 2 for a file that matches none of the shapes.
+  - Refusals, exit 1, nothing written: the card's `epic` is not this id; the log already has a line for the card (`card C<n> is already recorded in E<id>`); `--design-file` is missing or empty; `--expect-rev` differs from the stored `design_rev` (`E<id> is at design revision <a>, not <b>`, exit 4 so the driver can tell it apart). Exit 2 for a file that matches none of the shapes.
 - Produces: `epic.sh approve-design <id> <file>`: the same revision step with no log line. The cards plan uses it; it is here because it shares the code and must be gated from the first day.
 - Produces: `epic.sh fail <id> <card>`: raises the card's count in `<epic dir>/failures.json` and prints the new count. A card's count is removed when `record` writes its line.
-- Produces: `epic.sh pending`: prints `[{epic, card, pr_url, failures}]` for every card in `done` with an `epic` that exists, a non-null `pr_url`, and no line for it in that epic's log, by card number. A card whose epic is missing or malformed is left out with `fleet-board: warning: card #<n> names epic E<id>, which cannot be read` on stderr. Exit 0 with `[]` when there is no `epics/` directory.
+- Produces: `epic.sh pending`: prints `[{epic, card, pr_url, failures}]` for every card in `done` with an `epic` that exists, a non-null `pr_url`, and no line for it in that epic's log, by card number. A card whose epic is missing or malformed is left out with `fleet-board: warning: card C<n> names epic E<id>, which cannot be read` on stderr. Exit 0 with `[]` when there is no `epics/` directory.
 - Produces: gate rule G5 in `hooks/gate.sh`: a Bash command that runs `epic.sh` (or `epic`) with any verb other than `read`, `list`, `pending` or `report` is blocked with `fleet-board gate: only a person or the supervisor changes an epic; use the board page or a terminal`. It follows G4's parser (`parse_settle`) and fails closed the same way: a verb it cannot resolve is blocked.
 
 - [ ] **Step 1: Write the failing tests.**
@@ -217,7 +218,7 @@ record with a design:      epic at rev 1, --design-file new -> revisions/1.md ho
 record, first design:      epic at rev 0, --design-file -> no revisions/0.md, design_rev 1
 record, intent paragraph:  intent "x" -> attention has reason "contradicts the intent: x" with the card
 record, intent null:       attention unchanged
-record twice:              second record for the same card -> exit 1, "card #7 is already recorded in E1", log still one line
+record twice:              second record for the same card -> exit 1, "card C7 is already recorded in E1", log still one line
 record, wrong epic:        card 5 has epic 2, record 1 5 -> exit 1, nothing written
 record, empty design file: --design-file of zero bytes -> exit 1, no log line, design.md and design_rev unchanged
 record, missing design:    --design-file /nonexistent -> exit 1, no log line
@@ -233,7 +234,7 @@ pending lists:             done card 7 (epic 1, pr_url set, no log line) -> [{ep
 pending, recorded:         after record -> []
 pending, no pr:            done card with epic and pr_url null -> not listed
 pending, not done:         in_review card with epic and pr_url -> not listed
-pending, missing epic:     done card with epic 9, no folder -> not listed; stderr holds "card #8 names epic E9, which cannot be read"; exit 0
+pending, missing epic:     done card with epic 9, no folder -> not listed; stderr holds "card C8 names epic E9, which cannot be read"; exit 0
 pending carries failures:  after fail 1 7 twice -> failures 2
 ```
 
@@ -265,7 +266,7 @@ G5 inert:    the same commands in a directory with no .fleet-board.yml -> allowe
 - When it is planned: `epics.record` is true, `<board.dir>/epics` exists, and `epic.sh pending` lists the card. `tick-plan.sh` runs `epic.sh pending` at most once per plan and not at all when the directory is absent. It lists no Done column and reads no Done card's note for this.
 - A failed `epic.sh pending` (non-zero exit or output that is not an array) plans nothing for epics and warns once on stderr; the rest of the plan is unchanged.
 - Never planned in `--settle-merge` mode.
-- Produces, in `scheduler.py`: `record_epic` in `_ACTION_CLASS` (the class the premise check uses) and in `SCOPE_FREE_ACTIONS`. A new rule: at most one `record_epic` per `epic` value is admitted, and none while a `record_epic` for that epic is running; the held row's reason is `E<id> is recording #<other>`. Rows of different epics are admitted together. The lowest card number goes first.
+- Produces, in `scheduler.py`: `record_epic` in `_ACTION_CLASS` (the class the premise check uses) and in `SCOPE_FREE_ACTIONS`. A new rule: at most one `record_epic` per `epic` value is admitted, and none while a `record_epic` for that epic is running; the held row's reason is `E<id> is recording C<other>`. Rows of different epics are admitted together. The lowest card number goes first.
 - `tests/tick-plan-lib.sh`: `setup_case` writes `epics: {record: false}` into the case config unless the case's extra YAML sets the key, so no existing scenario changes when Task 6 flips the default.
 
 - [ ] **Step 1: Write the failing tests.**
@@ -288,7 +289,7 @@ epic-default-lib:      after setup_case with no extra YAML the case config sets 
 In `scheduler_cases.py`:
 
 ```
-test_one_record_epic_per_epic_is_admitted          candidates 7 and 8, both epic 1 -> 7 admitted; 8 held, reason "E1 is recording #7"
+test_one_record_epic_per_epic_is_admitted          candidates 7 and 8, both epic 1 -> 7 admitted; 8 held, reason "E1 is recording C7"
 test_record_epic_waits_for_a_running_one           7 running record_epic for epic 1 -> 8 held
 test_record_epics_of_two_epics_run_together        7 (epic 1) and 9 (epic 2) -> both admitted
 test_record_epic_is_scope_free                     admitted beside a start of another card whose Scope overlaps the child's
@@ -314,7 +315,7 @@ In `tests/test-config.sh`: `epics.record: "yes"` is refused with the message abo
 - Produces: `premise.sh clear <n>`: sets the card's `premise` to null under the card's lock; exit 0, 3 when the card cannot be read.
 - Produces: `resolver.resolve` returns `Dispatch('claude', None, CLAUDE, <models.architect_record or 'sonnet'>, False)` for `record_epic`.
 - Produces: `ROLE_ACTIONS` and `_ROLE_OF` gain `record_epic -> 'architect'`. `scripts.ALLOWED` gains `epic.sh`. `driver._FLAGS` gains `--design-file` and `--expect-rev`.
-- Produces: an `architect` entry in `_SECTIONS` and `_LABELS`. Its inputs, in order: card number, title, body, numbered acceptance; `mode` (`record`); `pull_request` (the number and the merge commit); `reports` (every role report comment on the card, oldest first, each under its author line; a role report is a comment with `## Status` and a `VERIFIED:` line); `epic_intent`; `epic_design` (with its revision number); `epic_log` (one line per entry: `#<card>: <built>`, then its decisions and departures); `siblings` (each child of the epic with no `pr_url` in `backlog` or `ready`, as `#<n> <state> <title>` followed by its Scope text and numbered acceptance); `design_out` (an absolute path the session writes a revised design to); the checkout path; the scripts directory; `instructions` (the text of `defaults/epic-record-prompt.md`); the config.
+- Produces: an `architect` entry in `_SECTIONS` and `_LABELS`. Its inputs, in order: card number, title, body, numbered acceptance; `mode` (`record`); `pull_request` (the number and the merge commit); `reports` (every role report comment on the card, oldest first, each under its author line; a role report is a comment with `## Status` and a `VERIFIED:` line); `epic_intent`; `epic_design` (with its revision number); `epic_log` (one line per entry: `#<card>: <built>`, then its decisions and departures); `siblings` (each child of the epic with no `pr_url` in `backlog` or `ready`, as `C<n> <state> <title>` followed by its Scope text and numbered acceptance); `design_out` (an absolute path the session writes a revised design to); the checkout path; the scripts directory; `instructions` (the text of `defaults/epic-record-prompt.md`); the config.
 - `design_out` is `<log dir>/epic-record/<card>-<ms>.md`, made by the driver, outside the checkout and outside the store. The driver deletes it when the action ends.
 - The instructions file tells the session: work only in the checkout and change no file in it; read the merged change (`git show <merge commit>`) and the reports; write a revised design to the `design_out` path only when the design changed, as the whole design and never a patch; never restate or edit the intent; name under `## Affects` only siblings from the list given; end with the report as its final reply.
 - Produces: `CardDriver._do_record_epic(c)`. Before any session it reads the pull request (`gh pr view <pr> --json state,mergeCommit`):
@@ -324,7 +325,7 @@ In `tests/test-config.sh`: `epics.record: "yes"` is refused with the message abo
 - Produces: `CardDriver._settle_epic(c, run, parsed)`, called where `_settle_premise` is called for the checker:
   1. posts the accepted report on the card with `board-comment.sh`;
   2. writes the first-shape JSON from the parsed report and runs `epic.sh record <epic> <n> <file> --expect-rev <rev read at launch>`, adding `--design-file <design_out>` when `design` is `revised`;
-  3. for each number in `affects` that the `siblings` input listed, runs `premise.sh clear <m>` and records one event `E<id>: #<m> will be checked before it starts`; any other number is ignored with one event;
+  3. for each number in `affects` that the `siblings` input listed, runs `premise.sh clear <m>` and records one event `E<id>: C<m> will be checked before it starts`; any other number is ignored with one event;
   4. removes the checkout.
   It ignores `Out of scope:` and `Bugs found:` lines in the report, so a record files no follow-ups.
 - Failure handling, which is unlike every other action: an empty reply, a report rejected twice, a non-zero `epic.sh record` (exit 4 included), a `revised` report with a missing or empty `design_out`. The driver runs `epic.sh fail <epic> <n>`. When the printed count is 3 or more it runs `epic.sh record` with `{unrecorded: true, pr}`. It never writes the card's note, never counts `action_failures`, and never moves the card.
@@ -382,7 +383,7 @@ In `resolver_cases.py`: the dispatch above, and a configured `models.architect_r
 **Interfaces:**
 - Consumes: `epic.sh read` (Task 1); the card's `epic` from `board-read.sh` (Task 2).
 - Produces: an `epic` input and section, label `Epic`, in `_SECTIONS` for `implementor`, `reviewer`, `fixer` and `checker`. Its text is `E<id>: <title>`, then `Intent`, then `Design (revision <n>)`. For the checker it also holds the as-built log in the form Task 6 gives. A card with no epic has no such section.
-- The section is read once per dispatch with `epic.sh read <id>`. A read that fails gives no section and one event `E<id> could not be read for #<n>`; the action goes on.
+- The section is read once per dispatch with `epic.sh read <id>`. A read that fails gives no section and one event `E<id> could not be read for C<n>`; the action goes on.
 - `defaults/premise-check-prompt.md` gains two sentences: when an Epic section is present, a proposed rewrite must keep to the epic's intent, and a card that contradicts the design or the as-built log is `stale`.
 - No file under `agents/` changes. Whether the three clean-room roles act on a section their files do not mention is not known. It is checked after this task by one live run per role against a fixture card (`behavioral-*.sh`, which costs usage: run it only when the owner asks). If a role ignores the section, re-authoring its agent file is a separate decision.
 
@@ -395,7 +396,7 @@ test_a_reviewer_and_a_fixer_prompt_carry_the_epic
 test_the_checker_prompt_also_carries_the_as_built_log
 test_a_card_without_an_epic_has_no_epic_section
 test_an_unreadable_epic_gives_no_section_and_one_event
-    epic.sh read exits 3 -> the session still starts; the prompt has no '## Epic'; one event 'E9 could not be read for #<n>'
+    epic.sh read exits 3 -> the session still starts; the prompt has no '## Epic'; one event 'E9 could not be read for C<n>'
 ```
 
 - [ ] **Step 2: Run** each with `FLEET_TEST_ONLY=<name> bash plugins/fleet-board/tests/test-supervisor-driver.sh`. Expected: the first three and the last fail.
@@ -410,7 +411,7 @@ test_an_unreadable_epic_gives_no_section_and_one_event
 
 **Interfaces:**
 - Produces: a `rewrite` proposal may carry `source: "architect"` and, with it, `from: "backlog"|"ready"`. `propose` keeps both keys when `source` is `architect`; `from` without that source, or any other `source` value, is a malformed proposal (exit 2). A proposal with no `source` is stored exactly as today.
-- Produces: `propose` with `source: architect` on a card that already holds a proposal with no `source` exits 1 with `card #<n> already has a premise-check proposal`, and stores nothing. A second Architect proposal replaces the first.
+- Produces: `propose` with `source: architect` on a card that already holds a proposal with no `source` exits 1 with `card C<n> already has a premise-check proposal`, and stores nothing. A second Architect proposal replaces the first.
 - Produces: `approve` on a proposal with `source: architect` moves the card to the proposal's `from` instead of `ready`. Everything else it does is unchanged (Scope and acceptance replaced, `blocked_by` kept, the stamp, the proposal cleared).
 - Produces: `reject` on a proposal with `source: architect` on a Blocked card also moves the card to `from`. A premise-check proposal's `reject` leaves the state, as today.
 - The board server, in the cards plan, is what moves the card to Blocked when it stores such a proposal. This script does not.
@@ -424,7 +425,7 @@ propose without a source:       stored proposal has no source and no from key
 propose, from without source:   exit 2, nothing stored
 propose, unknown source:        source "someone" -> exit 2
 propose, bad from:              source "architect", from "done" -> exit 2
-propose over a premise one:     card holds a proposal with no source; Architect propose -> exit 1, "card #7 already has a premise-check proposal", the stored proposal unchanged
+propose over a premise one:     card holds a proposal with no source; Architect propose -> exit 1, "card C7 already has a premise-check proposal", the stored proposal unchanged
 propose replaces its own:       two Architect proposes -> the second is stored
 approve returns to backlog:     Blocked card, Architect proposal from "backlog" -> state "backlog", Scope and acceptance replaced, premise.by "approve", proposal null
 approve returns to ready:       from "ready" -> state "ready"

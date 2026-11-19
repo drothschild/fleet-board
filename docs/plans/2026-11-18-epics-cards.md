@@ -24,6 +24,7 @@
 - Every new write route requires the `X-Fleet-Board: 1` header and a local Origin, as POST and PATCH do today.
 - HTML in a reply, a design, an intent or a log entry is shown as literal text. Only files under a sample's own route are served as HTML, and only with the sandbox policy Task 14 gives.
 - An epic is written `E<id>` wherever a person reads it.
+- A card is written `C<n>` in every string these tasks add that a person reads, on the page and in script output. `#<n>` alone, in new copy, always means a pull request. Task 20 changes the references the page and `status` already show; no task rewrites stored comments, role reports, branch names, JSON keys or a clean-room file.
 - Bash 3.2, BSD and GNU tools. Python standard library only. No new dependencies, and no script or stylesheet loaded from another host.
 - Nothing may assume this repository's test layout. Fixtures use the neutral example project the existing suites use.
 - Each task updates the matching lines in `plugins/fleet-board/CLAUDE.md` and, where it changes what a person sees or configures, the README.
@@ -378,11 +379,11 @@ Interfaces:
 - Produces: the handler for `card-*.json`: `{title, why, scope: [<string>], acceptance: [<string>], depends_on: [<int>], labels: [<string>]}`. An accepted file becomes a draft `{draft_id, ...fields, created: null}` stored in the conversation's `drafts.json`, and the turn gains `drafts: [<draft_id>]`.
 - Produces: `GET /api/architect/<id>` returns each turn's `drafts` (the full objects) and `dropped`.
 - Produces: `PATCH /api/architect/<id>/drafts/<draft_id>` edits a draft that is not yet created.
-- Produces: `POST /api/architect/<id>/drafts/<draft_id>/create` `{state: "backlog"|"ready"}`: builds the body as the import does (`## Why`, `## Scope`), runs the card linter and the Scope path check, then `board-create.sh` with the acceptance, the dependencies, the labels and the conversation's epic when it has one. It stores the new number in the draft's `created`, and appends the system line `Created #<n>: <title>` to the conversation, which the next turn's prompt includes. A second create of the same draft returns the first number and creates nothing.
+- Produces: `POST /api/architect/<id>/drafts/<draft_id>/create` `{state: "backlog"|"ready"}`: builds the body as the import does (`## Why`, `## Scope`), runs the card linter and the Scope path check, then `board-create.sh` with the acceptance, the dependencies, the labels and the conversation's epic when it has one. It stores the new number in the draft's `created`, and appends the system line `Created C<n>: <title>` to the conversation, which the next turn's prompt includes. A second create of the same draft returns the first number and creates nothing.
 - Produces: `POST /api/architect/<id>/drafts/create-all` `{state}` creates every draft of the conversation not yet created, in the order given, and stops at the first failure, reporting what it created.
 - The offer to make an epic after a second card is Task 19.
 - Produces: persona text. The rule `You never create, move or edit cards` stays. It gains: when the owner asks for a card, or a change needs one, write one `card-<slug>.json` per card to the outbox in the shape above and say in the reply what it is for; the owner creates it.
-- The chat shows a draft as a card preview with each field editable in place, a Backlog or Ready choice, and a Create button; a turn with several shows a Create all. A created draft shows `#<n>` as a link and no button.
+- The chat shows a draft as a card preview with each field editable in place, a Backlog or Ready choice, and a Create button; a turn with several shows a Create all. A created draft shows `C<n>` as a link and no button.
 
 Test steps:
 - A Claude turn's argv holds `Write` in `--tools` and allow rules for the conversation's outbox only.
@@ -401,7 +402,7 @@ Test steps:
 - Creating a draft in a conversation with no epic makes a card with no `epic`.
 - Creating a draft whose acceptance holds `verify on a device` returns the linter's `manual-check` line and creates no card.
 - Creating the same draft twice returns the same number both times and the board has one such card.
-- After a create, the conversation holds the line `Created #<n>: <title>` and the next turn's prompt contains it.
+- After a create, the conversation holds the line `Created C<n>: <title>` and the next turn's prompt contains it.
 - `create-all` with three drafts whose second fails the linter creates the first, reports the failure of the second, and leaves the third uncreated.
 - The shipped persona holds the sentence `You never create, move or edit cards` and names `card-<slug>.json`.
 - The chat renders a draft with a Create button, and a created draft with a link to `/cards/<n>` and no button.
@@ -420,7 +421,7 @@ Files:
 Interfaces:
 - Consumes: `collect_outbox` and its handlers (Task 10); a proposal with `source: "architect"` and `from`, and `premise-settle.sh propose|approve|reject` (core); the proposal routes and buttons of #476; `fl_default_head` through `premise.sh`.
 - Produces: the outbox handler for `rewrite-<n>.json`: `{card: <n>, scope: <string>, acceptance: [<string>], summary: <string>}`. For an accepted file the server builds `{kind: "rewrite", source: "architect", from: <the card's state>, head: <the default branch's head>, scope, acceptance, summary}`, runs `premise-settle.sh propose <n> <file>`, moves the card to Blocked with `board-move.sh`, writes the note's `blocked_from` to the card's former state, and comments `Waiting for a person: approve this rewrite from the Architect?` followed by the summary and the current and proposed Scope and acceptance.
-- A file is dropped, with the reason shown in the turn, when: the card does not exist; its state is not `backlog` or `ready` (`#<n> is <state>; only a Backlog or Ready card can be rewritten`); it has a pull request (`#<n> has a pull request`); it already holds a premise-check proposal (`#<n> already has a premise-check proposal`); the proposed Scope names no repository path; the default head cannot be read.
+- A file is dropped, with the reason shown in the turn, when: the card does not exist; its state is not `backlog` or `ready` (`C<n> is <state>; only a Backlog or Ready card can be rewritten`); it has a pull request (`C<n> has a pull request`); it already holds a premise-check proposal (`C<n> already has a premise-check proposal`); the proposed Scope names no repository path; the default head cannot be read.
 - A second `rewrite-<n>.json` for a card that holds an Architect proposal replaces it and posts no second move.
 - Produces: the turn's `rewrites: [{card, summary}]`, shown in the chat as a line per card linking to the card, where #476's Approve and Reject buttons act on it.
 - Approving returns the card to the column it came from; that is `premise-settle.sh`'s behaviour for this kind of proposal and needs no code here.
@@ -434,9 +435,9 @@ Test steps:
 - Approving the proposal through the page's route returns the card to Backlog with the proposed Scope and acceptance.
 - Rejecting it returns the card to Backlog with its Scope and acceptance unchanged.
 - A `rewrite-12.json` for a Ready card stores `from` `ready`, and approving returns the card to Ready.
-- A `rewrite-12.json` for a card in In Review is dropped with `#12 is in_review; only a Backlog or Ready card can be rewritten` and the card is unchanged.
-- A `rewrite-12.json` for a Ready card with a `pr_url` is dropped with `#12 has a pull request`.
-- A `rewrite-12.json` for a card holding a premise-check proposal is dropped with `#12 already has a premise-check proposal` and that proposal is unchanged.
+- A `rewrite-12.json` for a card in In Review is dropped with `C12 is in_review; only a Backlog or Ready card can be rewritten` and the card is unchanged.
+- A `rewrite-12.json` for a Ready card with a `pr_url` is dropped with `C12 has a pull request`.
+- A `rewrite-12.json` for a card holding a premise-check proposal is dropped with `C12 already has a premise-check proposal` and that proposal is unchanged.
 - A `rewrite-99.json` for a card that does not exist is dropped.
 - A second `rewrite-12.json` replaces the stored proposal, leaves the card Blocked with `blocked_from` still `backlog`, and adds no second move.
 - A proposed Scope naming no path is dropped with `Scope names no repository path`.
@@ -738,3 +739,45 @@ Test steps:
 - After `epic-offer/decline`, the reply to a third create has no `offer_epic`.
 - `epic-offer/accept` in a conversation that already has an epic returns 409.
 - The page shows `Make these an epic?` after the second create and not after the first.
+
+## Task 20: Cards are shown as C and their number
+
+Why: epics are written `E<id>`, and `#<n>` is used for both cards and pull requests, so `#530` and `#464` cannot be told apart. The owner asked for cards to be written `C<n>` the way epics are written `E<id>`. This is a display and input change only; it needs nothing from the core and can be built at any time.
+
+Files:
+- `scripts/board-web/static/board.js`
+- `scripts/board-web/static/index.html`
+- `scripts/status.sh`
+- `scripts/adapters/local/local-lib.sh`
+- `scripts/parse-report.sh`
+- `tests/test-board-card-refs.sh`
+- `tests/supervisor-ui.js`
+- `tests/test-status.sh`
+- `tests/test-board-local.sh`
+- `tests/test-parse-report.sh`
+- `README.md`
+
+Interfaces:
+- Produces: on the board page, every card reference the page itself builds is `C<n>`: the tile, the drawer's heading, `depends on`, `stacked on`, the stuck banner, hold and wait reasons the page composes, and the import preview's dependency column. A pull request stays `#<n>` or `PR #<n>`.
+- Produces: `status.sh` prints a card's line starting `C<n>` and writes `stacked on C<parent>`; a pull request on the line stays `PR #<n>`.
+- Produces: input in both forms. `fl_split_body`'s dependency reference accepts `C<n>` and `<repo>C<n>` wherever it accepts `#<n>` and `<repo>#<n>`, with the same bad-reference rule for trailing text. `parse-report.sh` accepts `C<n>` beside `#<n>` in the checker's `## Card` section.
+- Not changed: the text of stored comments and role reports (the page shows a comment as it was written), plan reasons and comments the supervisor writes, branch names (`fleet/<n>-<slug>`), every JSON key and value, the gate's messages, and every file under `agents/` and `skills/{reporting,status}/`. `skills/status/SKILL.md` is clean-room and prints what `status.sh` prints, so it shows the new form without an edit.
+- Card numbers typed into the page's own inputs (the dependency editor) accept `12`, `#12` and `C12`.
+
+Test steps:
+- A tile for card 12 shows `C12` and does not show `#12`.
+- The drawer's heading for card 12 starts `C12`.
+- A card depending on card 4 shows `depends on C4` in the drawer.
+- A stacked card shows `stacked on C7`.
+- A card with a pull request shows the pull request as `#530` beside `C12`.
+- A comment whose text holds `#12` is rendered with `#12` unchanged.
+- `status.sh` prints card 12's line starting `C12`.
+- `status.sh` prints `stacked on C7` for a stacked card and `PR #530` for its pull request.
+- A body whose `## Depends on` section holds `- C4` yields `blocked_by` `[4]`.
+- A body whose `## Depends on` section holds `- #4` still yields `blocked_by` `[4]`.
+- A dependency line `- C4 and more text` is refused as a bad dependency line, as `- #4 and more text` is.
+- A dependency line `- other/repoC4` for a repository that is not this board's stays in the body as an outside dependency.
+- A checker report whose `## Card` section holds `C12` parses with `card` 12.
+- A checker report whose `## Card` section holds `C12 C13` is rejected with the message two `#` references get today.
+- Typing `C4` into the drawer's dependency editor adds card 4.
+- No file under `agents/`, `skills/reporting/` or `skills/status/` is changed by this card, and `test-clean-room.sh` passes.
