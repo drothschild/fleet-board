@@ -2809,6 +2809,103 @@ def test_checks_failed_keeps_every_reviewers_record(base):
     assert 'test-suite' in reviews['evidence']['findings'][0]['text'], reviews['evidence']
 
 
+BUILTIN_CONFIG = {'board': {'repo': 'acme/toy'}, 'commands': {},
+                  'review': {'stages': [{'name': 'documentation', 'agent': 'fleet-board:documentation-reviewer',
+                                         'model': 'sonnet'},
+                                        {'name': 'blast_radius', 'agent': 'fleet-board:blast-radius-reviewer',
+                                         'model': 'sonnet'}]}}
+
+
+def _clean_at(stage, sha=HEAD40):
+    return {'round': 1, 'sha': sha, 'critical': 0, 'important': 0, 'findings': [], 'stage': stage, 'agent': None,
+            'model': None, 'provider': None}
+
+
+def _loop_board(base, **note):
+    """An in_review card with the built-in stages on, both stage records clean at HEAD40 and no evidence record,
+    as card 478's note was during its review loop; worktree.sh review reports HEAD40 as the head."""
+    b = board_for(base, 'in_review', config=BUILTIN_CONFIG)
+    b.put_note(dict({'round': 1, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree,
+                     'last_review': _clean_at('blast_radius'),
+                     'reviews': {'documentation': _clean_at('documentation'),
+                                 'blast_radius': _clean_at('blast_radius')}}, **note))
+    b.stubs['worktree.sh'] = lambda *a: ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': HEAD40,
+                                                       'base': 'bace000'}) if a[0] == 'review' else b.worktree + '\n')
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    return b
+
+
+def test_a_clean_evidence_review_with_builtin_stages_keeps_its_record_beside_the_stage_records(base):
+    b = _loop_board(base)
+    b.plans({'report': 'reviewer-ok'})
+    run_role(b, begin(b, 'review', state='in_review', round=1, head_sha=HEAD40, red_checks=RED))
+    reviews = b.note()['reviews']
+    assert set(reviews) == {'evidence', 'documentation', 'blast_radius'}, reviews
+    assert reviews['evidence']['sha'] == HEAD40 and reviews['evidence']['stage'] is None, reviews['evidence']
+    assert reviews['evidence']['critical'] == 0 and reviews['evidence']['important'] == 0, reviews['evidence']
+    assert reviews['documentation'] == _clean_at('documentation'), reviews
+
+
+def test_a_reviewer_report_at_a_new_head_starts_the_lap_count(base):
+    b = _loop_board(base)
+    b.plans({'report': 'reviewer-ok'})
+    run_role(b, begin(b, 'review', state='in_review', round=1, head_sha=HEAD40, red_checks=RED))
+    laps = b.note()['review_laps']
+    assert laps == {'sha': HEAD40, 'checks': ['test-suite'], 'count': 1, 'seen': ['evidence']}, laps
+
+
+def test_a_reviewer_reporting_again_at_the_head_counts_one_more_lap(base):
+    b = _loop_board(base, review_laps={'sha': HEAD40, 'checks': ['test-suite'], 'count': 1,
+                                       'seen': ['documentation', 'blast_radius', 'evidence']})
+    b.plans({'report': 'reviewer-ok'})
+    run_role(b, begin(b, 'review', state='in_review', round=1, head_sha=HEAD40, red_checks=RED))
+    laps = b.note()['review_laps']
+    assert laps == {'sha': HEAD40, 'checks': ['test-suite'], 'count': 2, 'seen': ['evidence']}, laps
+
+
+def test_a_reviewer_first_at_the_head_in_this_lap_joins_it(base):
+    b = _loop_board(base, review_laps={'sha': HEAD40, 'checks': ['test-suite'], 'count': 2, 'seen': ['documentation']})
+    b.plans({'report': 'reviewer-ok'})
+    run_role(b, begin(b, 'review', state='in_review', round=1, head_sha=HEAD40, red_checks=RED))
+    laps = b.note()['review_laps']
+    assert laps == {'sha': HEAD40, 'checks': ['test-suite'], 'count': 2, 'seen': ['documentation', 'evidence']}, laps
+
+
+def test_laps_at_another_head_or_with_other_red_checks_start_again(base):
+    import tempfile
+    other = 'def5678' + '0' * 33
+    # each case on its own board directory
+    for old in ({'sha': other, 'checks': ['test-suite'], 'count': 2, 'seen': ['evidence']},
+                {'sha': HEAD40, 'checks': ['lint'], 'count': 2, 'seen': ['evidence']}):
+        b = _loop_board(tempfile.mkdtemp(dir=str(base)), review_laps=old)
+        b.plans({'report': 'reviewer-ok'})
+        run_role(b, begin(b, 'review', state='in_review', round=1, head_sha=HEAD40, red_checks=RED))
+        laps = b.note()['review_laps']
+        assert laps == {'sha': HEAD40, 'checks': ['test-suite'], 'count': 1, 'seen': ['evidence']}, (old, laps)
+
+
+def test_a_fixer_report_clears_the_lap_count(base):
+    b = board_for(base, 'in_review')
+    seed_fix(b, review_laps={'sha': HEAD40, 'checks': ['test-suite'], 'count': 2, 'seen': ['evidence']})
+    b.plans({'report': 'fixer-ok'})
+    run_role(b, begin(b, 'fix', state='in_review', round=1))
+    assert b.note().get('review_laps') is None, b.note().get('review_laps')
+
+
+def test_a_review_loop_block_moves_the_card_with_one_comment_naming_head_checks_and_release(base):
+    b = _loop_board(base, review_laps={'sha': HEAD40, 'checks': ['test-suite'], 'count': 3, 'seen': ['evidence']})
+    reason = 'review loop: reviewed 3 times at abc1234 with no fixer between; red checks: test-suite'
+    assert begin(b, 'block', state='in_review', reason=reason, head_sha=HEAD40, red_checks=RED).kind == 'done'
+    assert b.card()['state'] == 'blocked'
+    note = b.note()
+    assert note['state'] == 'blocked' and note['blocked_from'] == 'in_review', note
+    assert note.get('review_laps') is None, 'a person who moves the card back starts a fresh count'
+    assert note['blocked_findings'] == [{'severity': 'Important', 'text': reason}], note['blocked_findings']
+    (comment,) = b.comments()
+    assert HEAD40 in comment and 'test-suite' in comment and RED[0]['detailsUrl'] in comment, comment
+    assert 'To release' in comment and 'In Review' in comment, comment
+
+
 def test_rerun_checks_and_checks_failed_reserve_no_scope(base):
     from supervisor import scheduler
     assert {'rerun_checks', 'checks_failed'} <= scheduler.SCOPE_FREE_ACTIONS, scheduler.SCOPE_FREE_ACTIONS
