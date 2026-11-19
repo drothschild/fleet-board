@@ -194,7 +194,7 @@ A `PreToolUse` hook blocks any agent command that would move a card out of Human
 
 ## Stacked pull requests
 
-Stacking lets a card that depends on one card still in review start now, instead of waiting for that parent to merge. It is off by default: set `stacking.enabled: true` to turn it on (see [docs/config.md](docs/config.md)); with it off nothing behaves differently.
+Stacking lets a card that depends on one card still in review start now, instead of waiting for that parent to merge. It is always on; there is no setting for it.
 
 - A child starts when its one unmet dependency is in review. Its branch follows the parent's branch.
 - Its pull request stays a draft and targets the parent's branch until the parent merges. Then the PR is retargeted to the default branch (`origin/HEAD`, else `origin/main`) with one bridge merge commit; nothing is rebased or force-pushed.

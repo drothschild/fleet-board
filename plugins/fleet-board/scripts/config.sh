@@ -416,8 +416,6 @@ VALIDATION_SCRIPT='
       (if (.after_merge | type) != "object" then "after_merge must be an object"
        elif (.after_merge.allow | type) != "array" or (.after_merge.allow | map(type != "string" or . == "") | any) then "after_merge.allow must be a list of non-empty strings"
        else empty end),
-      (if (.stacking | type) != "object" then "stacking must be an object"
-       elif (.stacking.enabled | type) != "boolean" then "stacking.enabled must be boolean" else empty end),
       (if (.premise_check | type) != "object" then "premise_check must be an object"
        elif (.premise_check.enabled | type) != "boolean" then "premise_check.enabled must be true or false" else empty end),
       (if (.worktrees | type) == "object" then

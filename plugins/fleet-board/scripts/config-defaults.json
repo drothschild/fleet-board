@@ -18,6 +18,5 @@
   "planner": { "persona": null, "persona_append": null, "provider": "claude", "model": null },
   "followups": { "status": "ready" },
   "headless": { "permission_mode": "auto" },
-  "stacking": { "enabled": false },
   "premise_check": { "enabled": true }
 }

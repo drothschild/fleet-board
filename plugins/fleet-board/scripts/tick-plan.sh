@@ -108,7 +108,7 @@
 # ignored; a dependency closed as not planned (or at Status Won't Do) warns
 # "#<n> depends on <ref>, which was closed as not planned".
 #
-# Stacked start (stacking.enabled, default false; off changes nothing): a ready card that would
+# Stacked start (always on): a ready card that would
 # wait on dependencies starts instead (reason "ready, stacked on #<parent>") when exactly one
 # dependency is unmet, its status is in_review, human_qa, merging or review_*, its manager note
 # (note.sh get) has a valid branch and pr, and gh pr view <pr> --json state says OPEN. A failed
@@ -120,7 +120,7 @@
 # ready-card overlap check and the reservations of the plan) skip the cards in ancestors, never
 # the other cards, siblings included.
 #
-# Land: with stacking.enabled, an in_progress or review-state card whose note has stack (attention
+# Land: an in_progress or review-state card whose note has stack (attention
 # null) while the parent card's board state is done plans land (reason "#<parent> merged; land on
 # <default branch>"), before the conflict, fix, update_branch, start_review and review rows; a stale
 # conflicted_files does not stop it. The supervisor runs stack-land.sh. The note's landed pair is passed
@@ -338,8 +338,8 @@ FB_STATES_MEMO="$FB_STATES"; export FB_STATES_MEMO
 HAS_STAGES=false
 [ -n "$(fb_stage_states)" ] && HAS_STAGES=true
 
-# stacking.enabled (default false): a Ready card whose one unmet dependency is in review may start on it
-STACKING="$(jq -r 'if .stacking.enabled == true then "true" else "false" end' <<<"$FLEET_CFG")" || fb_die 1 "cannot read stacking.enabled"
+# Stacking is always on: a Ready card whose one unmet dependency is in review may start on it
+STACKING=true
 
 # The default branch the land row names: origin/HEAD, else main
 DEFAULT_BRANCH="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" || DEFAULT_BRANCH=""

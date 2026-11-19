@@ -63,7 +63,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `last_review`, unless that holds a stage's record, then on `reviews.evidence`. An accept.sh baseline
   or a refused merge's record in `last_review` is therefore kept. A conflict resolution and a refused
   merge reset `reviews`.
-  Stacking fields (config `stacking.enabled`, default false, boolean): `stack` (null, else
+  Stacking fields: `stack` (null, else
   `parent` positive integer, `base` a `fleet/<n>-<slug>` branch, `start` 40-hex, `attention` null
   or at most 300 characters without a control character) and `landed` (null, else `parent`
   positive integer, `parent_head`, `squash` and `sha` each 40-hex); an invalid one makes the
@@ -149,7 +149,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   segment-wise (`*` never crosses `/`, `**` spans segments), defined once per
   language: `scripts/path-glob.jq` and `scopes.glob_regex`, pinned equal by a
   parity test over `fixtures/glob-cases.json`.
-- **Stacked start** (`stacking.enabled`, default false; off changes nothing). `tick-plan.sh` plans a
+- **Stacked start** (always on). `tick-plan.sh` plans a
   Ready card start, reason `ready, stacked on #<parent>`, instead of wait when exactly one dependency is
   unmet, its status is in_review, human_qa, merging or `review_*`, the parent's note (`note.sh get`) has a
   valid branch and pr, and `gh pr view <pr> --json state` says OPEN; any failed lookup keeps today's wait
@@ -170,8 +170,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   whose note has `stack` runs `gh pr edit <pr> --repo <repo> --base <stack.base>` before `review-stages.sh
   route`, and a failed edit fails the action with `route` not called. A row with `stack` null and a card without
   `stack` behave as before.
-- **Stacked child follows its parent** (rows for a card whose note has `stack`, stacking on or off; with
-  `stacking.enabled` off nothing else changes). `tick-plan.sh`, for a card in in_progress, a review column or
+- **Stacked child follows its parent** (rows for a card whose note has `stack`). `tick-plan.sh`, for a card in in_progress, a review column or
   merging: (1) parent card wont_do, or the parent's PR CLOSED: skip, `stacked on #<parent>, which was closed
   without merging; a person decides`, before every row except an invalid note; (2) `stack.attention` set: skip,
   `landing needs attention: <attention>; a person decides`; (3) PR open and origin's copy of `stack.base` exists
@@ -208,7 +207,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   rejected push resets the branch with `git reset --keep` to the head before the merge: 1); with a PR `gh pr edit <pr>
   --repo <repo> --base <default>`; the note gets `stack` null and `landed` `{parent, parent_head, squash, sha}`
   (`sha` the bridge commit); with a PR `update-branch.sh` with the same four arguments, whose code is the exit.
-  The plan row `land` (reason `#<parent> merged; land on <default>`) is planned, with `stacking.enabled`, for an
+  The plan row `land` (reason `#<parent> merged; land on <default>`) is planned for an
   in_progress or review-state card whose note has `stack` with no `attention` when the parent card's state is done,
   before the conflict, fix, update_branch, start_review and review rows (a stale `conflicted_files` does not stop it).
   `land` is a script action that takes a slot, reserves no scope and is never run synchronously in the driver
