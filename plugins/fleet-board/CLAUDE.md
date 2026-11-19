@@ -56,7 +56,9 @@ no file here. The gate's residual bypasses and false positives are listed in the
   note; `merge` refuses to overwrite a stored invalid one. Review-stage fields: `stage`
   (null or a stage name), `reviewed_stages` (list of names), `last_review.stage` and
   `last_review.provider` (null for an In Review or agent-stage record), each validated
-  against `^[a-z][a-z0-9_]*$` (`provider` also allows `-`). `reviews` (null or an object) keeps
+  against `^[a-z][a-z0-9_]*$` (`provider` also allows `-`). `review_passes` (null or an object) counts, per
+  reviewer, the clean passes at the current head; `finding_rounds` (null or an object) counts, per reviewer,
+  its own rounds with findings. `reviews` (null or an object) keeps
   each reviewer's latest report beside `last_review`, keyed `evidence` (the In Review evidence reviewer) or
   the stage name, so parallel reviewers at one head never overwrite each other. In in_review the planner
   and the driver (`driver.review_for`) judge a stage on `reviews[<stage>]` and the evidence reviewer on
@@ -239,6 +241,11 @@ no file here. The gate's residual bypasses and false positives are listed in the
   after its own `review.stages`. A project stage of the same name replaces the built-in; a
   stage entry `{name: <built-in>, enabled: false}` removes it and is itself dropped. `enabled`
   must be boolean. With a provider `models.reviewer` the built-ins carry model `sonnet`.
+- **Required passes, fixer pass, round limits.** A stage with `required_passes: N` is met at N clean
+  reports at the current head, planned and run side by side. One pass with findings sends the card to the
+  fixer. One fixer pass gets every reviewer's findings once every routed reviewer has reported, then every
+  routed reviewer reviews the new head. Each reviewer's `max_rounds` limits its own `finding_rounds`; a
+  clean reviewer never blocks.
 - **Review stages** (`scripts/review-stages.sh route|match|next|setup`). `route <n> <pr>` adds
   each stage's routing label (path glob match or the label already on the card; never
   removes one) and prints the routed stage names; exit 1 on a failed read. The driver runs

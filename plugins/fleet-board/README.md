@@ -55,7 +55,7 @@ Then run `/fleet-board:init`, get `.fleet-board.yml` onto the default branch (ro
    | review | In Review | The reviewer's report on the card |
    | hand-off | Human QA, or a ready PR | Human QA with a "What to check" comment, or the PR marked ready for review |
 
-   With `review.stages` configured and a PR that matches a stage, the stage reviews in parallel with the evidence reviewer while the card stays In Review, and its report appears on the card. Human QA or the ready PR follows once every routed reviewer is clean at the head ([details](docs/config.md#reviewstages)). Under `merge.policy: auto` a clean, green PR that needs no Human QA goes to `merging` and is merged instead.
+   With `review.stages` configured and a PR that matches a stage, the stage reviews in parallel with the evidence reviewer while the card stays In Review, and its report appears on the card. A stage with `required_passes` runs that many passes side by side and needs each clean. When reviewers report findings, one shared fixer pass takes all of them, then every routed reviewer reviews the new head. Human QA or the ready PR follows once every routed reviewer is clean at the head ([details](docs/config.md#reviewstages)). Under `merge.policy: auto` a clean, green PR that needs no Human QA goes to `merging` and is merged instead.
 
 8. **Release Human QA by hand** on the board page: check the change, merge the PR, and move the card to Done (or back to Ready). No agent can do this; the gate blocks it.
 
