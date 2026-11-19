@@ -989,6 +989,17 @@ done
 for v in '5' '[x]'; do
   invalid_field_case "merge.persona_append rejects $v" $'merge:\n  persona_append: '"$v" "merge.persona_append must be null or a string"
 done
+# implementor.persona / implementor.persona_append: same rules as merge.persona / merge.persona_append
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "implementor.persona defaults to null" '.implementor.persona' 'null'
+assert_stdout_exact_jq "implementor.persona_append defaults to null" '.implementor.persona_append' 'null'
+for v in '""' '/etc/impl.md' '../impl.md' 'a/../b.md' '5' '[x]'; do
+  invalid_field_case "implementor.persona rejects $v" $'implementor:\n  persona: '"$v" "implementor.persona must be null or a non-empty relative path without .."
+done
+for v in '5' '[x]'; do
+  invalid_field_case "implementor.persona_append rejects $v" $'implementor:\n  persona_append: '"$v" "implementor.persona_append must be null or a string"
+done
 invalid_field_case "models.merger empty" 'models: { merger: "" }' "models.merger must be a non-empty string"
 invalid_field_case "models.merger number" 'models: { merger: 5 }' "models.merger must be a non-empty string"
 
