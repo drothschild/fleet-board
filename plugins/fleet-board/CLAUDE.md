@@ -379,7 +379,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
     else `{running: false, run: null, all_time, planner, columns}` (ledger totals); `pause|resume|stop` with
     none running is 409 `not_running`; Start launches one, treats a stopping supervisor as not
     running (waits for it to go), sends `resume` to a paused one, and when a CLI start won the run
-    lock first reports that supervisor. `GET /api/usage` and `/api/cards/<n>/usage` read the ledger
+    lock first reports that supervisor. `GET /api/cards/<n>` carries `proposal` (null when absent or malformed) and `premise`, and the `/api/board` card summary carries `proposal_kind` (`rewrite`, `close` or null). `POST /api/cards/<n>/premise/approve|confirm|reject` runs `premise-settle.sh <verb> <n>` through `board_write`; a non-zero exit is a 409 carrying its stderr. The drawer of a Blocked card with a proposal shows it at the top: `Approve rewrite` / `Reject`, or `Close as built` / `Build it anyway` (a move to Ready); the tile shows `Rewrite proposed` or `Already built?`. `GET /api/usage` and `/api/cards/<n>/usage` read the ledger
     here (no supervisor needed; unknown counts stay `unknown`). `GET /api/stuck` and the `stuck`
     and `activity` fields of `/api/board` run `stuck.find` in the board server only while no
     supervisor answers (never in the supervisor loop; while one runs no card is stuck, because the
