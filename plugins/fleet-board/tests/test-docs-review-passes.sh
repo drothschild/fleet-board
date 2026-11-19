@@ -27,7 +27,7 @@ check() {
 
 # has <file> <phrase>: phrase present, ignoring case and line wrapping.
 has() {
-  tr '\n' ' ' < "$1" | tr -s ' ' | grep -qiF -- "$2" && echo ok || echo bad
+  tr '\n' ' ' < "$1" | tr -s ' ' | grep -ciF -- "$2" >/dev/null && echo ok || echo bad
 }
 
 check "config.md states a stage with required_passes: 3 needs 3 clean reports at the current head" \
