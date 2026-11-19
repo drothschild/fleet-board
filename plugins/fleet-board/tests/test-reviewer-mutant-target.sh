@@ -16,28 +16,22 @@ pass() { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf '  FAIL %s\n' "$1"; }
 has() { grep -cF -- "$2" "$1" >/dev/null 2>&1; }
 
-check_rule() { # <label> <file>
-  local label="$1" f="$2"
-  if has "$f" 'code the mapped test reaches'; then
-    pass "$label: a mutant changes code the mapped test reaches"
-  else
-    fail "$label: a mutant changes code the mapped test reaches"
-  fi
-  if has "$f" 'wrong target'; then
-    pass "$label: a mutant on a line the test never reaches is a wrong target, re-aimed, not scored"
-  else
-    fail "$label: a mutant on a line the test never reaches is a wrong target, re-aimed, not scored"
-  fi
-  if has "$f" "score the item as survived" || has "$f" "scores the item as survived"; then
-    pass "$label: when no change to reached code breaks the behavior, the item is a survivor"
-  else
-    fail "$label: when no change to reached code breaks the behavior, the item is a survivor"
-  fi
-  if has "$f" 'green is survived' || has "$f" '**survived**'; then
-    pass "$label: a green mapped test on reached code is still a survivor"
-  else
-    fail "$label: a green mapped test on reached code is still a survivor"
-  fi
+check_rule() { # <label> <file>: every clause is pinned whole, so inverting or dropping one fails
+  local label="$1" f="$2" clause desc
+  while IFS='|' read -r desc clause; do
+    if has "$f" "$clause"; then pass "$label: $desc"; else fail "$label: $desc"; fi
+  done <<'CLAUSES'
+a mutant changes code the mapped test reaches|code the mapped test reaches
+reach is judged in the single mapped case or file actually run|in the single mapped case or file actually run
+an unclear path is checked with a marker in the test output|echo reached >&2
+a mutant on a line the test never reaches is a wrong target that is not scored|is a wrong target
+a wrong target is not counted in the total|is not counted in killed + survived + invalid
+a wrong target is re-aimed once, onto code the test does reach|at most one re-aim per item
+each wrong target is recorded as one plain line|one plain line
+no reached code breaks the behavior: the item is a survivor|does not depend on that behavior, so the item is a survivor
+CLAUSES
+  # the survivor clause must not be negated anywhere near the rule
+  if has "$f" 'never score the item as survived'; then fail "$label: the survivor fallback is not negated"; else pass "$label: the survivor fallback is not negated"; fi
 }
 
 check_rule "agents/reviewer.md" "$PLUGIN/agents/reviewer.md"
