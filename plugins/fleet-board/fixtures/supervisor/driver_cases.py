@@ -1761,7 +1761,9 @@ def test_a_round_1_provider_stage_with_no_record_and_no_last_review_passes_the_w
     stage = {'name': 'security', 'provider': 'codex', 'model': 'gpt-5', 'agent': None}
     b = _first_stage_board(base, stage)
     b.gh_result = ok('abc1234\n')
-    fake_plugin(b, 0, '')
+    out = {'status': 'posted', 'report_file': report_file(b, 'stage-reviewer-ok'), 'parsed': {},
+           'provider': 'codex', 'model': 'gpt-5', 'input_tokens': 5, 'output_tokens': 6, 'attempts': 1}
+    fake_plugin(b, 0, json.dumps(out))
     started = begin(b, 'review_stage', state='in_review', stage=stage, round=1)
     assert started.kind == 'session', b.state.events
     run_role(b, started)
