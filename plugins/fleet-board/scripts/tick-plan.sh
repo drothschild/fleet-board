@@ -1032,13 +1032,19 @@ card_input() {
 
   # a card of another repo carries that repo's review stages (the final plan reads stages from the row)
   local card_stages=null
-  if [ -n "$CARD_DIR" ]; then card_stages="$(jq -c '.review.stages // []' <<<"$FLEET_CFG")" || card_stages=null; fi
+  # and its merge policy and review round limit (null for a home-repo card: the planner uses the home config)
+  local card_policy=null card_max=null
+  if [ -n "$CARD_DIR" ]; then
+    card_stages="$(jq -c '.review.stages // []' <<<"$FLEET_CFG")" || card_stages=null
+    card_policy="$(jq -c '.merge.policy // null' <<<"$FLEET_CFG")" || card_policy=null
+    card_max="$(jq -c '.review.max_rounds // null' <<<"$FLEET_CFG")" || card_max=null
+  fi
 
   jq -cn --arg st "$st" --argjson n "$n" --argjson title "$title" --argjson card_labels "$card_labels" --argjson state_revision "$state_revision" --arg failed "$failed" --arg invalid "$invalid" \
     --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
     --argjson has_acc "$has_acc" --argjson lint "$lint" --argjson lint_gate "$lint_gate" --argjson lint_commented "$lint_commented" --argjson lint_marker "$lint_marker" --argjson marker "$marker" --argjson note "$note" \
     --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" --argjson scope "$scope" --arg repo "${c_repo:-}" --argjson stack "$stack" --argjson stack_state "$stack_st" --argjson land "$land" --argjson premise_moved "$premise_moved" \
-    --argjson card_stages "$card_stages" --argjson stage "$stage" --argjson next_stage "$next_stage" --argjson parallel "$parallel" --argjson stage_findings "$stage_findings" \
+    --argjson card_stages "$card_stages" --argjson card_policy "$card_policy" --argjson card_max "$card_max" --argjson stage "$stage" --argjson next_stage "$next_stage" --argjson parallel "$parallel" --argjson stage_findings "$stage_findings" \
     '{number: $n, title: $title, state: $st, labels: $card_labels, state_revision:$state_revision,
       lookup_failed: (if $failed == "" then null else $failed end),
       invalid_note: (if $invalid == "" then null else $invalid end),
@@ -1048,7 +1054,7 @@ card_input() {
       lint_commented: $lint_commented,
       skip_marker: $marker, note: $note, pr: $pr,
       pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift, scope_paths: $scope, repo: (if $repo == "" then null else $repo end), stack: $stack, stack_state: $stack_state, land: $land, premise_moved: $premise_moved,
-      card_stages: $card_stages, stage: $stage, next_stage: $next_stage, parallel_stages: $parallel, stage_findings: $stage_findings}'
+      card_stages: $card_stages, card_policy: $card_policy, card_max_rounds: $card_max, stage: $stage, next_stage: $next_stage, parallel_stages: $parallel, stage_findings: $stage_findings}'
 }
 
 if [ "$SETTLE" = true ]; then
@@ -1280,7 +1286,9 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
 
   # The action table (AC1). $c is the card input, $n its note.
   | def decide($c; $n; $round):
-      ($n.last_review) as $lr
+      ($c.card_max_rounds // $max) as $max
+      | ($c.card_policy // $cfg.merge.policy) as $policy
+      | ($n.last_review) as $lr
       | ((($lr.critical // 0) + ($lr.important // 0))) as $ci
       # A stage column: its own max_rounds; an advisory stage findings count
       # as clean; its reviews are review_stage
@@ -1382,7 +1390,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
           # stage findings count as clean, as in its column) covering this head, or a head moved
           # only by clean merges of main (the drift allowance of the review row) whose PR needs no human
           # QA; the PR not a draft, its checks green, and merge.policy auto.
-          elif $cfg.merge.policy != "auto" then act("skip"; "merge.policy is not auto; supervisor decides")
+          elif $policy != "auto" then act("skip"; "merge.policy is not auto; supervisor decides")
           elif $lr == null then act("skip"; "no review recorded for the merging card; supervisor decides")
           # Stages are routed per card: every routed stage needs its own clean record at the head
           # (next_stage names one that has none); $lr is the evidence record
@@ -1444,8 +1452,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
           elif $c.needs_human_qa == true then act("to_human_qa"; "no Critical/Important findings; needs human QA")
           elif $c.needs_human_qa != false then act("skip"; "human-QA need unknown")
           elif $c.pr_info.isDraft then act("mark_ready"; "no Critical/Important findings; PR is a draft")
-          elif $cfg.merge.policy == "auto" and ($c.pr_info | green) then act("merge"; "clean review, green checks, merge.policy auto")
-          elif $cfg.merge.policy == "auto" and ($c.pr_info | any_pending | not) and ($c.pr_info | red_checks | length) > 0
+          elif $policy == "auto" and ($c.pr_info | green) then act("merge"; "clean review, green checks, merge.policy auto")
+          elif $policy == "auto" and ($c.pr_info | any_pending | not) and ($c.pr_info | red_checks | length) > 0
                and (($c.pr_info.headRefOid // "") | type == "string" and test("^[0-9a-f]{40}$")) then
             ($c.pr_info | red_checks | map(.name) | join(", ")) as $names
             | ($c.pr_info.headRefOid // "") as $h
@@ -1561,6 +1569,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
        outside_warning: $c.outside_warning, deps_warnings: ($c.deps_warnings // [])}) as $row
     # Parallel review: an in_review card plans the evidence reviewer (review) and one review_stage
     # per routed stage that has not reported at this head, all on the same head. The rows share the card number.
+    | ($c.card_max_rounds // $max) as $max
     | ($c.parallel_stages // []) as $ps
     # One fixer pass: once every routed reviewer has a record at the head, a fix row carries the
     # Critical and Important findings of all of them (the evidence reviewer, and each non-advisory
