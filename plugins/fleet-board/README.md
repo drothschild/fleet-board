@@ -120,6 +120,7 @@ More on how planning, notes, follow-ups and the `main` check work: [docs/config.
 | `board.repo` | none (required) | `owner/name` of the repo the PRs live in |
 | `board.dir` | `.fleet-board` | where the cards live, relative to the repo root; no `..`, not absolute ([details](docs/config.md#boarddir-and-boardport)) |
 | `board.port` | `8765` | the port of the board page, 1024 to 65535 ([details](docs/config.md#boarddir-and-boardport)) |
+| `board.repos` | `[]` | other repositories whose cards this board holds: a list of `repo` and absolute `path`; a card names its repository in its `repo` field ([details](docs/config.md#boardrepos)) |
 | `board.terminal_command` | `["open", "-a", "Terminal", "{dir}"]` | the command the card's "Open terminal" link runs; `{dir}` is the card's directory ([details](docs/config.md#boardterminal_command)) |
 | `board.states` | `{}` | maps a state to the name the board shows ([details](docs/config.md#boardstates)) |
 | `commands.test_one` | none | runs one test file; `{file}` is replaced by its path |

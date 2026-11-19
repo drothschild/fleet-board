@@ -16,7 +16,7 @@ _ACTION_CLASS = {
     'continue_implementor': 0, 'fix': 0, 'review': 0, 'review_stage': 0,
     'start_review': 1, 'unblock': 1, 'update_branch': 1, 'land': 1, 'advance_stage': 1, 'move_to_review': 1, 'to_human_qa': 1,
     'mark_ready': 1, 'verify_main': 1, 'finish': 1, 'block': 1, 'file_pending': 1, 'merge': 1,
-    'after_merge': 1, 'merge_refusal': 1, 'check_premise': 1, 'rerun_checks': 1, 'checks_failed': 1,
+    'after_merge': 1, 'merge_refusal': 1, 'check_premise': 1, 'draft_followup': 1, 'rerun_checks': 1, 'checks_failed': 1,
     'start': 2,
 }
 # Planned actions that are never admitted and never attention. skip_* and wait become
@@ -29,7 +29,7 @@ _WORK_CLASS = 1
 # checks_failed record touches only the card's own PR and note. They take a slot and wait for their
 # own card, but neither wait on another card's scope nor block one, so a writer never holds them up.
 SCOPE_FREE_ACTIONS = frozenset({'start_review', 'review', 'review_stage', 'update_branch', 'land', 'after_merge', 'merge_refusal', 'merge',
-                               'rerun_checks', 'checks_failed', 'check_premise'})
+                               'rerun_checks', 'checks_failed', 'check_premise', 'draft_followup'})
 # The review actions a card may run together: they read the PR and write nothing a sibling reads, so one card's
 # `review`, `review_stage` and `start_review` rows share its slot rules. Every other action of a card runs alone.
 REVIEWER_ACTIONS = frozenset({'start_review', 'review', 'review_stage'})

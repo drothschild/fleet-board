@@ -19,6 +19,22 @@ status:
 - `stale`: the code moved and the card no longer fits. Give `## What changed` (one paragraph) and, when you can,
   `## Proposed scope` and `## Proposed acceptance` (both or neither).
 
+## What to decide (mode `draft`)
+
+A role filed this card in Backlog while working on another card (`## Filed by card`). The card holds the finding as the
+role wrote it, and `## Follow-up entry` holds the same finding as data. `## Every card on the board` lists every card,
+closed ones included, as `#<n> <state> <title>`. Decide what to do with the finding, and end with exactly one status:
+
+- `duplicate`: another card already covers it. Name that card in `## Card` as `#<n>`. Look at the closed cards too: a
+  finding was once filed again after the work was done.
+- `fixed`: the default branch no longer has the problem. Give `## Evidence`: one line per command you ran,
+  ``- `<command>` :: <one line of output>``.
+- `drafted`: the finding is real and still open. Give `## Why` (one paragraph), `## Proposed scope` (the repository
+  paths the work changes, each as a backticked path) and `## Proposed acceptance` (one `- ` bullet per testable
+  behavior, each naming a command and its expected result). For a bug, run its repro in the checkout and give
+  `## Repro` with one line, ``- `<command>` :: failed|passed :: <one line of output>``; `failed` means the bug still
+  shows. Leave `## Repro` out when there is no command to run.
+
 ## The report
 
 Your final reply is the report, and nothing else. It has the sections `## Status`, `## Findings`, `## For the card`,

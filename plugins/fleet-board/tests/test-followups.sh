@@ -154,7 +154,7 @@ setup_case() {
   git init -q "$REPO"
   git -C "$REPO" config user.email "test@example.com"
   git -C "$REPO" config user.name "Test User"
-  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\npremise_check:\n  enabled: false\n' > "$REPO/.fleet-board.yml"
   # files the fixture items name, so a follow-up derives a Scope from them (scope_lines keeps existing paths)
   mkdir -p "$REPO/tests"; : > "$REPO/calc.js"; : > "$REPO/cli.sh"; : > "$REPO/tests/round.sh"
   git -C "$REPO" add .fleet-board.yml calc.js cli.sh tests/round.sh
@@ -471,7 +471,7 @@ local_card() {
 
 setup_local() {
   setup_case
-  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\npremise_check:\n  enabled: false\n' > "$REPO/.fleet-board.yml"
   mkdir -p "$REPO/.fleet-board/cards"
   echo 13 > "$REPO/.fleet-board/next"
   local_card 12 "The card" in_progress
@@ -567,6 +567,35 @@ report '[{"title":"Test calc more","detail":"`bash src/calc.js` should exit 0; `
 run_ff
 assert_exit "merged path: exit" 0
 assert_eq "merged path: blocked_by is empty" "$(jq -c .blocked_by "$REPO/.fleet-board/cards/13.json" 2>/dev/null)" '[]'
+
+# ---------------------------------------------------------------------------
+# premise_check.enabled: every new card lands in Backlog awaiting a draft (card 477)
+PC_ITEMS_OOS='[{"title":"Tidy the readme","detail":"`true` exits 0 once the readme is tidy"}]'
+PC_BUG="$(jq -cn '{title:"Rounding is off", repro:"bash tests/round.sh 2.5", expected:"3", observed:"2"}')"
+setup_local
+printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\npremise_check:\n  enabled: true\n' > "$REPO/.fleet-board.yml"
+report "$PC_ITEMS_OOS" "[$PC_BUG]"
+run_ff
+assert_exit "followup enabled: exit" 0
+assert_eq "followup enabled: both cards are in Backlog" "$(jq -r .state "$REPO/.fleet-board/cards/13.json"),$(jq -r .state "$REPO/.fleet-board/cards/14.json")" "backlog,backlog"
+assert_eq "followup enabled: the out-of-scope card awaits a draft" \
+  "$(jq -c '.followup | {draft, kind, from}' "$REPO/.fleet-board/cards/13.json" 2>/dev/null)" '{"draft":"pending","kind":"out_of_scope","from":12}'
+assert_eq "followup enabled: the bug card awaits a draft" \
+  "$(jq -c '.followup | {draft, kind, from}' "$REPO/.fleet-board/cards/14.json" 2>/dev/null)" '{"draft":"pending","kind":"bug","from":12}'
+assert_eq "followup enabled: the out-of-scope entry is the input item" \
+  "$(jq -c '.followup.entry' "$REPO/.fleet-board/cards/13.json" 2>/dev/null)" "$(jq -c '.[0]' <<<"$PC_ITEMS_OOS")"
+assert_eq "followup enabled: the bug entry is the input item" \
+  "$(jq -c '.followup.entry' "$REPO/.fleet-board/cards/14.json" 2>/dev/null)" "$PC_BUG"
+assert_eq "followup enabled: no Backlog comment on either card" \
+  "$(jq -s -c 'map(.comments | length)' "$REPO/.fleet-board/cards/13.json" "$REPO/.fleet-board/cards/14.json" 2>/dev/null)" '[0,0]'
+
+# the same bug, with the check off: today's card, and no followup field
+setup_local
+report '[]' "[$PC_BUG]"
+run_ff
+assert_exit "followup disabled: exit" 0
+assert_eq "followup disabled: the card has no followup field" "$(jq -c 'has("followup")' "$REPO/.fleet-board/cards/13.json" 2>/dev/null)" false
+assert_eq "followup disabled: the bug is filed in Ready as before" "$(jq -r .state "$REPO/.fleet-board/cards/13.json" 2>/dev/null)" ready
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
