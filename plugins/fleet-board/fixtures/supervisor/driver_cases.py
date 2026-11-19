@@ -2532,8 +2532,8 @@ def test_checks_failed_keeps_every_reviewers_record(base):
     note = b.note()
     reviews = note['reviews']
     assert set(reviews) == {'evidence', 'documentation', 'blast_radius'}, reviews
-    assert reviews['documentation'] == clean('documentation') | {'agent': None, 'model': None, 'provider': None} \
-        or reviews['documentation']['important'] == 0, reviews
+    assert reviews['documentation'] == clean('documentation'), reviews
+    assert reviews['blast_radius'] == clean('blast_radius'), reviews
     assert reviews['blast_radius']['important'] == 0 and reviews['documentation']['sha'] == HEAD40, reviews
     assert reviews['evidence']['important'] == 1 and reviews['evidence']['stage'] is None, reviews
     assert note['last_review']['important'] == 1 and note['last_review']['stage'] is None, note['last_review']
