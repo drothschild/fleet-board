@@ -356,6 +356,7 @@ async function main() {
     const real=JSON.parse(require("fs").readFileSync(file,"utf8"));
     assert.deepEqual(Object.keys(real).sort(),["active","idle","paused","stopping"]);
     for(const k of Object.keys(real)) { assert.equal(real[k].status.running,true,k+": the shape lacks running:true"); assert.equal("unreachable" in real[k].status,false,k+": the shape still carries unreachable"); }
+    for(const k of Object.keys(real)) { assert.deepEqual(Object.keys(real[k].status.premise||{}).sort(),["built","checked","drafted","failed","go","needs","stale"],k+": the shape lacks the premise counts"); assert.deepEqual(Object.keys(real[k].status.followups_auto_ready||{}).sort(),["cap","count"],k+": the shape lacks followups_auto_ready"); }
     const plain={number:4,title:"Real card",body:"x",labels:[],comments:[],state:"in_progress",known:true};
     const itemsOf=h=>{ const m={}; for(const n of descendants(h.$("supervisor-status")).filter(x=>x.classList.contains("sup-item"))){
       const kids=n.children.map(c=>c.textContent); if(kids.length>=2) m[kids[0]]=kids.slice(1).join(" "); else m[""]=kids[0]||n.textContent; } return m; };

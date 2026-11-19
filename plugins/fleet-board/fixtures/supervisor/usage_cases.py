@@ -278,6 +278,15 @@ class StatusText(unittest.TestCase):
                       '[partial]', text.splitlines())
         self.assertNotIn('budget', cli._human_status(base), 'an older supervisor without run_budget prints none')
 
+    def test_supervisor_status_prints_the_premise_line(self):
+        base = {'mode': 'running', 'root': '/r', 'pid': 1, 'active': []}
+        text = cli._human_status(dict(base, premise={'checked': 7, 'go': 3, 'needs': 1, 'built': 2, 'stale': 1,
+                                                     'drafted': 4, 'failed': 0},
+                                      followups_auto_ready={'count': 2, 'cap': 5}))
+        self.assertIn('Premise checks: 7 run, 3 go, 1 needs, 2 built, 1 stale; follow-ups: 4 drafted, 2 of 5 to Ready',
+                      text.splitlines())
+        self.assertNotIn('Premise checks', cli._human_status(base), 'an older supervisor without premise prints none')
+
 
 class DriverLine(unittest.TestCase):
     def board(self):

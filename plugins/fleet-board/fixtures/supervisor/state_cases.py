@@ -318,13 +318,26 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(set(snap), {'run_id', 'mode', 'pause_reason', 'revision', 'active',
                                      'lane', 'provider_health', 'holds', 'run_tokens', 'run_budget',
                                      'events', 'attention', 'queue', 'limits', 'last_plan',
-                                     'followups_auto_ready'})
+                                     'followups_auto_ready', 'premise'})
         self.assertEqual(snap['run_id'], 'run1')
         self.assertEqual(snap['active'][1]['card'], 1)
         self.assertEqual(snap['lane']['card'], 1)
         self.assertNotIn('session', snap['active'][1])
         import json
         json.dumps(snap)
+
+    def test_premise_counts_start_at_zero_and_the_snapshot_shows_them(self):
+        zero = {'checked': 0, 'go': 0, 'needs': 0, 'built': 0, 'stale': 0, 'drafted': 0, 'failed': 0}
+        self.assertEqual(self.state.snapshot()['premise'], zero)
+        rev = self.state.revision
+        for verdict in ('go', 'go', 'needs', 'built', 'stale'):
+            self.state.count_premise(verdict)
+        self.state.count_premise('drafted')
+        self.state.count_premise('failed')
+        self.assertEqual(self.state.snapshot()['premise'],
+                         {'checked': 5, 'go': 2, 'needs': 1, 'built': 1, 'stale': 1, 'drafted': 1, 'failed': 1})
+        self.assertGreater(self.state.revision, rev)
+        self.assertEqual(State('run2').snapshot()['premise'], zero)
 
     def test_take_auto_ready_counts_up_to_the_cap_and_the_snapshot_shows_it(self):
         self.assertEqual(self.state.followups_auto_ready, 0)
