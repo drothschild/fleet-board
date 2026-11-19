@@ -1736,6 +1736,58 @@ def test_agent_stage_dispatches_the_stage_agent_with_its_brief(base):
     assert review['model'] == 'opus' and review['sha'] == 'abc1234', review
 
 
+def _first_stage_board(base, stage, last_review=None, round_=1):
+    b = board_for(base, 'in_review')
+    note = {'round': round_, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree}
+    if last_review:
+        note['last_review'] = last_review
+    b.put_note(note)
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    return b
+
+
+def test_a_round_1_agent_stage_with_no_record_and_no_last_review_starts_from_the_worktree_base(base):
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'b', 'provider': None}
+    b = _first_stage_board(base, stage)
+    b.env['FAKE_ROLE_ROLE'] = 'stage-reviewer'
+    b.plans({'report': 'stage-reviewer-ok'})
+    started = begin(b, 'review_stage', state='in_review', stage=stage, round=1)
+    assert started.kind == 'session', b.state.events
+    assert 'bace000' in b.prompt(), b.prompt()
+
+
+def test_a_round_1_provider_stage_with_no_record_and_no_last_review_passes_the_worktree_base(base):
+    stage = {'name': 'security', 'provider': 'codex', 'model': 'gpt-5', 'agent': None}
+    b = _first_stage_board(base, stage)
+    b.gh_result = ok('abc1234\n')
+    fake_plugin(b, 0, '')
+    started = begin(b, 'review_stage', state='in_review', stage=stage, round=1)
+    assert started.kind == 'session', b.state.events
+    run_role(b, started)
+    args = (b.fake / 'args.txt').read_text().split('\n')
+    assert args[args.index('--prev-sha') + 1] == 'bace000', args
+    assert b.note()['action_failures'] == 0, b.note()
+
+
+def test_a_round_1_stage_with_a_last_review_and_no_record_still_gets_the_last_review_sha(base):
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'b', 'provider': None}
+    b = _first_stage_board(base, stage, last_review=dict(LAST_REVIEW, sha='feed123'))
+    b.env['FAKE_ROLE_ROLE'] = 'stage-reviewer'
+    b.plans({'report': 'stage-reviewer-ok'})
+    begin(b, 'review_stage', state='in_review', stage=stage, round=1)
+    prompt = b.prompt()
+    assert 'feed123' in prompt and 'bace000' not in prompt, prompt
+
+
+def test_a_round_2_stage_with_no_previous_sha_still_fails_with_no_previous_review_sha(base):
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'b', 'provider': None}
+    b = _first_stage_board(base, stage, round_=2)
+    started = begin(b, 'review_stage', state='in_review', stage=stage, round=2)
+    assert started.kind == 'done', started
+    assert 'no previous review sha' in b.note()['last_action_error'], b.note()
+
+
 def test_the_evidence_and_a_stage_report_of_one_card_both_reach_note_reviews(base):
     # Both reviewers are launched from the same starting note and report back to back: each is applied to the
     # note the other left, so note.reviews ends with both entries
