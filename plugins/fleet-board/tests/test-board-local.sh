@@ -264,7 +264,7 @@ assert_stderr_contains "create warns that a card with no Scope paths went to bac
 run_check_in "$REPO" "$SCRIPTS/board-read.sh" 3
 assert_json "create --state ready without Scope paths stores backlog" '.state' backlog
 run_check_in "$REPO" "$SCRIPTS/board-list.sh" backlog
-assert_stdout_exact "list backlog" '[{"number":1,"title":"Title with \"quotes\"","url":"http://127.0.0.1:8765/cards/1","state":"backlog","pr_url":null},{"number":3,"title":"Unscoped","url":"http://127.0.0.1:8765/cards/3","state":"backlog","pr_url":null}]'
+assert_stdout_exact "list backlog" '[{"number":1,"title":"Title with \"quotes\"","url":"http://127.0.0.1:8765/cards/1","state":"backlog","pr_url":null,"followup_draft":null},{"number":3,"title":"Unscoped","url":"http://127.0.0.1:8765/cards/3","state":"backlog","pr_url":null,"followup_draft":null}]'
 run_check_in "$REPO" "$SCRIPTS/board-list.sh" done
 assert_stdout_exact "list empty column" '[]'
 echo '{' > "$REPO/.fleet-board/cards/2.json"
@@ -810,7 +810,7 @@ for i in $(seq 1 500); do
   if [ $((i % 3)) -eq 0 ]; then st=ready; else st=backlog; fi
   printf '{"number":%d,"title":"Card %d","state":"%s"}\n' "$i" "$i" "$st" > "$REPO/.fleet-board/cards/$i.json"
 done
-expected500="$(jq -nc '[range(1; 501) | select(. % 3 == 0) | {number: ., title: "Card \(.)", url: "http://127.0.0.1:8765/cards/\(.)", state: "ready", pr_url: null}]')"
+expected500="$(jq -nc '[range(1; 501) | select(. % 3 == 0) | {number: ., title: "Card \(.)", url: "http://127.0.0.1:8765/cards/\(.)", state: "ready", pr_url: null, followup_draft: null}]')"
 t0="$(date +%s)"
 run_check_in "$REPO" "$SCRIPTS/board-list.sh" ready
 t1="$(date +%s)"
@@ -833,7 +833,7 @@ printf '{"number":2,"title":"Numeric","state":7}\n' > "$REPO/.fleet-board/cards/
 run_check_in "$REPO" "$SCRIPTS/board-list.sh" ready
 assert_exit "list with a non-numeric-state card still exits 0" 0
 assert_stderr_contains "list warns on stderr about a card whose state is not a string" "warning: card #2"
-assert_stdout_exact "list still lists the valid cards when another card has a non-string state" '[{"number":1,"title":"Real","url":"http://127.0.0.1:8765/cards/1","state":"ready","pr_url":null}]'
+assert_stdout_exact "list still lists the valid cards when another card has a non-string state" '[{"number":1,"title":"Real","url":"http://127.0.0.1:8765/cards/1","state":"ready","pr_url":null,"followup_draft":null}]'
 
 # --- a list row carries the card's state and PR link ---
 setup_case; seed_card 1 ready 'Has a PR' 'x'; seed_card 2 ready 'No PR' 'x'
@@ -844,6 +844,21 @@ assert_eq_text() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected 
 assert_eq_text "a list row carries the card's state" "$(jq -r '.[0].state' <<<"$LAST_OUT")" "ready"
 assert_eq_text "a list row carries the card's pr_url" "$(jq -r '.[0].pr_url' <<<"$LAST_OUT")" "https://github.com/acme/toy/pull/9"
 assert_eq_text "a list row of a card with no PR has a null pr_url" "$(jq -c '.[1].pr_url' <<<"$LAST_OUT")" "null"
+
+# --- the follow-up record (card 477): read returns it, a list row carries its draft value ---
+setup_case; seed_card 1 backlog 'Awaits a draft' 'x'; seed_card 2 backlog 'No record' 'x'; seed_card 3 backlog 'Bad record' 'x'
+jq '.followup = {draft: "pending", kind: "bug", entry: {title: "t", repro: "r", expected: "e", observed: "o"}, from: 7}' \
+  "$REPO/.fleet-board/cards/1.json" > "$REPO/.fleet-board/cards/1.tmp" && mv "$REPO/.fleet-board/cards/1.tmp" "$REPO/.fleet-board/cards/1.json"
+jq '.followup = {draft: "later", kind: "bug", entry: {}, from: 7}' \
+  "$REPO/.fleet-board/cards/3.json" > "$REPO/.fleet-board/cards/3.tmp" && mv "$REPO/.fleet-board/cards/3.tmp" "$REPO/.fleet-board/cards/3.json"
+run_check_in "$REPO" "$SCRIPTS/board-read.sh" 1
+assert_json "read returns the card's followup record" '.followup | [.draft, .kind, .from, .entry.title] | join(",")' "pending,bug,7,t"
+run_check_in "$REPO" "$SCRIPTS/board-read.sh" 2
+assert_json "read of a card with no followup record returns null" '.followup' null
+run_check_in "$REPO" "$SCRIPTS/board-read.sh" 3
+assert_json "read of a followup record with an unknown draft value returns null" '.followup' null
+run_check_in "$REPO" "$SCRIPTS/board-list.sh" backlog
+assert_eq_text "a list row carries followup_draft, the draft value" "$(jq -c '[.[] | .followup_draft]' <<<"$LAST_OUT")" '["pending",null,null]'
 
 # --- hardening: one next-comment-id helper ---
 for s in comment note; do

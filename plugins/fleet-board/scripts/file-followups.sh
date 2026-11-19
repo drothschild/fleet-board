@@ -76,8 +76,8 @@ PR_SUFFIX=""
 fb_load_config
 . "$FLEET_SCRIPTS/adapters/local/local-lib.sh"
 
-BODY="" ACC=""
-trap 'rm -f ${BODY:+"$BODY"} ${ACC:+"$ACC"}' EXIT
+BODY="" ACC="" FUF=""
+trap 'rm -f ${BODY:+"$BODY"} ${ACC:+"$ACC"} ${FUF:+"$FUF"}' EXIT
 
 REPORT="$(jq -s -c 'if length == 1 and (.[0] | type) == "object" then .[0] else error("not one object") end' "$REPORT_FILE" 2>/dev/null)" \
   || fb_die 1 "$REPORT_FILE does not hold one JSON object"
@@ -106,6 +106,10 @@ MATCHED_AS=()
 RECENT_DAYS=30
 STATUS="$(fb_cfg followups.status)"
 [ -n "$STATUS" ] || STATUS=ready
+# premise_check.enabled: every new card is filed in Backlog with a followup record (draft pending), so
+# the check session drafts it before it can go anywhere; no Backlog comment is posted for it
+DRAFTING="$(fb_cfg premise_check.enabled)"
+[ "$DRAFTING" = true ] || DRAFTING=false
 while IFS= read -r item; do
   [ -n "$item" ] || continue
   title="$(jq -r .title <<<"$item")" || fb_die 1 "cannot read an item title; nothing filed"
@@ -224,6 +228,15 @@ while IFS= read -r item; do
   fi
   BODY="$(mktemp)" || stop "cannot create a temp file"
   ACC="$(mktemp)" || stop "cannot create a temp file"
+  cargs=()
+  if [ "$DRAFTING" = true ]; then
+    FUF="$(mktemp)" || stop "cannot create a temp file"
+    jq -c --argjson c "$CARD" 'if .kind == "bug"
+        then {draft: "pending", kind: "bug", entry: {title, repro, expected, observed}, from: $c}
+        else {draft: "pending", kind: "out_of_scope", entry: {title, detail}, from: $c} end' <<<"$item" > "$FUF" \
+      || stop "cannot write the follow-up record for: $title"
+    cargs+=(--followup-file "$FUF")
+  fi
   if [ "$kind" = bug ]; then
     jq -r --arg c "$CARD" --arg p "$PR_SUFFIX" '
       "## Bug\n\(.title)\n\n## Repro\n`\(.repro)`\n\n## Expected\n\(.expected)\n\n## Observed\n\(.observed)\n\nFound by fleet-board while working #\($c)\($p)."' \
@@ -231,7 +244,9 @@ while IFS= read -r item; do
     sl="$(scope_lines "$(jq -r '[.title, .repro, .expected, .observed] | map(. // "") | join("\n")' <<<"$item")")"
     [ -z "$sl" ] || printf '\n## Scope\n%s\n' "$sl" >> "$BODY" || stop "cannot write the card body for: $title"
     jq -r '"- `\(.repro)` gives the expected result: \(.expected)" | gsub("[\r\n]+"; " ")' <<<"$item" > "$ACC" || stop "cannot write the card acceptance for: $title"
-    created="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" --label bug --state "$STATUS" --acceptance-file "$ACC" </dev/null)" || stop "cannot create the card for: $title"
+    bstate="$STATUS"
+    [ "$DRAFTING" != true ] || bstate=backlog
+    created="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" --label bug --state "$bstate" --acceptance-file "$ACC" ${cargs[@]+"${cargs[@]}"} </dev/null)" || stop "cannot create the card for: $title"
   else
     # Acceptance is drafted from the first backticked command in the detail;
     # without one there is no testable bullet, so the card goes to Backlog
@@ -250,21 +265,22 @@ while IFS= read -r item; do
     else
       : > "$ACC"
     fi
-    cargs=(--acceptance-file "$ACC")
+    cargs+=(--acceptance-file "$ACC")
     if jq -e '.detail | test("depends on this card"; "i")' <<<"$item" >/dev/null 2>&1 || fl_names_unmerged_path "$item"; then cargs+=(--blocked-by "$CARD"); fi
     state="$STATUS"
     [ -n "$cmd" ] || state=backlog
+    [ "$DRAFTING" != true ] || state=backlog
     created="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" --state "$state" "${cargs[@]}" </dev/null)" || stop "cannot create the card for: $title"
   fi
-  rm -f "$BODY" "$ACC"
-  BODY="" ACC=""
+  rm -f "$BODY" "$ACC" ${FUF:+"$FUF"}
+  BODY="" ACC="" FUF=""
   new="$(jq -r '.number' <<<"$created" 2>/dev/null)"
   fb_valid_number "$new" || stop "board-create.sh returned no card number for: $title"
   record "$kind" "$title" "$new" false || stop "cannot record #$new"
   if [ "$kind" = bug ]; then
     pr_comment "Bug found outside this card, filed as #$new: $title" "$new"
   else
-    if [ -z "$cmd" ]; then
+    if [ -z "$cmd" ] && [ "$DRAFTING" != true ]; then
       if jq -e '.detail | ascii_downcase | test("(^|[^a-z])no testable check([^a-z]|$)")' <<<"$item" >/dev/null 2>&1; then
         backlog_msg="Filed in Backlog: the role stated that there is no testable check, so a person must write criteria and move it to Ready."
       else

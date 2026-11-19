@@ -1066,6 +1066,23 @@ CLEANUP_DIRS+=("$REPO"); run_config "$REPO" premise_check.enabled
 assert_stdout_exact "fb_cfg premise_check.enabled prints true with premise_check: { enabled: true }" "true"
 check_case "premise_check: { enabled: \"yes\" } is refused as a config error" 'premise_check: { enabled: "yes" }' 5 "premise_check.enabled must be true or false"
 
+# followups.auto_ready defaults to bugs and accepts none; followups.auto_ready_cap defaults to 5 and takes a non-negative integer
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" followups.auto_ready
+assert_stdout_exact "fb_cfg followups.auto_ready prints bugs with no config key" "bugs"
+run_config "$REPO" followups.auto_ready_cap
+assert_stdout_exact "fb_cfg followups.auto_ready_cap prints 5 with no config key" "5"
+REPO="$(printf 'board:\n  repo: a/b\nfollowups: { auto_ready: none, auto_ready_cap: 0 }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" followups.auto_ready
+assert_stdout_exact "fb_cfg followups.auto_ready prints none when set to none" "none"
+run_config "$REPO" followups.auto_ready_cap
+assert_stdout_exact "fb_cfg followups.auto_ready_cap prints 0 when set to 0" "0"
+check_case "followups: { auto_ready: all } is refused as a config error" 'followups: { auto_ready: all }' 5 "followups.auto_ready must be bugs or none"
+check_case "followups: { auto_ready: true } is refused as a config error" 'followups: { auto_ready: true }' 5 "followups.auto_ready must be bugs or none"
+check_case "followups: { auto_ready_cap: -1 } is refused as a config error" 'followups: { auto_ready_cap: -1 }' 5 "followups.auto_ready_cap"
+check_case "followups: { auto_ready_cap: 2.5 } is refused as a config error" 'followups: { auto_ready_cap: 2.5 }' 5 "followups.auto_ready_cap"
+check_case "followups: { auto_ready_cap: \"3\" } is refused as a config error" 'followups: { auto_ready_cap: "3" }' 5 "followups.auto_ready_cap"
+
 # Card 289: the per-stage review columns are retired
 REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: security, agent: a } ] }\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO")
