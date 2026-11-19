@@ -396,4 +396,39 @@ assert_jq "max_rounds: an evidence finding at round 3 with count 3 plans block" 
 review_note "{$FR_HEAD,\"round\":3,\"last_review\":$EV_I3,\"reviews\":{\"evidence\":$EV_I3,\"security\":$(mr_rec 3 0 '"stage":"security",')}}"
 assert_jq "max_rounds: an evidence finding at round 3 with no finding_rounds plans block" "$ACTIONS" '["block"]'
 
+# ---------------------------------------------------------------------------
+# Review loops at an unchanged head (card 522). Built-in stages on, merge.policy auto, a red test-suite check
+# at head abc1234...a. The driver counts laps in the note's review_laps {sha, checks, count}.
+LH=abc123400000000000000000000000000000000a
+lp_rec() { printf '{"round":1,"sha":"%s","critical":0,"important":0,"findings":[],"stage":%s}' "$LH" "$1"; }
+LP_STAGES="\"documentation\":$(lp_rec '"documentation"'),\"blast_radius\":$(lp_rec '"blast_radius"')"
+LP_BASE="\"state\":\"in_review\",$BASE_NOTE"
+LP_ROWS='[.cards[] | select(.number == 12) | .action]'
+lp_plan() { TP_KEEP_BUILTINS=1 variant "$1" pr-34-open-red-named.json "$2" "$AUTO"; }
+lp_plan loop-all-clean "{$LP_BASE,\"last_review\":$(lp_rec null),\"reviews\":{\"evidence\":$(lp_rec null),$LP_STAGES},\"checks_rerun\":{\"sha\":\"$LH\",\"checks\":[\"test-suite\"],\"at\":\"2026-11-19T00:00:00Z\"}}"
+assert_exit "review loop: every reviewer clean at the head, re-run red: exit" 0
+assert_jq "review loop: clean evidence and stage records at the head with a re-run red check plan checks_failed only" "$LP_ROWS" '["checks_failed"]'
+# the loop seen on card 478: no evidence record, both stage records clean, laps counted three times at this head
+LP_LOOP="{$LP_BASE,\"last_review\":$(lp_rec '"blast_radius"'),\"reviews\":{$LP_STAGES},\"checks_rerun\":{\"sha\":\"$LH\",\"checks\":[\"test-suite\"],\"at\":\"2026-11-19T00:00:00Z\"}"
+lp_plan loop-three "$LP_LOOP,\"review_laps\":{\"sha\":\"$LH\",\"checks\":[\"test-suite\"],\"count\":3}}"
+assert_jq "review loop: three laps at the head with the same red checks plan one block" "$LP_ROWS" '["block"]'
+assert_jq "review loop: the block reason starts with review loop:" "$(card 12 reason) | startswith(\"review loop:\")" 'true'
+assert_jq "review loop: the block reason names the head and the red check" "$(card 12 reason) | (contains(\"abc1234\") and contains(\"test-suite\"))" 'true'
+assert_jq "review loop: the block row carries the red checks" "[$(card 12 red_checks)[]?.name]" '["test-suite"]'
+lp_plan loop-two "$LP_LOOP,\"review_laps\":{\"sha\":\"$LH\",\"checks\":[\"test-suite\"],\"count\":2}}"
+assert_jq "review loop: two laps still plan the evidence review" "$LP_ROWS" '["review"]'
+lp_plan loop-other-head "$LP_LOOP,\"review_laps\":{\"sha\":\"def5678000000000000000000000000000000000\",\"checks\":[\"test-suite\"],\"count\":5}}"
+assert_jq "review loop: laps counted at another head do not block" "$LP_ROWS" '["review"]'
+lp_plan loop-other-checks "$LP_LOOP,\"review_laps\":{\"sha\":\"$LH\",\"checks\":[\"lint\"],\"count\":5}}"
+assert_jq "review loop: laps counted with other red checks do not block" "$LP_ROWS" '["review"]'
+# the evidence record is clean at the head and only the stages are left: their review_stage rows block too
+lp_plan loop-stages-only "{$LP_BASE,\"last_review\":$(lp_rec null),\"reviews\":{\"evidence\":$(lp_rec null)},\"review_laps\":{\"sha\":\"$LH\",\"checks\":[\"test-suite\"],\"count\":3}}"
+assert_jq "review loop: three laps with only review_stage rows left plan one block" "$LP_ROWS" '["block"]'
+# a hand-edited review_laps whose checks is not a list never fails the plan
+lp_plan loop-bad-checks "$LP_LOOP,\"review_laps\":{\"sha\":\"$LH\",\"checks\":\"test-suite\",\"count\":3}}"
+assert_exit "review loop: review_laps.checks as a string: exit" 0
+assert_jq "review loop: review_laps.checks as a string does not block" "$LP_ROWS" '["review"]'
+lp_plan loop-review-rows "$LP_LOOP}"
+assert_jq "review loop: the evidence review row carries the red checks the driver counts laps by" "[$(card 12 red_checks)[]?.name]" '["test-suite"]'
+
 tp_finish
