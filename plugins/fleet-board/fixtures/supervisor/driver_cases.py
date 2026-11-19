@@ -2511,8 +2511,33 @@ def test_checks_failed_hands_the_failure_to_the_fixer_as_an_important_finding(ba
     assert len(last['findings']) == 1 and last['findings'][0]['severity'] == 'Important', last
     text = last['findings'][0]['text']
     assert text.startswith('CI failed at abc1234:') and 'test-suite' in text and RED[0]['detailsUrl'] in text, text
-    assert not note.get('reviews') and note['reviewed_stages'] == [], note
+    # the failure is the evidence reviewer's finding; no reviewer's record is dropped (card: a wipe made the
+    # planner re-run every reviewer, they reported clean over the finding, and checks_failed fired again)
+    assert note['reviews']['evidence']['important'] == 1 and note['reviews']['evidence']['sha'] == HEAD40, note
+    assert note['reviews']['evidence']['findings'] == last['findings'], note
+    assert note['reviewed_stages'] == [], note
     assert note['state'] == 'in_review'
+
+
+def test_checks_failed_keeps_every_reviewers_record(base):
+    # Built-in stages on: the evidence reviewer and two stage reviewers all reported clean at the head. The failure
+    # replaces only the evidence record; the stage records stay, so the planner plans the fixer at once instead of
+    # re-running every reviewer (which reported clean again, erased the finding, and looped).
+    b = board_for(base, 'in_review')
+    clean = lambda stage: {'round': 1, 'sha': HEAD40, 'critical': 0, 'important': 0, 'findings': [], 'stage': stage}
+    b.put_note({'state': 'in_review', 'pr': 34, 'round': 1, 'last_review': clean('blast_radius'),
+                'reviews': {'evidence': clean(None), 'documentation': clean('documentation'),
+                            'blast_radius': clean('blast_radius')}})
+    begin(b, 'checks_failed', state='in_review', head_sha=HEAD40, red_checks=RED)
+    note = b.note()
+    reviews = note['reviews']
+    assert set(reviews) == {'evidence', 'documentation', 'blast_radius'}, reviews
+    assert reviews['documentation'] == clean('documentation') | {'agent': None, 'model': None, 'provider': None} \
+        or reviews['documentation']['important'] == 0, reviews
+    assert reviews['blast_radius']['important'] == 0 and reviews['documentation']['sha'] == HEAD40, reviews
+    assert reviews['evidence']['important'] == 1 and reviews['evidence']['stage'] is None, reviews
+    assert note['last_review']['important'] == 1 and note['last_review']['stage'] is None, note['last_review']
+    assert 'test-suite' in reviews['evidence']['findings'][0]['text'], reviews['evidence']
 
 
 def test_rerun_checks_and_checks_failed_reserve_no_scope(base):
