@@ -114,7 +114,7 @@ resolve_card() {
 # in_card_root <command...>: runs the command in the card's checkout, as a script of that repo (its own config)
 in_card_root() {
   if [ "$CARD_FOREIGN" = true ]; then
-    (cd "$CARD_ROOT" && env -u FLEET_CFG -u FLEET_ROOT -u FLEET_REPO -u FB_CFG_FOR -u FLEET_BOARD_HOME "$@")
+    (cd "$CARD_ROOT" && env -u FLEET_CFG -u FLEET_ROOT -u FLEET_REPO -u FB_CFG_FOR FLEET_BOARD_HOME="$FLEET_ROOT" "$@")
   else
     "$@"
   fi

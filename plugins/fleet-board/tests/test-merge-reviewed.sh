@@ -984,6 +984,13 @@ foreign_case auto auto
 run_merge
 assert_eq "verify-main ran in the other repo's checkout" "$(cat "$FX/verify-pwd" 2>/dev/null)" "$(cd "$OTHER" && pwd -P)"
 
+echo "verify-main in the card's repo still reaches the home board"
+foreign_case auto auto
+printf '#!/usr/bin/env bash\nbash "%s/board-read.sh" 12 > "%s/verify-board" 2>&1 || printf FAILED >> "%s/verify-board"\nprintf '"'"'{"commit":"abc1234","ok":true,"results":[]}\\n'"'"'\n' "$SCRIPT_DIR/../scripts" "$FX" "$FX" > "$FX/verify-main.sh"
+run_merge
+assert_eq "verify-main in the other checkout reads the home board" "$(grep -c FAILED "$FX/verify-board" 2>/dev/null)" 0
+assert_eq "verify-main read card 12 from the home board" "$(jq -r '.id // .number // empty' "$FX/verify-board" 2>/dev/null | head -1)" 12
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
