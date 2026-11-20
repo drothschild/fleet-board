@@ -49,7 +49,8 @@ async function setup(hash) {
 (async () => {
   await test("The board renders a role=tablist with one tab per column, each showing the column name and its card count", async () => {
     const {h, tabs} = await setup();
-    assert.equal(h.$("col-tabs").attrs.role, "tablist");
+    assert.match(fs.readFileSync(path.join(STATIC, "index.html"), "utf8"), /id="col-tabs"[^>]*role="tablist"|role="tablist"[^>]*id="col-tabs"/);
+    assert.ok(h.$("col-tabs").all().length > 0, "tabs rendered into #col-tabs");
     assert.equal(tabs().length, 3);
     assert.match(tabs()[0].textContent, /Backlog\s*1/);
     assert.match(tabs()[1].textContent, /Ready\s*2/);
@@ -69,7 +70,7 @@ async function setup(hash) {
     const {h, tab} = await setup();
     await tab("In progress").fire("click");
     h.ctx.__test.S.stateKeys = null; // a poll that rebuilds the columns
-    await h.ctx.fetch("/api/board").then((r) => r.json()).then((b) => h.ctx.eval("renderBoard")(b, true));
+    await h.timers[h.timers.length - 1](); // the next poll
     await h.flush();
     assert.equal(tab("In progress").attrs["aria-selected"], "true");
     assert.equal(tab("Ready").attrs["aria-selected"], "false");
