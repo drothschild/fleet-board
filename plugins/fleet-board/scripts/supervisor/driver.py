@@ -604,7 +604,7 @@ _RULES = (
     ('out of scope entry needs a backticked check command or the words no testable check: <entry>',
      'The detail holds a backticked command a person can run to check the work, written before any other backticked text, or the words `no testable check`.'),
     ('malformed ## Acceptance map line: <line>',
-     'Acceptance map lines are split on the last ` -> `; the target is `<file>::<test name>`, `UNMAPPED`, ``CHECKED: `<command>` `` or `NOT_APPLICABLE: <reason>`.'),
+     'Acceptance map lines are split on the last ` -> `; the target is `<file>::<test name>`, `UNMAPPED`, `DOCS <path>`, ``CHECKED: `<command>` `` or `NOT_APPLICABLE: <reason>`.'),
     ('malformed ## Mutation line: <line>',
      'Mutation is exactly one line: `killed: <n> survived: <n> invalid: <n>` or `skipped: review.mutation is off`.'),
     ('## Mutation needs exactly one "killed: <n> survived: <n> invalid: <n>" or "skipped: review.mutation is off" line',

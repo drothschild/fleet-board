@@ -46,6 +46,17 @@ To get past a false positive, put the text in a file (`git commit -F msg.txt`), 
 
 The gates stop agents that use the documented commands. Branch protection on GitHub remains the backstop for merges.
 
+## Provider sessions
+
+A provider session (Codex, say) runs without the PreToolUse hook, so `scripts/providers/guard/` replicates the limits outside the model.
+Command shims for `gh`, `git`, `curl`, `board-move` and the premise-check script sit first on the provider's `PATH`; each runs `hooks/gate.sh`
+on a payload built for the command, so the same rules block it, then adds the implementor's own: no card move, no `gh pr merge` or
+`gh pr ready`, no push except to the card's own branch (never forced), no git command outside the card's worktree, no git write to
+`.fleet-board.yml` or `.fleet-board/`, no write request to the board server. `post-run.sh check` compares `.fleet-board.yml`, the files
+under `.fleet-board/`, the card state, origin's branches and files changed outside the worktree with the start, and a difference is an
+attention. Residual: a script run by absolute path skips the shims; the provider's filesystem sandbox is the backstop. The Claude roles'
+`PATH` is not touched.
+
 ## Other plugins
 
 Role sessions load the other installed plugins and the user's `~/.claude/CLAUDE.md`, like any Claude Code session. A global instruction such as "open the PR in the browser" or a plugin hook that injects a skill mandate could, in principle, pull a role off its spec.

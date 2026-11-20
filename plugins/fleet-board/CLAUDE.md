@@ -310,6 +310,20 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `models.reviewer`) is ignored.
   A provider entry with `command` (the `codex` preset) runs `chat.sh --command` instead of curl: prompt on stdin, repo root as cwd, stdout is the reply, tokens `null` (unknown); `base_url` and `api_key_env` must be null with it. `tick-plan.sh` warns when a provider stage's key variable is unset and holds
   `review_stage` in that stage as `wait` (`stage <name>: <ENV> is not set`).
+- **Provider guard** (`scripts/providers/guard/`; tests `tests/test-provider-guard.sh`). Holds a provider session (such as
+  Codex) to a Claude role's limits outside the model. `start.sh <card> <root> <worktree> <branch> <tmpdir> -- <command>` runs
+  `sandbox-flags.sh` (`--sandbox workspace-write -C <worktree> --add-dir <tmpdir>`; a `{flags}` word in the command is replaced by
+  them), `install.sh` (shims `gh`, `git`, `curl`, `board-move`, `board-move.sh`, `premise-settle.sh` in `<tmpdir>/guard-shims`)
+  and `post-run.sh snapshot`, then runs the command with the shims first on ITS PATH only (nothing else gets that PATH; no Claude
+  role is started through it) and `post-run.sh check`. Each shim builds a PreToolUse payload and runs `hooks/gate.sh` (the hook
+  needed no change), then applies the implementor's rules: no card move, no premise decision, no `gh pr merge` or `gh pr ready`,
+  no `git push` except of the card's branch and never forced, no git command with a `-C` or cwd outside the worktree or with
+  `--git-dir`/`--work-tree`, no git write to `.fleet-board.yml` or `.fleet-board/`, no write request by `curl` to a loopback host.
+  A block is exit 2 with the gate's line. Fails closed: when flags, shims or the snapshot cannot be made, the command does not run,
+  the card gets one comment, stdout is `{"attention": ..., "differences": []}`, exit 2. `post-run.sh check` compares
+  `.fleet-board.yml`, files under `.fleet-board/` other than board runtime data, the card state, origin's branch heads and files
+  changed in the root outside the worktree; a difference is exit 3 with that JSON (`start.sh` posts the comment). A script called
+  by absolute path does not pass a shim; the sandbox and the post-run check are the backstop. No runner uses the guard yet.
 - **Dependency gate** (`scripts/deps.sh parse|check`). `parse-card` reads a card's `blocked_by`
   card numbers (`parse` still reads a body file's `## Depends on` bullets); `check` looks
   each up in the local store and prints `{unmet, warnings}`; a failed lookup exits 1 and names its command on stderr as
@@ -466,6 +480,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
 
 ## Invariants
 
+- Fixer test rule: the fixer may edit a test file that the PR adds or modifies against the merge base to resolve a finding, including a CI finding, with no weakening of what the test checks. It still may not edit a test file unchanged relative to the base branch (a failure there is fixed in the code), and its report names each test file it edited and why. The reviewer's weakened-test check still runs every round.
 - Headless merges happen only in `scripts/merge-reviewed.sh`, a plain shell step outside any
   Claude session that the supervisor's merge lane runs. It merges only under
   `merge.policy: auto`, for a clean-reviewed, non-draft, green PR that needs no Human QA (it asks

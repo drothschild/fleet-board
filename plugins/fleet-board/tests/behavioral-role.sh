@@ -9,7 +9,7 @@
 # Scenarios: implementor, implementor-no-acceptance, review-good,
 #            review-unmapped, review-survivor, review-toggles-off, fixer,
 #            review-tamper, review-restored, review-unrestored,
-#            review-round1-weakened
+#            review-round1-weakened, implementor-docs-only
 #
 # Env:
 #   RUN              keep transcripts here (default $TMPDIR/fb-p5/behavioral/<scenario>-<ts>)
@@ -23,7 +23,7 @@
 set -uo pipefail
 unset CDPATH
 
-SCENARIOS="implementor implementor-no-acceptance review-good review-unmapped review-survivor review-toggles-off fixer review-tamper review-restored review-unrestored review-round1-weakened"
+SCENARIOS="implementor implementor-no-acceptance review-good review-unmapped review-survivor review-toggles-off fixer review-tamper review-restored review-unrestored review-round1-weakened implementor-docs-only"
 usage() { printf 'usage: SANDBOX_REPO=owner/name %s <%s>\n' "$0" "$(echo $SCENARIOS | tr ' ' '|')" >&2; exit 2; }
 
 [ -n "${SANDBOX_REPO:-}" ] || { echo "behavioral-role: SANDBOX_REPO is not set" >&2; exit 2; }
@@ -228,6 +228,43 @@ scenario_implementor() {
   check_jq "AC3.3 .verified.number is an integer" "$RUN/report.json" '(.verified.number | type) == "number" and (.verified.number | floor) == .verified.number'
 }
 
+# The implementor under this repository's persona (implementor.persona:
+# docs/implementor-persona.md). The card holds one code item and one docs-only
+# item; the persona text is appended to the prompt as the supervisor would.
+scenario_implementor_docs_only() {
+  new_card "$BL_FIX/card-docs-only.md"
+  local persona="$PLUGIN_DIR/../../docs/implementor-persona.md"
+  [ -s "$persona" ] || bl_die "persona file $persona is missing"
+  implementor_prompt "$RUN/implementor-prompt.txt"
+  { printf '\nPersona (implementor.persona: docs/implementor-persona.md):\n'; cat "$persona"; } >>"$RUN/implementor-prompt.txt"
+  dispatch_role implementor sonnet "$RUN/implementor-prompt.txt"
+  git -C "$CLONE" fetch -q origin
+
+  # The PR's diff adds no test file that reads a .md file
+  local added bad="" f
+  added="$(git -C "$CLONE" diff --name-only --diff-filter=A "origin/main...origin/$BRANCH" -- 'test/*' 'tests/*')"
+  for f in $added; do
+    if git -C "$CLONE" show "origin/$BRANCH:$f" 2>/dev/null | bl_reads_md; then bad="$bad $f"; fi
+  done
+  if [ -z "$bad" ]; then pass "the PR's diff adds no test file that reads a .md file"
+  else fail "the PR's diff adds no test file that reads a .md file" "test files that reads a .md file:$bad"; fi
+
+  # The docs-only item is mapped DOCS <path>, naming a file in the PR's diff
+  latest_report "$CARD" "$RUN/report.md"
+  if bash "$S/parse-report.sh" --role implementor "$RUN/report.md" >"$RUN/report.json" 2>"$RUN/parse.err"; then
+    pass "report passes parse-report.sh --role implementor"
+  else
+    fail "report passes parse-report.sh --role implementor" "$(cat "$RUN/parse.err")"
+  fi
+  local docs
+  docs="$(sed -n 's/^- .* -> DOCS \([^ ]*\)$/\1/p' "$RUN/report.md" | head -1)"
+  if [ -n "$docs" ] && git -C "$CLONE" diff --name-only "origin/main...origin/$BRANCH" | grep -cFx "$docs" >/dev/null; then
+    pass "the docs-only item is mapped DOCS $docs, a file in the PR's diff"
+  else
+    fail "the docs-only item is mapped DOCS <path>, a file in the PR's diff" "DOCS path '${docs:-<none>}'"
+  fi
+}
+
 # The manager's continue_implementor path: a card in In Progress with no PR
 # known gets an implementor dispatch, and that path does not re-check
 # Acceptance (only ready -> start does, and board-move.sh refuses ready without
@@ -281,7 +318,7 @@ scenario_review_good() {
 
 scenario_review_unmapped() {
   run_review unmapped.patch .
-  check_jq "AC3.4 an UNMAPPED Acceptance item" "$RUN/report.json" 'any(.acceptance_map[]; .test == null and .command == null and .not_applicable == null)'
+  check_jq "AC3.4 an UNMAPPED Acceptance item" "$RUN/report.json" 'any(.acceptance_map[]; .test == null and .command == null and .not_applicable == null and .docs == null)'
   check_jq "AC3.4 Important finding names subtract(2, 5) / -3" "$RUN/report.json" \
     'any(.findings[]; .severity == "Important" and ((.text | contains("subtract(2, 5)")) or (.text | contains("-3"))))'
 }
@@ -458,6 +495,7 @@ case "$SCENARIO" in
   review-restored) scenario_review_restored ;;
   review-unrestored) scenario_review_unrestored ;;
   review-round1-weakened) scenario_review_round1_weakened ;;
+  implementor-docs-only) scenario_implementor_docs_only ;;
 esac
 
 echo "RUN: $RUN"
