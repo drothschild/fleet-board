@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "The fleet-board Claude Code plugin: a local card board as a work queue for coding agents.",
-    "version": "1.0.88",
+    "version": "1.0.89",
     "pluginRoot": "plugins"
   },
   "plugins": [
     {
       "name": "fleet-board",
       "source": "./plugins/fleet-board",
-      "version": "0.30.42",
+      "version": "0.30.43",
       "description": "Turns a local card board into a work queue for a fleet of coding agents, with hook-enforced human-QA and merge gates."
     }
   ]

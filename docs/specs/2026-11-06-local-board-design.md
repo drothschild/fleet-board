@@ -403,6 +403,6 @@ is trusted (break the script, watch the assertion fail, restore it):
 
 ## Out of scope
 
-Card deletion, attachments, search, server push, authentication, remote access,
+Card deletion, attachments, search, server push, authentication, remote access (except through Tailscale `serve`, the one supported path),
 migration of existing GitHub cards to the local store (added later as the read-only `import-github.sh`), and any change to the clean-room
 role prompts.

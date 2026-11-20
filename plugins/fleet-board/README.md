@@ -272,6 +272,27 @@ It binds `127.0.0.1` only and uses `board.port` unless you pass `--port N`.
 
 **Migrating a store.** A store made before the fields existed keeps them in the body. Run `migrate-card-fields.sh` from the repo root (`--dry-run` first to see the cards it would change): it moves each card's `## Acceptance` and `## Depends on` sections into the fields, takes `pr_url` from the manager note, and prints one line per changed card. A dependency that is not a card on this board stays in the body as a prose line, with a warning. It is safe to run again.
 
+### Reaching the board from your tailnet
+
+The board is off the network by default. To reach it from another device on your tailnet, serve it with Tailscale and name who may log in. In `.fleet-board.yml`:
+
+```yaml
+board:
+  allowed_hosts: ["my-mac.tailnet-name.ts.net"]
+  tailscale:
+    allowed_logins: ["you@example.com"]
+```
+
+Then run, with the board's port in place of `<port>` (`board.port`, default 8765):
+
+```bash
+tailscale serve --bg http://127.0.0.1:<port>
+```
+
+**Warning.** Every login on `allowed_logins` can start the supervisor and run Claude sessions on this Mac. Add only logins you trust with that. Never use `tailscale funnel` for the board: `tailscale funnel` must not be used, because it puts the page on the public internet. Open terminal is refused for tailnet requests; it works only from the Mac itself.
+
+To turn access off: stop the serve and empty both keys: run `tailscale serve reset`, then set `board.allowed_hosts: []` and `board.tailscale.allowed_logins: []`.
+
 ### Upgrading from an earlier version
 
 Do the steps in this order. On 0.15.x and earlier a missing `backend` key defaults to `github-labels`, so deleting the key before updating would quietly switch a local board to GitHub labels.
