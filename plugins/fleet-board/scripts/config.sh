@@ -445,6 +445,16 @@ VALIDATION_SCRIPT='
          elif (.board.terminal_command | map(contains("{dir}")) | any | not) then "board.terminal_command must contain {dir}"
          else empty end)
       else empty end),
+      (if (.board | type) == "object" then
+        (if (.board.allowed_hosts | type) != "array" then "board.allowed_hosts must be a list of host names"
+         elif (.board.allowed_hosts | map(type != "string" or . == "" or test("[/ *]")) | any) then "board.allowed_hosts entries must be non-empty strings without /, a space or *"
+         else empty end)
+      else empty end),
+      (if (.board | type) == "object" then
+        (if (.board.tailscale | type) != "object" or (.board.tailscale.allowed_logins | type) != "array" then "board.tailscale.allowed_logins must be a list of logins"
+         elif (.board.tailscale.allowed_logins | map(type != "string" or . == "") | any) then "board.tailscale.allowed_logins entries must be non-empty strings"
+         else empty end)
+      else empty end),
       (if (.headless | type) == "object" then
         (if .headless.permission_mode == "bypassPermissions" then "headless.permission_mode bypassPermissions is refused: it runs every role with no permission checks; use one of auto, acceptEdits, default, plan"
          elif (.headless.permission_mode | type) != "string" or (.headless.permission_mode as $m | ["auto","acceptEdits","default","plan"] | index($m) | not) then "headless.permission_mode must be one of auto, acceptEdits, default, plan"
