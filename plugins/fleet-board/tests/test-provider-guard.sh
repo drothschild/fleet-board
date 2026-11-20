@@ -125,6 +125,12 @@ run "$REPO" "$SHIMS/board-move.sh" '$(echo 14)' ready
 assert_exit "shimmed board-move.sh with a substitution for the card exits 2" 2
 run "$WT" "$SHIMS/git" push origin '$B'
 assert_exit "shimmed git push with a variable for the branch exits 2" 2
+# a case the shim's own rules allow (the verb is not merge/ready): only the gate blocks it
+gate_err 'gh pr $(echo view) 5'
+run "$REPO" "$SHIMS/gh" pr '$(echo view)' 5
+assert_exit "shimmed gh pr with a substitution for the verb exits 2 (the gate blocks it)" 2
+assert_equal "shimmed gh pr with a substitution prints the gate's line" "$LAST_ERR" "$GATE_ERR"
+assert_err_has "the gate's line names the unverifiable gh subcommand" "could not verify the gh subcommand"
 
 # --- git push --------------------------------------------------------------------------------------
 echo work > "$WT/work.txt"
