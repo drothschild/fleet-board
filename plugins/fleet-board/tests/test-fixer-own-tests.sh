@@ -48,11 +48,12 @@ if grep -qF -- "$ALLOW" "$TMP/fixer.md"; then
 elif ! grep -qF -- "$ALLOW" "$TMP/fixer.md" && [ -s "$TMP/fixer.md" ]; then
   # the check helper, run on the mutant, must report a failure
   OUT="$(check "mutant" "$TMP/fixer.md" "$ALLOW"; true)"
-  if printf '%s' "$OUT" | grep -q 'FAIL mutant'; then
-    PASS=$((PASS + 1)); printf '  ok   mutant: agent without the allowing sentence fails the check\n'
-  else
-    FAIL=$((FAIL + 1)); printf '  FAIL mutant: check passed on the mutated agent\n'
-  fi
+  case "$OUT" in
+    *'FAIL mutant'*)
+      PASS=$((PASS + 1)); printf '  ok   mutant: agent without the allowing sentence fails the check\n' ;;
+    *)
+      FAIL=$((FAIL + 1)); printf '  FAIL mutant: check passed on the mutated agent\n' ;;
+  esac
 fi
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
