@@ -2147,10 +2147,13 @@ fi
 LOCAL_YML='board:
   repo: acme/toy
   allowed_hosts: ["mac.tail1234.ts.net"]
+  tailscale:
+    allowed_logins: ["owner@example.com"]
 worktrees:
   dir: .fw'
 if setup_case; then
   LOCAL_YML="$SAVED_YML"
+  export LOGINHDR="owner@example.com"
   HOSTHDR="mac.tail1234.ts.net" api GET /api/board
   assert_named 200 "With board.allowed_hosts set, a GET to /api/board with Host: mac.tail1234.ts.net passes the Host check"
   HOSTHDR="mac.tail1234.ts.net.evil.com" api GET /api/board
@@ -2166,6 +2169,7 @@ if setup_case; then
   api GET /api/board
   assert_named 200 "A GET with Host: 127.0.0.1:<port> still passes with allowed_hosts set"
   stop_server
+  unset LOGINHDR
 fi
 LOCAL_YML="$SAVED_YML"
 
@@ -2206,7 +2210,7 @@ if setup_case; then
 fi
 LOCAL_YML="$SAVED_YML"
 # A non-loopback peer cannot be made with curl against a loopback listener, so call the gate directly.
-PEER_OUT="$(python3 - "$SCRIPTS/board-web.py"<<'PY' 2>&1
+PEER_OUT="$(python3 - "$SCRIPTS/board-web.py"<<'PY' 2>/dev/null
 import importlib.util, sys, tempfile, pathlib
 spec = importlib.util.spec_from_file_location("bw", sys.argv[1])
 bw = importlib.util.module_from_spec(spec); spec.loader.exec_module(bw)
