@@ -23,6 +23,7 @@ import argparse
 import copy
 import errno
 import getpass
+import ipaddress
 import json
 import os
 import re
@@ -2311,6 +2312,51 @@ def host_ok(handler) -> bool:
     return host is not None and host.lower() in allowed_hosts()
 
 
+def allowed_logins() -> list:
+    """board.tailscale.allowed_logins, lower-cased: the Tailscale logins that may use a tailnet Host."""
+    try:
+        cfg = load_config(APP["root"], APP["scripts"])
+    except Exception:
+        return []
+    ts = (cfg.get("board") or {}).get("tailscale")
+    logins = ts.get("allowed_logins") if isinstance(ts, dict) else None
+    return [l.lower() for l in logins if isinstance(l, str) and l] if isinstance(logins, list) else []
+
+
+def loopback_host(handler) -> bool:
+    port = APP["port"]
+    return handler.headers.get("Host") in ("127.0.0.1:%d" % port, "localhost:%d" % port)
+
+
+def check_access(handler):
+    """Raise a 403 ApiError unless the request may be served.
+
+    A loopback Host is served as before. A tailnet Host (board.allowed_hosts) must come from a loopback
+    peer (tailscale serve proxies from loopback) and carry a Tailscale-User-Login in
+    board.tailscale.allowed_logins. The refusal never repeats the login that was sent."""
+    if not host_ok(handler):
+        raise ApiError(403, "foreign Host header")
+    port = APP["port"]
+    if handler.headers.get("Host") in ("127.0.0.1:%d" % port, "localhost:%d" % port):
+        return
+    peer = handler.client_address[0]
+    try:
+        loopback = ipaddress.ip_address(peer).is_loopback
+    except ValueError:
+        loopback = False
+    login = handler.headers.get("Tailscale-User-Login")
+    if not loopback:
+        reason = "peer is not loopback"
+    elif not login:
+        reason = "no Tailscale-User-Login"
+    elif login.lower() not in allowed_logins():
+        reason = "login not allowed"
+    else:
+        return
+    sys.stderr.write("board-web: refused tailnet request: %s\n" % reason)
+    raise ApiError(403, "tailnet access refused")
+
+
 MAX_BODY = 1024 * 1024
 REQUEST_TIMEOUT = 30  # seconds a handler waits on a silent client
 
@@ -2383,10 +2429,12 @@ class Handler(BaseHTTPRequestHandler):
     def dispatch(self, method: str):
         path = urlsplit(self.path).path
         try:
-            if not host_ok(self):
-                raise ApiError(403, "foreign Host header")
+            check_access(self)
             if method in ("POST", "PATCH") and not csrf_ok(self):
                 raise ApiError(403, "missing X-Fleet-Board header or foreign Origin")
+            if method == "POST" and re.fullmatch(r"/api/cards/\d+/terminal", path) and not loopback_host(self):
+                # Open terminal opens a window on the Mac, which a tailnet user cannot see.
+                raise ApiError(403, "Open terminal is not available over the tailnet")
             route = match_route(method, path)
             if route is not None:
                 fn, params = route
@@ -2454,6 +2502,10 @@ def main(argv=None) -> int:
         return 1
     APP["port"] = server.server_address[1]
     os.environ["FLEET_BOARD_PORT"] = str(APP["port"])  # fl_url names the port this server listens on
+    hosts = allowed_hosts()
+    if hosts:
+        sys.stderr.write("board-web: accepting tailnet requests for host(s) %s; allowed login(s): %s\n"
+                         % (", ".join(hosts), ", ".join(allowed_logins()) or "none"))
     sys.stdout.write("listening on http://127.0.0.1:%d\n" % APP["port"])
     sys.stdout.flush()
     try:
