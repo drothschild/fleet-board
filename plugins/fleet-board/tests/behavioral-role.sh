@@ -258,7 +258,7 @@ scenario_implementor_docs_only() {
   fi
   local docs
   docs="$(sed -n 's/^- .* -> DOCS \([^ ]*\)$/\1/p' "$RUN/report.md" | head -1)"
-  if [ -n "$docs" ] && git -C "$CLONE" diff --name-only "origin/main...origin/$BRANCH" | grep -Fxq "$docs"; then
+  if [ -n "$docs" ] && git -C "$CLONE" diff --name-only "origin/main...origin/$BRANCH" | grep -cFx "$docs" >/dev/null; then
     pass "the docs-only item is mapped DOCS $docs, a file in the PR's diff"
   else
     fail "the docs-only item is mapped DOCS <path>, a file in the PR's diff" "DOCS path '${docs:-<none>}'"
