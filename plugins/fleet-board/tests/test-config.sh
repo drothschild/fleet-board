@@ -1131,6 +1131,28 @@ repos_case "An entry whose path is not absolute makes config.sh exit 5" 5 $'    
 repos_case "An entry whose path contains a .. segment makes config.sh exit 5" 5 $'    - repo: o/n\n      path: /abs/../x'
 repos_case "A valid board.repos entry is accepted" 0 $'    - repo: o/n\n      path: /abs/x'
 
+# board.allowed_hosts and board.tailscale.allowed_logins: off by default, validated lists of strings
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" board.allowed_hosts
+assert_stdout_exact "With neither key set, the loaded config has board.allowed_hosts equal to []" '[]'
+run_config "$REPO" board.tailscale.allowed_logins
+assert_stdout_exact "With neither key set, the loaded config has board.tailscale.allowed_logins equal to []" '[]'
+REPO="$(printf 'board:\n  repo: a/b\n  allowed_hosts: ["mac.tail1234.ts.net"]\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" board.allowed_hosts
+assert_stdout_exact "board.allowed_hosts: [mac.tail1234.ts.net] loads, and the value is kept" '["mac.tail1234.ts.net"]'
+REPO="$(printf 'board:\n  repo: a/b\n  tailscale:\n    allowed_logins: ["owner@example.com"]\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" board.tailscale.allowed_logins
+assert_stdout_exact "board.tailscale.allowed_logins: [owner@example.com] loads, and the value is kept" '["owner@example.com"]'
+invalid_field_case "board.allowed_hosts set to a string instead of a list" '  allowed_hosts: "mac.tail1234.ts.net"' "board.allowed_hosts"
+invalid_field_case "board.allowed_hosts entry that is not a string" '  allowed_hosts: [5]' "board.allowed_hosts"
+invalid_field_case "board.allowed_hosts entry that is empty" '  allowed_hosts: [""]' "board.allowed_hosts"
+invalid_field_case "board.allowed_hosts entry holding /" '  allowed_hosts: ["a/b"]' "board.allowed_hosts"
+invalid_field_case "board.allowed_hosts entry holding a space" '  allowed_hosts: ["a b"]' "board.allowed_hosts"
+invalid_field_case "board.allowed_hosts entry holding *" '  allowed_hosts: ["*.ts.net"]' "board.allowed_hosts"
+invalid_field_case "board.tailscale.allowed_logins set to a string instead of a list" $'  tailscale:\n    allowed_logins: "owner@example.com"' "board.tailscale.allowed_logins"
+invalid_field_case "board.tailscale.allowed_logins entry that is not a string" $'  tailscale:\n    allowed_logins: [5]' "board.tailscale.allowed_logins"
+invalid_field_case "board.tailscale.allowed_logins entry that is empty" $'  tailscale:\n    allowed_logins: [""]' "board.tailscale.allowed_logins"
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
