@@ -244,7 +244,7 @@ scenario_implementor_docs_only() {
   local added bad="" f
   added="$(git -C "$CLONE" diff --name-only --diff-filter=A "origin/main...origin/$BRANCH" -- 'test/*' 'tests/*')"
   for f in $added; do
-    if git -C "$CLONE" show "origin/$BRANCH:$f" 2>/dev/null | grep -Eq '\.md([^a-zA-Z]|$)'; then bad="$bad $f"; fi
+    if git -C "$CLONE" show "origin/$BRANCH:$f" 2>/dev/null | bl_reads_md; then bad="$bad $f"; fi
   done
   if [ -z "$bad" ]; then pass "the PR's diff adds no test file that reads a .md file"
   else fail "the PR's diff adds no test file that reads a .md file" "test files that reads a .md file:$bad"; fi
