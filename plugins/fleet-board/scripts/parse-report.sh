@@ -158,7 +158,7 @@ fi
 #   bugerr  <line>                            a Bugs found: entry of the wrong shape
 #   blk     <N>                               a "Blocked by: #N" line
 #   pr      <N>                               first #N inside ## PR
-#   amap    <item> <test> <command> <reason>  an Acceptance map entry (unused fields empty)
+#   amap    <item> <test> <command> <reason> <docs>  an Acceptance map entry (unused fields empty)
 #   mut     counts <k> <s> <i> | skipped      the ## Mutation line
 #   claim   <key> <value> | skipped           a ## Claim check line
 #   res     <finding> <outcome> <why>         a ## Resolutions entry
@@ -184,7 +184,7 @@ fi
 #                    Bug entry: "<title> :: repro: `<cmd>` :: expected: <x> ::
 #                    observed: <y>", all non-empty, the repro backticked.
 #   ## PR            first "#<n>" is the PR number.
-#   ## Acceptance map  "- <item> -> <file>::<test name>", "- <item> -> UNMAPPED",
+#   ## Acceptance map  "- <item> -> <file>::<test name>", "- <item> -> UNMAPPED", "- <item> -> DOCS <path>",
 #                    "- <item> -> CHECKED: `<command>`" or
 #                    "- <item> -> NOT_APPLICABLE: <reason>" (split on the last " -> ").
 #   ## Mutation      exactly one line: "killed: <n> survived: <n> invalid: <n>"
@@ -353,6 +353,7 @@ sec == "Acceptance map" {
   ok = 0
   cmd = ""
   why = ""
+  docs = ""
   if (substr(line, 1, 2) == "- ") {
     entry = trim(substr(line, 3))
     # A command or a reason may hold an arrow, so these two forms split at
@@ -371,12 +372,15 @@ sec == "Acceptance map" {
       } else if (tolower(substr(tt, 1, 15)) == "not_applicable:") {
         why = trim(substr(tt, 16))
         if (substr(tt, 1, 15) == "NOT_APPLICABLE:" && item != "" && why != "") { ok = 1; tt = "" }
+      } else if (tolower(substr(tt, 1, 5)) == "docs " || tolower(tt) == "docs") {
+        rest = trim(substr(tt, 5))
+        if (substr(tt, 1, 5) == "DOCS " && item != "" && rest != "" && index(rest, " ") == 0 && index(rest, "::") == 0) { ok = 1; docs = rest; tt = "" }
       } else if (item != "" && (tt == "UNMAPPED" || (j > 1 && j < length(tt) - 1))) ok = 1
     }
   }
   if (!ok) { err("malformed ## Acceptance map line: " t); next }
   if (tt == "UNMAPPED") tt = ""
-  print "amap\t" item "\t" tt "\t" cmd "\t" why
+  print "amap\t" item "\t" tt "\t" cmd "\t" why "\t" docs
   namap++
   next
 }
@@ -685,7 +689,8 @@ printf '%s\n%s\n' "$RECORDS" "$EXTRA" | jq -Rn \
       acceptance_map: (if has("Acceptance map")
                        then recs("amap") | map({item: .[1], test: ((.[2] // "") | nul)}
                                                + (if (.[3] // "") != "" then {command: .[3]} else {} end)
-                                               + (if (.[4] // "") != "" then {not_applicable: .[4]} else {} end))
+                                               + (if (.[4] // "") != "" then {not_applicable: .[4]} else {} end)
+                                               + (if (.[5] // "") != "" then {docs: .[5]} else {} end))
                        else null end),
       mutation: (recs("mut") as $m
                  | if ($m | length) == 0 then null

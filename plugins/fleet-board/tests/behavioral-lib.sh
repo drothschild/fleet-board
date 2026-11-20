@@ -326,3 +326,7 @@ cleanup() {
   fi
   return $rc
 }
+
+# bl_reads_md: reads a file's text on stdin; succeeds when it names a .md file
+# (the docs-only scenario's "test file that reads a markdown file" check).
+bl_reads_md() { grep -Eq '\.md([^a-zA-Z]|$)'; }
