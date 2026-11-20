@@ -45,6 +45,7 @@ def ledger_column(action):
 # The token counts the budget limits count: cache reads are left out (owner decision, 0.27.0).
 BUDGET_KEYS = ('input', 'output', 'cache_write')
 BUDGET_LABEL = 'counted toward limits.max_tokens'
+PREMISE_COUNTS = ('checked', 'go', 'needs', 'built', 'stale', 'drafted', 'failed')
 SNAPSHOT_EVENTS = 50   # the snapshot carries the newest of the 500 events kept
 
 
@@ -83,6 +84,9 @@ class State:
         # a restarted supervisor counts afresh. `_auto_ready_cap` is the cap the last take_auto_ready call saw.
         self.followups_auto_ready = 0
         self._auto_ready_cap = None
+        # premise verdicts settled in this run: checked (a check ended with a verdict), go, needs, built, stale,
+        # drafted (a follow-up draft written), failed (a check that ended without a usable verdict)
+        self.premise = dict.fromkeys(PREMISE_COUNTS, 0)
         self._sequence = 0
         self._lock = threading.RLock()
 
@@ -320,6 +324,11 @@ class State:
             entry['also'] = also   # the card's further reviewer actions
         return entry
 
+    def count_premise(self, key):
+        with self._lock:
+            self.premise[key] += 1
+            self._bump()
+
     def take_auto_ready(self, cap):
         """True, and counts one, while fewer than `cap` follow-up drafts went to Ready in this run. The check and
         the count are one step under the lock, so two drafts settling together never pass a cap with one place left."""
@@ -350,4 +359,5 @@ class State:
                 'run_budget': {'tokens': self.run_budget, 'partial': self.budget_unknown > 0, 'cap': self.budget_cap,
                                'label': BUDGET_LABEL},
                 'followups_auto_ready': {'count': self.followups_auto_ready, 'cap': self._auto_ready_cap},
+                'premise': self.premise,
             })

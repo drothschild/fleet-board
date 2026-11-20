@@ -809,6 +809,7 @@ class CardDriver:
     def _failed(self, ctx, action_name, message):
         if action_name == 'check_premise':
             message = self._check_failure(message)
+            self.state.count_premise('failed')
         self.state.event('action_failed', card=ctx.n, action=action_name, error=message)
         if action_name in _UNCOUNTED:
             return
@@ -1424,6 +1425,7 @@ class CardDriver:
         c = run.c
         if run.role == 'checker' and run.mode == 'check':
             message = self._check_failure(message)
+            self.state.count_premise('failed')
         entry = {'role': run.role, 'round': run.round if run.round is not None else 0,
                  'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(self.clock())), 'errors': lines[:20]}
         self.state.event('action_failed', card=c.n, action=c.row['action'], error=message)
@@ -1600,16 +1602,25 @@ class CardDriver:
             c.comment(Path(run.report_file).read_text())
         except (OSError, _Fail) as exc:
             c.warn('checker report not posted: %s' % exc)
-        if status == 'needs':
-            return self._premise_needs(c, parsed)
-        if status == 'built':
-            return self._premise_built(c, run, parsed)
-        if status == 'stale':
+        if status in ('needs', 'built', 'stale'):
+            self.state.count_premise('checked')
+            self.state.count_premise(status)
+            if status == 'needs':
+                return self._premise_needs(c, parsed)
+            if status == 'built':
+                return self._premise_built(c, run, parsed)
             return self._premise_stale(c, run, parsed)
         if status != 'go':
             raise _Fail('verdict %s is not handled' % status)
         c.step('premise.sh', 'stamp', c.n, '--by', 'check', '--sha', run.head)
         c.merge(dict(_RESET, premise_check={'head': run.head, 'verdict': status, 'at': _iso(self.clock())}))
+        self.state.count_premise('checked')
+        self.state.count_premise('go')
+        self._premise_event(c, 'go', 'stamped')
+
+    def _premise_event(self, c, verdict, did):
+        """One event for a settled verdict: what the check found and what the supervisor did with it."""
+        self.state.event('premise', card=c.n, message='premise #%d: %s -> %s' % (c.n, verdict, did))
 
     def _settle_draft(self, c, run, parsed):
         """Act on a drafting verdict. `duplicate` and `fixed` close the follow-up (Won't do, with the reason);
@@ -1625,12 +1636,14 @@ class CardDriver:
                 raise _Fail('the duplicate verdict names #%d, which does not exist' % m)
             c.move('wont_do')
             c.comment_soft('Follow-up draft: duplicate of #%d.' % m)
+            self._premise_event(c, 'duplicate', 'closed as duplicate of #%d' % m)
             return c.merge_soft(dict(_RESET))
         if status == 'fixed':
             evidence = ['- `%s` :: %s' % (e.get('command', ''), e.get('output', ''))
                         for e in parsed.get('evidence') or [] if isinstance(e, dict)]
             c.move('wont_do')
             c.comment_soft('\n\n'.join(['Follow-up draft: already fixed on the default branch.'] + ['\n'.join(evidence)]))
+            self._premise_event(c, 'fixed', 'closed as already fixed')
             return c.merge_soft(dict(_RESET))
         if status != 'drafted':
             raise _Fail('verdict %s is not handled' % status)
@@ -1670,6 +1683,8 @@ class CardDriver:
             c.move('ready')
         else:
             c.comment('Drafted; left in Backlog: %s.' % reason)
+        self.state.count_premise('drafted')
+        self._premise_event(c, 'drafted', 'drafted, in Backlog' if reason else 'drafted, to Ready')
         c.merge_soft(dict(_RESET))
 
     def _premise_card(self, c, number):
@@ -1692,18 +1707,18 @@ class CardDriver:
         if not _posint(m):
             raise _Fail('the needs verdict names no card')
         if m == c.n:
-            return self._premise_question(c, 'needs #%d, which is the card itself' % m)
+            return self._premise_question(c, 'needs #%d, which is the card itself' % m, verdict='needs')
         other = self._premise_card(c, m)
         if other is None:
-            return self._premise_question(c, 'needs #%d, which does not exist' % m)
+            return self._premise_question(c, 'needs #%d, which does not exist' % m, verdict='needs')
         state = other.get('state')
         in_flight = state in ('ready', 'in_progress', 'in_review', 'merging', 'human_qa') \
             or (isinstance(state, str) and state.startswith('review_'))
         if not in_flight:
-            return self._premise_question(c, 'needs #%d, which is %s' % (m, state))
+            return self._premise_question(c, 'needs #%d, which is %s' % (m, state), verdict='needs')
         own = self._premise_card(c, c.n) or {}
         if m in (own.get('blocked_by') or []):
-            return self._premise_question(c, 'needs #%d, which is already a dependency of this card' % m)
+            return self._premise_question(c, 'needs #%d, which is already a dependency of this card' % m, verdict='needs')
         seen, todo = set(), [m]
         while todo:
             number = todo.pop()
@@ -1713,13 +1728,14 @@ class CardDriver:
             card = other if number == m else self._premise_card(c, number)
             for dep in (card or {}).get('blocked_by') or []:
                 if dep == c.n:
-                    return self._premise_question(c, 'needs #%d, which depends on this card' % m)
+                    return self._premise_question(c, 'needs #%d, which depends on this card' % m, verdict='needs')
                 todo.append(dep)
         c.step('premise.sh', 'add-dep', c.n, m)
         c.comment('Premise check: needs #%d, which is %s. Added as a dependency.' % (m, state))
         c.merge(dict(_RESET))
+        self._premise_event(c, 'needs', 'depends on #%d' % m)
 
-    def _premise_question(self, c, text, proposal=None, title=_PREMISE_UNSETTLED):
+    def _premise_question(self, c, text, proposal=None, title=_PREMISE_UNSETTLED, verdict=None):
         """Block the card for a person: the check could not settle it, or found a proposal for them to decide.
         The proposal is stored first, so a card is never Blocked with a question and no proposal to answer."""
         if proposal is not None:
@@ -1727,6 +1743,9 @@ class CardDriver:
         c.move('blocked')
         c.merge(dict(_RESET, state='blocked', blocked_from='ready'))
         c.comment('%s\n\n%s' % (title, text))
+        if verdict:
+            self._premise_event(c, verdict, 'asked: ' + {_PREMISE_CLOSE: 'close as already built',
+                                                         _PREMISE_REWRITE: 'approve rewrite'}.get(title, 'could not settle'))
 
     @staticmethod
     def _scope_section(body):
@@ -1759,7 +1778,8 @@ class CardDriver:
             if unknown:
                 problems.append('evidence for item %s, which the card does not have' % ', '.join(str(i) for i in unknown))
             return self._premise_question(c, 'The check reported the card as already built, but %s.'
-                                          % ('; '.join(problems) or 'the card has no acceptance items'))
+                                          % ('; '.join(problems) or 'the card has no acceptance items'),
+                                          verdict='built')
         lines = ['The check found that every acceptance item already holds on the default branch (%s).' % run.head[:7], '']
         for e in sorted(evidence, key=lambda e: e['item']):
             lines += ['%d. %s' % (e['item'], items[e['item'] - 1]),
@@ -1769,14 +1789,15 @@ class CardDriver:
         proposal = {'kind': 'close', 'head': run.head,
                     'evidence': [{'item': e['item'], 'command': e.get('command', ''), 'output': e.get('output', '')}
                                  for e in evidence]}
-        return self._premise_question(c, '\n'.join(lines), proposal, _PREMISE_CLOSE)
+        return self._premise_question(c, '\n'.join(lines), proposal, _PREMISE_CLOSE, 'built')
 
     def _premise_stale(self, c, run, parsed):
         """A stale verdict: a rewrite proposal when the checker gave one, else its summary as a plain question."""
         summary = (parsed.get('summary') or '').strip()
         proposed = parsed.get('proposal')
         if not isinstance(proposed, dict):
-            return self._premise_question(c, summary or 'The check found the card stale and proposed no rewrite.')
+            return self._premise_question(c, summary or 'The check found the card stale and proposed no rewrite.',
+                                          verdict='stale')
         card = self._premise_card(c, c.n) or {}
         current = [a for a in (card.get('acceptance') or []) if isinstance(a, str)]
         acceptance = [a for a in (proposed.get('acceptance') or []) if isinstance(a, str)]
@@ -1787,7 +1808,7 @@ class CardDriver:
                  '', 'Run `premise-settle.sh approve %d` in a terminal (or use the board page) to apply it, '
                      'or move the card to Ready to reject it and start it as it is.' % c.n]
         proposal = {'kind': 'rewrite', 'head': run.head, 'scope': scope, 'acceptance': acceptance, 'summary': summary}
-        return self._premise_question(c, '\n'.join(lines), proposal, _PREMISE_REWRITE)
+        return self._premise_question(c, '\n'.join(lines), proposal, _PREMISE_REWRITE, 'stale')
 
     def _blocked(self, run, parsed, final):
         c = run.c
