@@ -109,6 +109,20 @@ async function setup(hash) {
     assert.ok(tiles.length >= 4);
     for (const t of tiles) assert.equal(t.draggable, true);
   });
+  await test("A forced re-render of the board keeps the clicked tab selected", async () => {
+    const {h, tab, tabs} = await setup();
+    await tab("In progress").fire("click");
+    h.ctx.location.hash = ""; // the URL hash must not be re-read after the first render
+    h.ctx.renderBoard(h.ctx.__test.S.board, true);
+    await h.flush();
+    assert.equal(tab("In progress").attrs["aria-selected"], "true");
+    assert.equal(tabs().filter((t) => t.attrs["aria-selected"] === "true").length, 1);
+  });
+  await test("The phone rule shows the tablist over the global hidden rule", async () => {
+    const css = fs.readFileSync(path.join(STATIC, "board.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    assert.match(css, /\[hidden\]\s*\{\s*display:\s*none\s*!important/);
+    assert.match(css.slice(css.indexOf("@media (max-width: 720px)")), /#col-tabs\[hidden\][^{]*\{[^}]*display:\s*flex\s*!important/);
+  });
   console.log(fails + " failing");
   process.exitCode = fails ? 1 : 0;
 })();
