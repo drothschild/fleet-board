@@ -723,6 +723,41 @@ run_parse --role reviewer --mode check "$REPORTS/reviewer-ok.md"
 assert_exit "--mode check with --role reviewer: exit 2" 2
 assert_stderr_line "--mode check with --role reviewer: message" "parse-report: --mode applies only to --role merger"
 
+# --- Acceptance map: a DOCS <path> mapping covers an item with no test ------
+echo "reviewer-amap-docs"
+docs_report() {
+  local f="$1" status="$2"; shift 2
+  { printf '## Status\n%s\n\n## Findings\n- none\n\n## For the card\nDocs mapping.\n\n## Acceptance map\n' "$status"
+    printf '%s\n' "$@"
+    printf '\n## Mutation\nkilled: 0 survived: 0 invalid: 0\n\n## Claim check\nskipped: review.verify_claim is off\n\nVERIFIED: `bash t.sh` -> 1 tests passed\n'
+  } >"$f"
+}
+DOCS_TMP="$(mktemp -d)"
+docs_report "$DOCS_TMP/ok.md" clean \
+  "- subtract(5, 2) returns 3 -> test/calc.test.js::subtract(5, 2) returns 3" \
+  "- the README documents the flag -> DOCS README.md"
+run_parse --role reviewer "$DOCS_TMP/ok.md"
+assert_exit "reviewer-amap-docs: a DOCS mapping next to a test mapping, status clean: exit 0" 0
+assert_jq_exact "reviewer-amap-docs: DOCS has no test and names the path" '.acceptance_map[1]' '{"item":"the README documents the flag","test":null,"docs":"README.md"}'
+
+docs_report "$DOCS_TMP/only.md" clean "- the README documents the flag -> DOCS docs/readme.md"
+run_parse --role reviewer "$DOCS_TMP/only.md"
+assert_exit "reviewer-amap-docs: a clean report whose only mapping is DOCS: exit 0" 0
+
+docs_report "$DOCS_TMP/nopath.md" clean "- the README documents the flag -> DOCS"
+run_parse --role reviewer "$DOCS_TMP/nopath.md"
+assert_exit "reviewer-amap-docs: DOCS without a path: exit 1" 1
+assert_stderr_line "reviewer-amap-docs: DOCS without a path quotes the line" "parse-report: malformed ## Acceptance map line: - the README documents the flag -> DOCS"
+
+docs_report "$DOCS_TMP/lower.md" clean "- the README documents the flag -> docs README.md"
+run_parse --role reviewer "$DOCS_TMP/lower.md"
+assert_exit "reviewer-amap-docs: lowercase docs keyword is neither a test nor a docs mapping: exit 1" 1
+
+docs_report "$DOCS_TMP/neither.md" clean "- the README documents the flag -> README.md"
+run_parse --role reviewer "$DOCS_TMP/neither.md"
+assert_exit "reviewer-amap-docs: a line that maps to neither a test nor a doc: exit 1" 1
+rm -rf "$DOCS_TMP"
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
