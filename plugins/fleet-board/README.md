@@ -157,6 +157,32 @@ More on how planning, notes, follow-ups and the `main` check work: [docs/config.
 
 The config file is `.fleet-board.yml`, any valid YAML. `board.backend`, `board.project_number` and `board.project_owner` are gone, and so are the tick system's `limits.max_cost_usd`, `limits.tick_interval`, `limits.min_tick_gap`, `limits.max_consecutive_failures` and `models.manager`: `config.sh` exits 5 on any of them (see [Upgrading](#upgrading-from-an-earlier-version)). Tokens are the only unit; an old `price` key is ignored.
 
+## Premise check
+
+Before a card starts, the supervisor checks that its premise still holds. A **stamp** records that a card's
+Scope and acceptance were checked against a commit of the default branch (`premise.sh stamp`). A check runs
+when a Ready card has no stamp, or when files its Scope names changed after the stamped commit. A checker session
+reads the default branch in a throwaway checkout and ends with one of four verdicts:
+
+- `go`: the card holds. The supervisor stamps it and it starts.
+- `needs`: it depends on another card. When that card is on its way to being built, the supervisor adds it as a
+  dependency; otherwise it blocks the card and asks.
+- `built`: every acceptance item already holds. The card is blocked with the evidence. Run
+  `premise-settle.sh confirm <n>` (or use the board page) to close it as built, labelled `fleet:closed-as-built`.
+- `stale`: the card names things that moved. The card is blocked with a proposed rewrite. Run
+  `premise-settle.sh approve <n>` to apply it.
+
+To overrule a proposal, move the card to Ready: it starts as it is. Every settled verdict leaves one event,
+`premise #<n>: <verdict> -> <what was done>`, and `supervisor status` prints one line, `Premise checks: ...`,
+with this run's counts.
+
+Follow-ups filed by roles are drafted by the same checker. A duplicate or already-fixed follow-up goes to Won't do.
+A drafted bug whose repro failed on the default branch goes to Ready while `followups.auto_ready` is `bugs` and
+this run has used fewer than `followups.auto_ready_cap` (default 5) places; any other draft stays in Backlog.
+
+Set `premise_check.enabled: false` to turn the check and the drafting off. `models.checker` picks the model
+(default `sonnet`).
+
 ## Merger and deploys
 
 Under `merge.policy: auto` the supervisor merges a reviewed PR, runs the card's `## After merge` steps, then runs the **merger**: a role that follows a persona to do project-specific work after a merge, such as a deploy, and to judge a refused merge. It never merges and never moves a card.

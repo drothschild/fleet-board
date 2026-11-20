@@ -53,7 +53,7 @@ check "config table has a review.stages row" "$r"
 DOCS_DIR="${SCRIPT_DIR}/../docs"
 GATES="${GATES_FILE:-${DOCS_DIR}/gates.md}"
 # The upgrade notes may say it was removed; nothing else in the README names it.
-r=bad; awk '/^### Upgrading from an earlier version$/{u=1;next} u && /^#/{u=0} !u' "$README" | grep -c 'settle\.sh' >/dev/null || r=ok
+r=bad; awk '/^### Upgrading from an earlier version$/{u=1;next} u && /^#/{u=0} !u' "$README" | grep -cE '(^|[^-])settle\.sh' >/dev/null || r=ok
 check "README does not mention settle.sh outside its upgrade notes" "$r"
 r=bad; grep -q 'settle\.sh' "$GATES" || r=ok
 check "gates.md does not mention settle.sh" "$r"
@@ -122,6 +122,11 @@ if [ -z "${README_CLAIMS_NESTED:-}" ]; then
   tmp="$(mktemp -d)"
   sed 's/Move the whole chain to Ready/Move it/' "$README" > "$tmp/README_FILE.md"
   { cat "$GATES"; printf '\n`scripts/settle.sh` moves cards.\n'; } > "$tmp/GATES_FILE.md"
+  # A bare scripts/settle.sh outside the upgrade notes must still fail the README check.
+  { cat "$README"; printf '\n`scripts/settle.sh` moves cards.\n'; } > "$tmp/README_BARE.md"
+  r=bad
+  if ! env README_CLAIMS_NESTED=1 "README_FILE=$tmp/README_BARE.md" bash "${BASH_SOURCE[0]:-$0}" >/dev/null 2>&1; then r=ok; fi
+  check "README naming a bare scripts/settle.sh outside its upgrade notes makes the test fail" "$r"
   for var in README_FILE GATES_FILE; do
     r=bad
     if ! env README_CLAIMS_NESTED=1 "$var=$tmp/$var.md" bash "${BASH_SOURCE[0]:-$0}" >/dev/null 2>&1; then r=ok; fi
