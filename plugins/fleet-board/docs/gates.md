@@ -49,7 +49,7 @@ The gates stop agents that use the documented commands. Branch protection on Git
 ## Provider sessions
 
 A provider session (Codex, say) runs without the PreToolUse hook, so `scripts/providers/guard/` replicates the limits outside the model.
-Command shims for `gh`, `git`, `curl`, `board-move` and `premise-settle.sh` sit first on the provider's `PATH`; each runs `hooks/gate.sh`
+Command shims for `gh`, `git`, `curl`, `board-move` and the premise-check script sit first on the provider's `PATH`; each runs `hooks/gate.sh`
 on a payload built for the command, so the same rules block it, then adds the implementor's own: no card move, no `gh pr merge` or
 `gh pr ready`, no push except to the card's own branch (never forced), no git command outside the card's worktree, no git write to
 `.fleet-board.yml` or `.fleet-board/`, no write request to the board server. `post-run.sh check` compares `.fleet-board.yml`, the files
