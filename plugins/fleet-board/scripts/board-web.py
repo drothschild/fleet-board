@@ -2323,6 +2323,11 @@ def allowed_logins() -> list:
     return [l.lower() for l in logins if isinstance(l, str) and l] if isinstance(logins, list) else []
 
 
+def loopback_host(handler) -> bool:
+    port = APP["port"]
+    return handler.headers.get("Host") in ("127.0.0.1:%d" % port, "localhost:%d" % port)
+
+
 def check_access(handler):
     """Raise a 403 ApiError unless the request may be served.
 
@@ -2427,6 +2432,9 @@ class Handler(BaseHTTPRequestHandler):
             check_access(self)
             if method in ("POST", "PATCH") and not csrf_ok(self):
                 raise ApiError(403, "missing X-Fleet-Board header or foreign Origin")
+            if method == "POST" and re.fullmatch(r"/api/cards/\d+/terminal", path) and not loopback_host(self):
+                # Open terminal opens a window on the Mac, which a tailnet user cannot see.
+                raise ApiError(403, "Open terminal is not available over the tailnet")
             route = match_route(method, path)
             if route is not None:
                 fn, params = route
@@ -2494,6 +2502,10 @@ def main(argv=None) -> int:
         return 1
     APP["port"] = server.server_address[1]
     os.environ["FLEET_BOARD_PORT"] = str(APP["port"])  # fl_url names the port this server listens on
+    hosts = allowed_hosts()
+    if hosts:
+        sys.stderr.write("board-web: accepting tailnet requests for host(s) %s; allowed login(s): %s\n"
+                         % (", ".join(hosts), ", ".join(allowed_logins()) or "none"))
     sys.stdout.write("listening on http://127.0.0.1:%d\n" % APP["port"])
     sys.stdout.flush()
     try:
