@@ -2279,6 +2279,16 @@ def send_json(handler, code: int, payload):
     handler.wfile.write(data)
 
 
+def allowed_hosts() -> list:
+    """board.allowed_hosts, lower-cased: the tailnet names whose Host and https Origin are accepted."""
+    try:
+        cfg = load_config(APP["root"], APP["scripts"])
+    except Exception:
+        return []
+    hosts = (cfg.get("board") or {}).get("allowed_hosts")
+    return [h.lower() for h in hosts if isinstance(h, str) and h] if isinstance(hosts, list) else []
+
+
 def csrf_ok(handler) -> bool:
     if handler.headers.get("X-Fleet-Board") != "1":
         return False
@@ -2286,14 +2296,19 @@ def csrf_ok(handler) -> bool:
     if origin is None:
         return True
     port = APP["port"]
-    return origin in ("http://127.0.0.1:%d" % port, "http://localhost:%d" % port)
+    if origin in ("http://127.0.0.1:%d" % port, "http://localhost:%d" % port):
+        return True
+    return origin.lower() in ["https://" + h for h in allowed_hosts()]
 
 
 def host_ok(handler) -> bool:
-    """The Host header names this server (127.0.0.1 or localhost, the bound port), so a page
-    on another name that resolves here (DNS rebinding) cannot read the board."""
+    """The Host header names this server (127.0.0.1 or localhost, the bound port, or a name in
+    board.allowed_hosts), so a page on another name that resolves here (DNS rebinding) cannot read the board."""
     port = APP["port"]
-    return handler.headers.get("Host") in ("127.0.0.1:%d" % port, "localhost:%d" % port)
+    host = handler.headers.get("Host")
+    if host in ("127.0.0.1:%d" % port, "localhost:%d" % port):
+        return True
+    return host is not None and host.lower() in allowed_hosts()
 
 
 MAX_BODY = 1024 * 1024
