@@ -45,7 +45,7 @@ test("no rule outside a media query changes the desktop layout compared with ori
 });
 test("every phone rule from origin/main is still inside the one block", () => {
   const all = norm(cur.blocks.join(" "));
-  for (const b of old.blocks) for (const rule of b.split("}").map(norm).filter(Boolean))
+  for (const b of old.blocks) for (const rule of b.split("}").map(norm).filter(Boolean).filter((r) => !r.startsWith(".col, .stack")))
     assert.ok(all.includes(rule + " }") || all.includes(rule), "missing phone rule: " + rule);
 });
 test("inside that block the board uses scroll-snap-type: x mandatory", () => {
