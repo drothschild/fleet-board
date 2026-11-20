@@ -1118,4 +1118,8 @@ button, select, input, textarea { font: inherit; color: inherit; }
   #board { padding: 10px 12px; scroll-snap-type: x mandatory; }
   .col, .stack { flex: 0 0 100%; min-width: 100%; max-width: 100%; scroll-snap-align: start; }
   .col-head, .col-toggle, .dr-prio-btn, .open-terminal { min-height: 44px; }
+  #col-tabs, #col-tabs[hidden] { display: flex; gap: 6px; padding: 8px 12px 0; overflow-x: auto; }
+  .col-tab { flex: none; display: inline-flex; gap: 6px; align-items: center; min-height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font: inherit; cursor: pointer; }
+  .col-tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  .col-tab-count { font-variant-numeric: tabular-nums; }
 }
