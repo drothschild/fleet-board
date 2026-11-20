@@ -190,6 +190,7 @@ api() {
   [ "${NOHDR:-0}" = 1 ] || args+=(-H 'X-Fleet-Board: 1')
   [ -z "${ORIGIN:-}" ] || args+=(-H "Origin: $ORIGIN")
   [ -z "${HOSTHDR:-}" ] || args+=(-H "Host: $HOSTHDR")
+  [ -z "${LOGINHDR:-}" ] || args+=(-H "Tailscale-User-Login: $LOGINHDR")
   if [ $# -ge 3 ]; then args+=(-H 'Content-Type: application/json' --data-binary "$3"); fi
   : > "$BODY_FILE"
   LAST_CODE="$(curl "${args[@]}" "http://127.0.0.1:$PORT$2")"
@@ -2146,10 +2147,13 @@ fi
 LOCAL_YML='board:
   repo: acme/toy
   allowed_hosts: ["mac.tail1234.ts.net"]
+  tailscale:
+    allowed_logins: ["owner@example.com"]
 worktrees:
   dir: .fw'
 if setup_case; then
   LOCAL_YML="$SAVED_YML"
+  export LOGINHDR="owner@example.com"
   HOSTHDR="mac.tail1234.ts.net" api GET /api/board
   assert_named 200 "With board.allowed_hosts set, a GET to /api/board with Host: mac.tail1234.ts.net passes the Host check"
   HOSTHDR="mac.tail1234.ts.net.evil.com" api GET /api/board
@@ -2165,8 +2169,66 @@ if setup_case; then
   api GET /api/board
   assert_named 200 "A GET with Host: 127.0.0.1:<port> still passes with allowed_hosts set"
   stop_server
+  unset LOGINHDR
 fi
 LOCAL_YML="$SAVED_YML"
+
+echo "Case: a tailnet Host needs a loopback peer and an allowed Tailscale login"
+SECRET_LOGIN="mallory-secret@example.com"
+LOCAL_YML='board:
+  repo: acme/toy
+  allowed_hosts: ["mac.tail1234.ts.net"]
+  tailscale:
+    allowed_logins: ["owner@example.com"]
+worktrees:
+  dir: .fw'
+if setup_case; then
+  LOCAL_YML="$SAVED_YML"
+  HOSTHDR="mac.tail1234.ts.net" LOGINHDR="owner@example.com" api GET /api/board
+  assert_named 200 "A request with an allowed Host, a loopback peer and a Tailscale-User-Login in board.tailscale.allowed_logins is served"
+  HOSTHDR="mac.tail1234.ts.net" api GET /api/board
+  assert_named 403 "A request with an allowed Host and no Tailscale-User-Login header is 403"
+  HOSTHDR="mac.tail1234.ts.net" LOGINHDR="$SECRET_LOGIN" api GET /api/board
+  assert_named 403 "A request with an allowed Host and a Tailscale-User-Login that is not in allowed_logins is 403"
+  if grep -qF "$SECRET_LOGIN" "$BODY_FILE"; then fail "The 403 body does not contain the login value that was sent" "$(cat "$BODY_FILE")"; else pass "The 403 body does not contain the login value that was sent"; fi
+  if grep -qF "$SECRET_LOGIN" "$TMP/server.err"; then fail "The board log line for a refused login does not contain the login value that was sent" "$(cat "$TMP/server.err")"; else pass "The board log line for a refused login does not contain the login value that was sent"; fi
+  if grep -q "refused" "$TMP/server.err"; then pass "A refused tailnet login is logged"; else fail "A refused tailnet login is logged" "$(cat "$TMP/server.err")"; fi
+  api GET /api/board
+  assert_named 200 "A request with Host: 127.0.0.1:<port> and no identity header is served as before"
+  stop_server
+fi
+LOCAL_YML='board:
+  repo: acme/toy
+  allowed_hosts: ["mac.tail1234.ts.net"]
+worktrees:
+  dir: .fw'
+if setup_case; then
+  LOCAL_YML="$SAVED_YML"
+  HOSTHDR="mac.tail1234.ts.net" LOGINHDR="owner@example.com" api GET /api/board
+  assert_named 403 "A request with an allowed Host and an empty allowed_logins is 403, whatever login it sends"
+  stop_server
+fi
+LOCAL_YML="$SAVED_YML"
+# A non-loopback peer cannot be made with curl against a loopback listener, so call the gate directly.
+PEER_OUT="$(python3 - "$SCRIPTS/board-web.py"<<'PY' 2>/dev/null
+import importlib.util, sys, tempfile, pathlib
+spec = importlib.util.spec_from_file_location("bw", sys.argv[1])
+bw = importlib.util.module_from_spec(spec); spec.loader.exec_module(bw)
+root = pathlib.Path(tempfile.mkdtemp())
+(root / ".fleet-board.yml").write_text('board:\n  repo: acme/toy\n  allowed_hosts: ["mac.tail1234.ts.net"]\n  tailscale:\n    allowed_logins: ["owner@example.com"]\n')
+bw.APP["root"] = root; bw.APP["scripts"] = pathlib.Path(sys.argv[1]).parent; bw.APP["port"] = 1
+class H:
+    def __init__(s, peer):
+        s.client_address = (peer, 5555)
+        s.headers = {"Host": "mac.tail1234.ts.net", "Tailscale-User-Login": "owner@example.com"}
+for peer in ("127.0.0.1", "10.0.0.5"):
+    try:
+        bw.check_access(H(peer)); print(peer, "served")
+    except bw.ApiError as e:
+        print(peer, e.code)
+PY
+)"
+if [ "$PEER_OUT" = "$(printf '127.0.0.1 served\n10.0.0.5 403')" ]; then pass "A request with an allowed Host and an allowed login whose peer address is not loopback (10.0.0.5) is 403 -> 403"; else fail "A request with an allowed Host and an allowed login whose peer address is not loopback (10.0.0.5) is 403 -> 403" "$PEER_OUT"; fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
