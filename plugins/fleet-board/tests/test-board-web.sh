@@ -2130,6 +2130,44 @@ api POST /api/cards/99/premise/approve '{}'
 assert_code 404
 stop_server
 
+echo "Case: board.allowed_hosts widens the Host and Origin checks"
+# assert_named <code> <desc>: LAST_CODE must equal <code>; the test is named by its Acceptance text.
+assert_named() {
+  if [ "$LAST_CODE" = "$1" ]; then pass "$2 -> $1"; else fail "$2 -> $1" "got $LAST_CODE: $(cat "$BODY_FILE")"; fi
+}
+SAVED_YML="$LOCAL_YML"
+if setup_case; then
+  HOSTHDR="mac.tail1234.ts.net" api GET /api/board
+  assert_named 403 "With board.allowed_hosts empty, a GET with Host: mac.tail1234.ts.net is 403"
+  api GET /api/board
+  assert_code 200
+  stop_server
+fi
+LOCAL_YML='board:
+  repo: acme/toy
+  allowed_hosts: ["mac.tail1234.ts.net"]
+worktrees:
+  dir: .fw'
+if setup_case; then
+  LOCAL_YML="$SAVED_YML"
+  HOSTHDR="mac.tail1234.ts.net" api GET /api/board
+  assert_named 200 "With board.allowed_hosts set, a GET to /api/board with Host: mac.tail1234.ts.net passes the Host check"
+  HOSTHDR="mac.tail1234.ts.net.evil.com" api GET /api/board
+  assert_named 403 "With that setting, a GET with Host: mac.tail1234.ts.net.evil.com is 403"
+  HOSTHDR="evil.mac.tail1234.ts.net" api GET /api/board
+  assert_named 403 "With that setting, a GET with Host: evil.mac.tail1234.ts.net is 403"
+  HOSTHDR="mac.tail1234.ts.net" ORIGIN="https://mac.tail1234.ts.net" api POST /api/cards '{"title":"Via tailnet","body":"b"}'
+  assert_named 200 "With that setting, a POST with X-Fleet-Board: 1 and Origin: https://mac.tail1234.ts.net passes the Origin check"
+  HOSTHDR="mac.tail1234.ts.net" ORIGIN="http://mac.tail1234.ts.net" api POST /api/cards '{"title":"Http origin","body":"b"}'
+  assert_named 403 "With that setting, a POST with Origin: http://mac.tail1234.ts.net (http, not https) is 403"
+  HOSTHDR="mac.tail1234.ts.net" NOHDR=1 ORIGIN="https://mac.tail1234.ts.net" api POST /api/cards '{"title":"No header","body":"b"}'
+  assert_named 403 "With that setting, a POST with an allowed Origin but no X-Fleet-Board header is 403"
+  api GET /api/board
+  assert_named 200 "A GET with Host: 127.0.0.1:<port> still passes with allowed_hosts set"
+  stop_server
+fi
+LOCAL_YML="$SAVED_YML"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
