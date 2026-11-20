@@ -480,6 +480,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
 
 ## Invariants
 
+- Fixer test rule: the fixer may edit a test file that the PR adds or modifies against the merge base to resolve a finding, including a CI finding, with no weakening of what the test checks. It still may not edit a test file unchanged relative to the base branch (a failure there is fixed in the code), and its report names each test file it edited and why. The reviewer's weakened-test check still runs every round.
 - Headless merges happen only in `scripts/merge-reviewed.sh`, a plain shell step outside any
   Claude session that the supervisor's merge lane runs. It merges only under
   `merge.policy: auto`, for a clean-reviewed, non-draft, green PR that needs no Human QA (it asks
