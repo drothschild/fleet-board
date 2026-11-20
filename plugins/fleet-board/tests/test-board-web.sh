@@ -2230,6 +2230,50 @@ PY
 )"
 if [ "$PEER_OUT" = "$(printf '127.0.0.1 served\n10.0.0.5 403')" ]; then pass "A request with an allowed Host and an allowed login whose peer address is not loopback (10.0.0.5) is 403 -> 403"; else fail "A request with an allowed Host and an allowed login whose peer address is not loopback (10.0.0.5) is 403 -> 403" "$PEER_OUT"; fi
 
+echo "Case: a tailnet user can start and stop the supervisor; Open terminal is refused for them"
+SAVED_YML="$LOCAL_YML"
+TT_LOG="$TMP/tt-term.log"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$TT_LOG" > "$TMP/tt-stub.sh"
+chmod +x "$TMP/tt-stub.sh"
+TT_YML="board:
+  repo: acme/toy
+  allowed_hosts: [\"mac.tail1234.ts.net\"]
+  tailscale:
+    allowed_logins: [\"owner@example.com\"]
+  terminal_command:
+    - \"$TMP/tt-stub.sh\"
+    - --open
+    - \"{dir}\"
+worktrees:
+  dir: .fw"
+TT_REPO="$(new_repo "$TT_YML")"
+mkdir -p "$TT_REPO/.fleet-board/cards" "$TT_REPO/wt-here"
+echo 4 > "$TT_REPO/.fleet-board/next"
+REPO="$TT_REPO" seed_card 1 in_progress "Has dir" "b" "$(jq -n --arg b "$(wt_note "$TT_REPO/wt-here")" '[{id: 1, author: "tester", body: $b, created_at: "2026-01-01T00:00:00Z"}]')"
+start_server "$TT_REPO"
+if [ "$(head -n 1 "$TMP/server.out")" = "listening on http://127.0.0.1:$PORT" ]; then pass "With board.allowed_hosts non-empty, the first stdout line is still listening on http://127.0.0.1:<port>"; else fail "With board.allowed_hosts non-empty, the first stdout line is still listening on http://127.0.0.1:<port>" "$(cat "$TMP/server.out")"; fi
+if grep -qF "mac.tail1234.ts.net" "$TMP/server.err" && grep -qF "owner@example.com" "$TMP/server.err"; then pass "With board.allowed_hosts non-empty, stderr at start names each allowed host and each allowed login"; else fail "With board.allowed_hosts non-empty, stderr at start names each allowed host and each allowed login" "$(cat "$TMP/server.err")"; fi
+export LOGINHDR="owner@example.com"
+HOSTHDR="mac.tail1234.ts.net" ORIGIN="https://mac.tail1234.ts.net" api POST /api/supervisor/stop '{}'
+if [ "$LAST_CODE" != 403 ]; then pass "A POST /api/supervisor/stop with an allowed tailnet Host, loopback peer, allowed login, X-Fleet-Board and https Origin reaches the stop handler: the response is not 403 -> $LAST_CODE"; else fail "A POST /api/supervisor/stop from an allowed tailnet identity reaches the stop handler" "got 403: $(cat "$BODY_FILE")"; fi
+HOSTHDR="mac.tail1234.ts.net" ORIGIN="https://mac.tail1234.ts.net" api POST /api/supervisor/start '{}'
+if [ "$LAST_CODE" != 403 ]; then pass "The same request to POST /api/supervisor/start reaches the start handler: the response is not 403 -> $LAST_CODE"; else fail "The same request to POST /api/supervisor/start reaches the start handler" "got 403: $(cat "$BODY_FILE")"; fi
+: > "$TT_LOG"
+HOSTHDR="mac.tail1234.ts.net" ORIGIN="https://mac.tail1234.ts.net" api POST /api/cards/1/terminal '{}'
+assert_named 403 "POST /api/cards/<n>/terminal from an allowed tailnet identity is 403"
+if [ ! -s "$TT_LOG" ]; then pass "POST /api/cards/<n>/terminal from an allowed tailnet identity does not run board.terminal_command"; else fail "board.terminal_command is not run for a tailnet identity" "log: $(cat "$TT_LOG")"; fi
+unset LOGINHDR
+: > "$TT_LOG"
+HOSTHDR="127.0.0.1:$PORT" api POST /api/cards/1/terminal '{}'
+assert_named 200 "POST /api/cards/<n>/terminal with Host: 127.0.0.1:<port> still runs board.terminal_command"
+if [ "$(cat "$TT_LOG")" = "--open $TT_REPO/wt-here" ]; then pass "POST /api/cards/<n>/terminal with Host: 127.0.0.1:<port> ran board.terminal_command once with the directory"; else fail "loopback terminal runs the command" "log: $(cat "$TT_LOG")"; fi
+stop_server
+LOCAL_YML="$SAVED_YML"
+if setup_case; then
+  if grep -qi "tailnet\|tailscale\|allowed" "$TMP/server.err"; then fail "With board.allowed_hosts empty, stderr at start has no tailnet warning" "$(cat "$TMP/server.err")"; else pass "With board.allowed_hosts empty, stderr at start has no tailnet warning"; fi
+  stop_server
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
