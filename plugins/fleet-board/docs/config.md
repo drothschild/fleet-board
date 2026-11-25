@@ -282,6 +282,12 @@ Left empty (the default), none of this runs and every conflict goes to the fixer
 
 `board.port` is the port the board page listens on, on `127.0.0.1`. The default is `8765`. It must be an integer from 1024 to 65535. `board-web.sh --port N` overrides it for one run.
 
+## `board.allowed_hosts` and `board.tailscale.allowed_logins`
+
+`board.allowed_hosts` (default `[]`) is a list of host names the board page accepts in the `Host` header besides loopback. With the default only loopback names are accepted.
+
+`board.tailscale.allowed_logins` (default `[]`) is a list of Tailscale logins allowed to use the page through `tailscale serve`. With the default no tailnet request is accepted. Every login on it can start the supervisor and run Claude sessions on this Mac, and Open terminal is refused for tailnet requests. See [Reaching the board from your tailnet](../README.md#reaching-the-board-from-your-tailnet).
+
 ## `board.repos`
 
 `board.repos` lets one board hold cards for more than one repository. The default is an empty list: every card belongs to `board.repo`. Each entry is an object with two keys:
