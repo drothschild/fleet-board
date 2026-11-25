@@ -17,3 +17,19 @@ missing = subprocess.run([sys.executable, str(helper), '-o', 'lstart=', '-p', '2
 assert missing.returncode != 0 and not missing.stdout
 print('PASS real start time, argument restriction, nonexistent PID')
 PY
+
+# The listing supervisor/roles.py reads to find every process group of a session.
+python3 - "$HERE/../scripts/providers/reviewer-ps.py" <<'PY'
+import os, subprocess, sys
+if sys.platform != 'darwin':
+    print('SKIP Darwin process group listing'); sys.exit(0)
+child = subprocess.Popen(['/bin/sleep', '30'], preexec_fn=os.setpgrp)
+try:
+    out = subprocess.check_output([sys.executable, sys.argv[1], '-A', '-o', 'pid=', '-o', 'pgid='], text=True)
+    groups = dict(tuple(int(v) for v in line.split()) for line in out.splitlines())
+    assert groups.get(os.getpid()) == os.getpgrp(), groups.get(os.getpid())
+    assert groups.get(child.pid) == child.pid, groups.get(child.pid)
+finally:
+    child.kill(); child.wait()
+print('PASS process group listing')
+PY

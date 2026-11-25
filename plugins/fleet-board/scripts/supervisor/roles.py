@@ -1,8 +1,10 @@
 """Launch a role (a headless `claude -p --agent` session or a provider review script) and turn its output
 into a RoleResult.
 
-Every session runs in its own process group with stdin /dev/null and cwd = the repository root; the group
-is signalled when the leader exits, when a deadline passes and on cancel, so nothing outlives its session.
+Every session is the leader of its own POSIX session (and process group) with stdin /dev/null and cwd = the
+repository root; the group is signalled when the leader exits, when a deadline passes and on cancel. SIGKILL
+also goes to every other process group in the session (chat.sh and the provider guard make their own), so
+nothing outlives its session, short of a process that starts a session of its own.
 Deadlines use the monotonic clock only. Nothing here prices tokens: unreadable usage is None, never 0.
 """
 import json
@@ -245,17 +247,46 @@ class Session:
             return True
         return True
 
+    def _kill_session_groups(self):
+        """SIGKILL every process group still in the session. True when there was one. A shell killed by
+        SIGKILL runs no trap, so a group it made for a child has to be signalled from here. Session
+        membership, unlike the parent pid, survives the death of the parent and of the leader."""
+        try:
+            listing = subprocess.run(['ps', '-A', '-o', 'pid=', '-o', 'pgid='], stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return False
+        groups = set()
+        for line in listing.split(b'\n'):
+            try:
+                pid, pgid = (int(v) for v in line.split())
+                if pgid > 1 and os.getsid(pid) == self.pid:
+                    groups.add(pgid)
+            except (ValueError, OSError):
+                continue
+        for pgid in groups:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        return bool(groups)
+
     def _advance_cleanup(self, grace):
-        """One non-blocking step towards an empty process group. True once the group is gone (or SIGKILL
-        was sent and a short bounded wait ran out)."""
+        """One non-blocking step towards an empty session. True once the leader's group is gone and no other
+        group of the session is left (or SIGKILL was sent and a short bounded wait ran out)."""
         self.proc.poll()
         if not self._group_alive():
-            return True
+            if not self._kill_session_groups():
+                return True
+            if self._give_up is None:
+                self._give_up = time.monotonic() + 2
+            return time.monotonic() >= self._give_up
         if self._term_deadline is None:
             self._signal(signal.SIGTERM)
             self._term_deadline = self._clock() + max(grace, 0)
         elif not self._killed and self._clock() >= self._term_deadline:
             self._signal(signal.SIGKILL)
+            self._kill_session_groups()
             self._killed = True
             self._give_up = time.monotonic() + 2
         if self._killed and time.monotonic() >= self._give_up:
@@ -263,8 +294,8 @@ class Session:
         return False
 
     def cancel(self, grace):
-        """Start terminating the process group (SIGTERM now, SIGKILL once `grace` has passed on the session
-        clock) and return at once; poll() completes it. Idempotent; a no-op once the result is built. A later
+        """Start terminating the session (SIGTERM to the leader's group now, SIGKILL to all its groups once
+        `grace` has passed on the session clock) and return at once; poll() completes it. Idempotent; a no-op once the result is built. A later
         call with a shorter grace brings the SIGKILL forward (a second Ctrl-C), never pushes it back."""
         if self._result is not None or self.proc is None:
             return
@@ -317,8 +348,8 @@ class Session:
         return None
 
     def poll(self):
-        """The RoleResult once the session is over and its group is gone, else None. Never blocks: each
-        call sends at most one signal and records the SIGKILL deadline."""
+        """The RoleResult once the session is over and its processes are gone, else None. Never waits on
+        them: each call takes one cleanup step and records the SIGKILL deadline."""
         if self._result is not None:
             return self._result
         if self.proc.poll() is None and self._why is None:
