@@ -289,6 +289,11 @@ run
 check "implementor.provider claude exits 2" test "$rc" = 2
 check "implementor.provider claude: says so" grep -Fq 'implementor.provider is claude' "$TMP/err"
 setup
+rc=0; (cd "$REPO" && bash "$RUNNER" 12 "$WT" "$BRANCH" next-model) > "$TMP/out" 2> "$TMP/err" < /dev/null || rc=$?
+check "a fourth argument runs the provider on that model instead of implementor.model" \
+  test "$rc" = 0 -a "$(sed -n 2p "$FAKE/args" 2>/dev/null)" = next-model
+check "a fourth argument: stdout names that model" out '.model == "next-model"'
+setup
 sed -i.bak 's/^  model: fake-model$/  model: null/' "$REPO/.fleet-board.yml"
 run
 check "a provider implementor without implementor.model exits 1" test "$rc" = 1

@@ -323,7 +323,22 @@ no file here. The gate's residual bypasses and false positives are listed in the
   the card gets one comment, stdout is `{"attention": ..., "differences": []}`, exit 2. `post-run.sh check` compares
   `.fleet-board.yml`, files under `.fleet-board/` other than board runtime data, the card state, origin's branch heads and files
   changed in the root outside the worktree; a difference is exit 3 with that JSON (`start.sh` posts the comment). A script called
-  by absolute path does not pass a shim; the sandbox and the post-run check are the backstop. No runner uses the guard yet.
+  by absolute path does not pass a shim; the sandbox and the post-run check are the backstop. Its caller is `implementor-run.sh`.
+- **Provider implementor** (`scripts/implementor-run.sh <card> <worktree> <branch> [<model>]`; tests
+  `tests/test-implementor-run.sh`, `tests/test-supervisor-implementor-provider.sh`). With `implementor.provider` (from the
+  card's repo) not `claude`, `resolver.py` resolves `start` and `continue_implementor` to the runner
+  `provider-implementor`, and the driver runs the script in the card repo's checkout instead of a `claude` session. Its
+  exit codes: 0 posted (the driver parses `report_file` and applies it as any implementor report); 3 attention
+  (`note.role_guard`, which a person clears, plus the supervisor's attention; the post-run check ran); 4
+  `provider_failure` (no `action_failures`, the attempt is given back, the provider backs off from
+  `supervisor.retry_backoff_seconds`); 6 two rejected reports (`report_errors`); 1 a failed action; 2 a driver bug.
+  The session has no progress timeout, and its attempt timeout is the runner's own timeout plus 300 s, so a slow
+  provider ends inside the runner. Escalation (`models.escalate_after_rounds`) takes the entry after
+  `implementor.model` in the list `providers.<name>.models` (weakest first) and passes it as `<model>`; with no such
+  entry the card gets that attention and nothing runs. It never changes provider. The ledger line carries the provider
+  and model; its token counts are null. The note records `models.implementor` as `<provider>:<model>` (what `status`
+  shows), and later reviewer or fixer actions keep it. `supervisor.provider_concurrency.<name>` caps these runs
+  together with that provider's reviews.
 - **Dependency gate** (`scripts/deps.sh parse|check`). `parse-card` reads a card's `blocked_by`
   card numbers (`parse` still reads a body file's `## Depends on` bullets); `check` looks
   each up in the local store and prints `{unmet, warnings}`; a failed lookup exits 1 and names its command on stderr as

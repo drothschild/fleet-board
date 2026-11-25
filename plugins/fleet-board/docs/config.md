@@ -43,11 +43,19 @@ implementor:
   timeout: 3600               # optional, seconds
 ```
 
-**The supervisor does not dispatch a provider implementor yet, so `claude` is the only value it runs.** With any other provider the supervisor raises an attention naming `implementor.provider` and starts no implementor session; it never falls back to Claude. To go on, set `implementor.provider: claude`, then clear the card's attention. `supervisor.provider_concurrency` counts an implementor under its provider; that key is read from the home repo's config, so the provider named there must also be `claude` or under the home `providers`. For a card of another repo on a multi-repo board, `implementor.provider` and `implementor.model` come from that card's repo.
+With a provider the supervisor runs [`implementor-run.sh`](#the-provider-implementor-runner) in place of a Claude session; it never falls back to Claude. `supervisor.provider_concurrency` counts an implementor under its provider; that key is read from the home repo's config, so the provider named there must also be `claude` or under the home `providers`. For a card of another repo on a multi-repo board, `implementor.provider`, `implementor.model` and `providers.<name>.models` come from that card's repo.
+
+From `models.escalate_after_rounds` on, a provider implementor moves to the next model of the same provider: the entry after `implementor.model` in `providers.<name>.models`, a list ordered weakest first. With no list, or no entry after `implementor.model`, the card gets an attention and no session starts. `models.escalation` is not used for a provider implementor.
+
+```yaml
+providers:
+  codex:
+    models: [gpt-6-astra, <a stronger model>]
+```
 
 ### The provider implementor runner
 
-`scripts/implementor-run.sh <card> <worktree> <branch>`, run from the card's repo checkout, does one provider implementor run. A person or a script can run it; the supervisor does not yet.
+`scripts/implementor-run.sh <card> <worktree> <branch> [<model>]`, run from the card's repo checkout, does one provider implementor run, on `<model>` in place of `implementor.model` when given. The supervisor runs it; a person or a script can too.
 
 It builds one prompt from `providers/implementor-prompt.md`: the spec text of `agents/implementor.md`, then the card, its acceptance items, the worktree path, the branch, the config JSON, the manager note, the open cards, and the project rules (`implementor.persona` file text, then `implementor.persona_append`). The prompt also names the scripts directory and the report file.
 
@@ -226,6 +234,7 @@ Built-in presets are `openai`, `gemini`, `openrouter`, `ollama` and `codex` (a c
 | `command` | optional string run with `sh -c` instead of an HTTP call, with `{model}` replaced by the stage's `model`. Needs `base_url` and `api_key_env` to be null (`providers.<name> sets both command and base_url`, `providers.<name>.api_key_env must be null when command is set`, both exit 5) |
 | `review_command` | optional command for evidence review in a scratch clone. Requires `{dir}` and supports `{model}`. Exclusive with `base_url`. Sandbox bypass flags and `danger-full-access` are forbidden. |
 | `implement_command` | the command of a provider implementor, a non-empty string. Required when `implementor.provider` names the provider; run by `implementor-run.sh` (see [the runner](#the-provider-implementor-runner)), which replaces `{dir}`, `{model}`, `{tmp}`, `{gitdir}` and `{gitcommon}`. A provider with it and no `base_url` needs no chat API settings, unless a review stage names it. |
+| `models` | optional list of model ids, weakest first, that a provider implementor [escalates](#implementorprovider-and-implementormodel) through; `config.sh` does not check it |
 
 If a stage's `api_key_env` variable is unset or empty, `tick-plan.sh` warns once (`stage <name>: <ENV> is not set; provider reviews will fail`) and plans that stage's `review_stage` as `wait` with the reason `stage <name>: <ENV> is not set`, so the card is not failed on every plan; a card entering the stage still moves, and its review waits until the variable is set. To make the whole plan hold instead, add a preflight check (see [`commands.preflight`](#commandspreflight)): `test -n "$OPENAI_API_KEY"`, and for stage labels `review-stages.sh setup`.
 

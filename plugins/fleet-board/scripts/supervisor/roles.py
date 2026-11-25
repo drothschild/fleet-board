@@ -14,6 +14,8 @@ import time
 from collections import namedtuple
 from pathlib import Path
 
+from . import resolver
+
 Usage = namedtuple('Usage', 'input output cache_write cache_read model')
 RoleResult = namedtuple('RoleResult', 'exit_code report_text usage failure reason session_id log_path '
                                       'timed_out cancelled')
@@ -23,7 +25,9 @@ _PROVIDER_RE = re.compile(r'rate.?limit|429|overloaded|529|authentication|invali
                           r'resets? at|authenticat|login reached its time limit|please run /login', re.I)
 AUTH_RE = re.compile(r'authenticat|invalid api key|login reached its time limit|run /login', re.I)
 _STAGE_RE = re.compile(r'provider: HTTP (429|5\d\d)|curl failed|usage limit', re.I)
-_STAGE_SCRIPTS = ('stage-review.sh', 'evidence-review.sh')
+_IMPLEMENTOR_SCRIPT = 'implementor-run.sh'
+_STAGE_SCRIPTS = ('stage-review.sh', 'evidence-review.sh', _IMPLEMENTOR_SCRIPT)
+_RUNNER_FAILURE_RE = re.compile(r'^implementor-run: provider failure')
 _USAGE_FIELDS = (('input_tokens', 'inputTokens'), ('output_tokens', 'outputTokens'),
                  ('cache_creation_input_tokens', 'cacheCreationInputTokens'),
                  ('cache_read_input_tokens', 'cacheReadInputTokens'))
@@ -31,13 +35,16 @@ DEFAULT_KILL_GRACE = 5.0
 
 
 def command(dispatch, prompt, config, plugin_dir, stage_args=()):
-    """The argv for one dispatch. `stage_args` are the provider script's arguments (card, PR, round, ...),
-    which the driver knows and Dispatch does not."""
+    """The argv for one dispatch. `stage_args` are the provider script's arguments (card, PR, round, ... for a
+    review; card, worktree, branch and an escalated model for an implementor), which the driver knows."""
     if dispatch.runner in ('stage-review', 'evidence-review'):
         script = Path(plugin_dir) / 'scripts' / (dispatch.runner + '.sh')
         return ['bash', str(script)] + [str(a) for a in stage_args]
-    if dispatch.runner != 'claude':   # a provider implementor never falls back to a Claude session
-        raise ValueError('implementor.provider %s has no runner' % dispatch.provider)
+    if dispatch.runner == resolver.PROVIDER_IMPLEMENTOR:
+        script = Path(plugin_dir) / 'scripts' / _IMPLEMENTOR_SCRIPT
+        return ['bash', str(script)] + [str(a) for a in stage_args]
+    if dispatch.runner != 'claude':   # anything else never falls back to a Claude session
+        raise ValueError('unknown runner: %s' % dispatch.runner)
     argv = [os.environ.get('FLEET_BOARD_CLAUDE') or 'claude', '-p', prompt]
     if dispatch.agent is not None:
         argv += ['--agent', dispatch.agent]
@@ -150,11 +157,13 @@ def parse_stream(path):
     return s['text'], s['usage'], s['is_error'], s['subtype'], s['session_id'], s['permission_mode']
 
 
-def classify(rc, stderr, is_error, result_text, stage=False, subtype=None):
+def classify(rc, stderr, is_error, result_text, stage=False, subtype=None, implementor=False):
     """None, "provider" (the account or service, retry later) or "card" (this attempt failed).
     A session that ended in error_max_turns is always a card failure, whatever its text says."""
     if subtype == 'error_max_turns':
         return 'card'
+    if implementor:   # implementor-run.sh: 4 is its provider failure; 3 is an attention, not the provider
+        return None if rc == 0 else 'provider' if rc == 4 else 'card'
     if stage:
         if rc == 0:
             return None
@@ -335,9 +344,12 @@ class Session:
             text, usage = _stage_scan(self.log_path)
             sid = None
             if self._why is None:
-                failure = classify(rc, stderr, False, text, stage=True)
+                implementor = len(self.argv) > 1 and os.path.basename(self.argv[1]) == _IMPLEMENTOR_SCRIPT
+                failure = classify(rc, stderr, False, text, stage=True, implementor=implementor)
                 if failure:
-                    reason = _first_line(stderr) or 'exit %s' % rc
+                    # the runner's own line, not the provider's stderr before it: the provider's text must
+                    # not read as an expired Claude login
+                    reason = _first_line(stderr, _RUNNER_FAILURE_RE if implementor else None) or 'exit %s' % rc
         else:
             s = _scan(self.log_path)
             text, usage, sid = s['text'], s['usage'], s['session_id']
