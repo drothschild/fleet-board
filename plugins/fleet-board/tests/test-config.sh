@@ -1036,6 +1036,7 @@ for v in '""' 5; do
   invalid_field_case "providers.corp.implement_command rejects $v" $'providers:\n  corp:\n    implement_command: '"$v" "providers.corp.implement_command must be a non-empty string"
 done
 invalid_field_case "implement_command does not excuse an unsafe base_url" $'providers:\n  corp:\n    implement_command: my-cli\n    base_url: "http://evil.example"' "providers.corp.base_url must start with https://"
+invalid_field_case "a review stage naming a provider with only an implement_command" $'review:\n  stages:\n    - { name: sec, provider: corp, model: m }\nproviders:\n  corp:\n    implement_command: my-cli' "providers.corp.base_url must start with https://"
 for word in '`implementor.provider`' '`implementor.model`' '`implement_command`'; do
   if grep -F "$word" "${SCRIPT_DIR}/../docs/config.md" >/dev/null; then
     pass "docs/config.md documents $word"
