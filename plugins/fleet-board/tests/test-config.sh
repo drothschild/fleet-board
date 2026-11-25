@@ -1022,6 +1022,7 @@ REPO="$(printf 'board:\n  repo: a/b\nimplementor: { provider: corp }\nproviders:
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
 assert_exit "a provider with only an implement_command is accepted, with its concurrency cap" 0
 assert_stderr_not_contains "a provider named by implementor.provider is not reported unused" "providers.corp is not used"
+invalid_field_case "implementor set to a string" 'implementor: codex' "implementor must be an object"
 for v in nosuch 5 '""' null; do
   invalid_field_case "implementor.provider rejects $v" "implementor: { provider: $v }" "implementor.provider"
 done
