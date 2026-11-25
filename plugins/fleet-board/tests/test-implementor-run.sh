@@ -206,8 +206,9 @@ done
 
 # --- the prompt ----------------------------------------------------------------------------------
 setup
-(cd "$REPO" && bash "$SCRIPTS/note.sh" merge 12 <(printf '{"implementor_attempts": 4242}')) > /dev/null 2>&1
-before="$(comments)"
+printf '{"implementor_attempts": 4242}\n' > "$TMP/patch.json"
+(cd "$REPO" && bash "$SCRIPTS/note.sh" merge 12 "$TMP/patch.json") > /dev/null 2>&1
+check "the prompt fixture has a manager note" test "$(comments)" = 1
 run
 check "the prompt run exits 0" test "$rc" = 0
 check "the prompt holds the spec text of agents/implementor.md" grep -Fxq '## Method' "$FAKE/prompt.1"
