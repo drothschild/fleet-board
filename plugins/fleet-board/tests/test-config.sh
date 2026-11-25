@@ -1029,7 +1029,9 @@ done
 for v in '"bad model"' '"-x"' '""' 5 '"a;b"' '"a\nb"'; do
   invalid_field_case "implementor.model rejects $v" "implementor: { model: $v }" "implementor.model must match ^[A-Za-z0-9][A-Za-z0-9._:/-]*\$"
 done
-invalid_field_case "implementor.provider naming the codex preset, which has no implement_command" 'implementor: { provider: codex }' "providers.codex has no implement_command"
+REPO="$(printf 'board:\n  repo: a/b\nimplementor: { provider: codex }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" providers.codex.implement_command
+assert_exit "implementor.provider naming the codex preset is accepted: it has an implement_command" 0
 invalid_field_case "implementor.provider naming an HTTP preset" 'implementor: { provider: openai }' "providers.openai has no implement_command"
 invalid_field_case "implementor.provider naming a defined command provider without implement_command" $'implementor: { provider: corp }\nproviders:\n  corp:\n    command: "my-cli {model}"' "providers.corp has no implement_command"
 for v in '""' 5; do

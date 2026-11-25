@@ -34,18 +34,41 @@ Project rules for the implementor. `implementor.persona` is a path relative to t
 
 ## `implementor.provider` and `implementor.model`
 
-Who runs the implementor. `implementor.provider` defaults to `claude`, a headless Claude session on `models.implementor`. It may also name a provider: an entry under [`providers`](#providers) or a built-in preset. `implementor.model` (default `null`) is the model of a provider implementor; when set it must match `^[A-Za-z0-9][A-Za-z0-9._:/-]*$`. The Claude implementor does not read it. `config.sh` exits 5, naming the key, for a provider that does not exist or a model that does not match, and with `providers.<name> has no implement_command` when the named provider has no `implement_command`. No built-in preset has one, so the provider needs it under `providers`.
+Who runs the implementor. `implementor.provider` defaults to `claude`, a headless Claude session on `models.implementor`. It may also name a provider: an entry under [`providers`](#providers) or a built-in preset. `implementor.model` (default `null`) is the model of a provider implementor; when set it must match `^[A-Za-z0-9][A-Za-z0-9._:/-]*$`. The Claude implementor does not read it. `config.sh` exits 5, naming the key, for a provider that does not exist or a model that does not match, and with `providers.<name> has no implement_command` when the named provider has no `implement_command`. Of the built-in presets only `codex` has one.
 
 ```yaml
 implementor:
   provider: codex
   model: gpt-6-astra
-providers:
-  codex:
-    implement_command: "my-implementor -C {dir} -m {model}"
+  timeout: 3600               # optional, seconds
 ```
 
-**No provider runner exists yet, so `claude` is the only value that runs.** With any other provider the supervisor raises an attention naming `implementor.provider` and starts no implementor session; it never falls back to Claude. To go on, set `implementor.provider: claude`, then clear the card's attention. `supervisor.provider_concurrency` counts an implementor under its provider; that key is read from the home repo's config, so the provider named there must also be `claude` or under the home `providers`. For a card of another repo on a multi-repo board, `implementor.provider` and `implementor.model` come from that card's repo.
+**The supervisor does not dispatch a provider implementor yet, so `claude` is the only value it runs.** With any other provider the supervisor raises an attention naming `implementor.provider` and starts no implementor session; it never falls back to Claude. To go on, set `implementor.provider: claude`, then clear the card's attention. `supervisor.provider_concurrency` counts an implementor under its provider; that key is read from the home repo's config, so the provider named there must also be `claude` or under the home `providers`. For a card of another repo on a multi-repo board, `implementor.provider` and `implementor.model` come from that card's repo.
+
+### The provider implementor runner
+
+`scripts/implementor-run.sh <card> <worktree> <branch>`, run from the card's repo checkout, does one provider implementor run. A person or a script can run it; the supervisor does not yet.
+
+It builds one prompt from `providers/implementor-prompt.md`: the spec text of `agents/implementor.md`, then the card, its acceptance items, the worktree path, the branch, the config JSON, the manager note, the open cards, and the project rules (`implementor.persona` file text, then `implementor.persona_append`). The prompt also names the scripts directory and the report file.
+
+The provider's `implement_command` runs in the worktree behind the [provider guard](gates.md), with the prompt on stdin, `TMPDIR` set to the run's temp directory, and these placeholders replaced: `{model}`, `{dir}` (the worktree), `{tmp}` (the temp directory), `{gitdir}` (the worktree's git directory) and `{gitcommon}` (the repository's git directory). A command must not quote a placeholder other than `{model}`; the runner quotes the paths.
+
+The provider writes its report to the report file and replies with the same text. The runner checks it with `parse-report.sh --role implementor` and posts it. A rejected or missing report, or one holding a `fleet-board:` marker, is prompted for once more with the error.
+
+`implementor.timeout` (positive integer, seconds) covers the whole run, the second prompt included. Unset, it is `supervisor.attempt_timeout_seconds`. The runner checks it; `config.sh` does not.
+
+| Exit | Meaning |
+|---|---|
+| 0 | report posted; stdout is `{status, report_file, parsed, provider, model, attempts}` |
+| 1 | setup or posting failure, such as no `implementor.model` |
+| 2 | usage error, or `implementor.provider` is `claude` |
+| 3 | attention: stdout is `{"attention": ...}` and the card gets one comment. The guard refused to start or rejected the session, it blocked a `gh`, `curl` write, card move, premise decision or `git push` call, or the persona cannot be read. No report is posted |
+| 4 | provider failure (non-zero exit, empty output, timeout): nothing posted, safe to retry later |
+| 6 | two rejected reports: nothing posted |
+
+A refused `git` command outside the worktree does not raise an attention by itself. The block record is a file in the run's temp directory, which the provider can write, so it is a report of what the shims saw and not a limit; the limits are the shims, the sandbox and the post-run check.
+
+The `codex` preset's `implement_command` uses the `workspace-write` sandbox. It can write the temp directory, the worktree, the worktree's git directory, and the repository's `objects`, `refs` and `logs`, so it can commit while `.git/config` and the hooks stay read-only (a push therefore takes no `-u`). Its network proxy allows only `github.com` and `api.github.com`: an `origin` on another host, or reached over SSH, needs a changed command.
 
 ## `merge.ignore_checks`
 
@@ -202,7 +225,7 @@ Built-in presets are `openai`, `gemini`, `openrouter`, `ollama` and `codex` (a c
 | `max_tokens_param` | `max_tokens` or `max_completion_tokens`; ignored when `command` is set |
 | `command` | optional string run with `sh -c` instead of an HTTP call, with `{model}` replaced by the stage's `model`. Needs `base_url` and `api_key_env` to be null (`providers.<name> sets both command and base_url`, `providers.<name>.api_key_env must be null when command is set`, both exit 5) |
 | `review_command` | optional command for evidence review in a scratch clone. Requires `{dir}` and supports `{model}`. Exclusive with `base_url`. Sandbox bypass flags and `danger-full-access` are forbidden. |
-| `implement_command` | the command of a provider implementor, a non-empty string. Required when `implementor.provider` names the provider; nothing runs it yet. A provider with it and no `base_url` needs no chat API settings, unless a review stage names it. |
+| `implement_command` | the command of a provider implementor, a non-empty string. Required when `implementor.provider` names the provider; run by `implementor-run.sh` (see [the runner](#the-provider-implementor-runner)), which replaces `{dir}`, `{model}`, `{tmp}`, `{gitdir}` and `{gitcommon}`. A provider with it and no `base_url` needs no chat API settings, unless a review stage names it. |
 
 If a stage's `api_key_env` variable is unset or empty, `tick-plan.sh` warns once (`stage <name>: <ENV> is not set; provider reviews will fail`) and plans that stage's `review_stage` as `wait` with the reason `stage <name>: <ENV> is not set`, so the card is not failed on every plan; a card entering the stage still moves, and its review waits until the variable is set. To make the whole plan hold instead, add a preflight check (see [`commands.preflight`](#commandspreflight)): `test -n "$OPENAI_API_KEY"`, and for stage labels `review-stages.sh setup`.
 
