@@ -595,8 +595,9 @@ assert_false "prune-remove: evidence checkout gone" test -e "$BASE/12-review"
 
 # ---------------------------------------------------------------------------
 # create with a start branch (stacking): the new branch starts at origin's copy
-# of the start branch; a missing start branch fails; an existing card branch
-# keeps its head; a start branch must pass the card-branch name rule
+# of the start branch; a missing start branch fails; an existing card branch is
+# fast-forwarded to it or the call fails; a start branch must pass the card-branch
+# name rule
 setup_case false
 git -C "$SEED" checkout -q -b fleet/30-parent
 commit_file "$SEED" parent.txt "parent" "PAR"
@@ -626,7 +627,73 @@ WT33="$BASE/33-existing"
 git -C "$REPO" branch fleet/33-existing "$SHA_B"
 run_wt create 33 fleet/33-existing "$WT33" fleet/30-parent
 assert_exit "create-start-branch-existing-branch: exit" 0
-assert_eq "create-start-branch-existing-branch: head kept" "$(git -C "$WT33" rev-parse HEAD 2>/dev/null)" "$SHA_B"
+assert_eq "create-start-branch-existing-branch: a local branch behind leaves the worktree HEAD at the start branch's head" \
+  "$(git -C "$WT33" rev-parse HEAD 2>/dev/null)" "$SHA_PAR"
+
+# an existing card worktree behind the start branch is fast-forwarded
+WT35="$BASE/35-worktree"
+git -C "$REPO" worktree add -q -b fleet/35-worktree "$WT35" "$SHA_B" 2>/dev/null
+run_wt create 35 fleet/35-worktree "$WT35" fleet/30-parent
+assert_exit "create-start-branch-existing-worktree: exit" 0
+assert_stdout_exact "create-start-branch-existing-worktree: prints the path" "$WT35"
+assert_eq "create-start-branch-existing-worktree: a worktree behind is fast-forwarded to the start branch's head" \
+  "$(git -C "$WT35" rev-parse HEAD 2>/dev/null)" "$SHA_PAR"
+assert_eq "create-start-branch-existing-worktree: still on the card branch" \
+  "$(git -C "$WT35" symbolic-ref --short HEAD 2>/dev/null)" "fleet/35-worktree"
+
+# a card branch that exists only on origin and is behind the start branch
+git -C "$SEED" push -q "$ORIGIN" "$SHA_B:refs/heads/fleet/36-remote" 2>/dev/null
+WT36="$BASE/36-remote"
+run_wt create 36 fleet/36-remote "$WT36" fleet/30-parent
+assert_exit "create-start-branch-origin-only: exit" 0
+assert_eq "create-start-branch-origin-only: a branch only on origin and behind leaves the worktree HEAD at the start branch's head" \
+  "$(git -C "$WT36" rev-parse HEAD 2>/dev/null)" "$SHA_PAR"
+
+# a card branch that diverged from the start branch fails and is not moved
+SHA_DIV="$(git -C "$REPO" commit-tree "$SHA_B^{tree}" -p "$SHA_B" -m DIV)"
+git -C "$REPO" branch fleet/37-diverged "$SHA_DIV"
+WT37="$BASE/37-diverged"
+run_wt create 37 fleet/37-diverged "$WT37" fleet/30-parent
+assert_exit "create-start-branch-diverged: exit" 1
+assert_stdout_exact "create-start-branch-diverged: no stdout" ""
+case "$LAST_ERR" in
+  *"fleet/30-parent"*) pass "create-start-branch-diverged: stderr names the start branch" ;;
+  *) fail "create-start-branch-diverged: stderr names the start branch" "stderr: $LAST_ERR" ;;
+esac
+assert_eq "create-start-branch-diverged: the branch head is unchanged" \
+  "$(git -C "$REPO" rev-parse --verify --quiet refs/heads/fleet/37-diverged)" "$SHA_DIV"
+assert_false "create-start-branch-diverged: no worktree added" test -e "$WT37"
+# the same for an existing worktree on a diverged branch
+git -C "$REPO" worktree add -q "$WT37" fleet/37-diverged 2>/dev/null
+run_wt create 37 fleet/37-diverged "$WT37" fleet/30-parent
+assert_exit "create-start-branch-diverged-worktree: exit" 1
+assert_stdout_exact "create-start-branch-diverged-worktree: no stdout" ""
+assert_eq "create-start-branch-diverged-worktree: the head is unchanged" \
+  "$(git -C "$WT37" rev-parse HEAD 2>/dev/null)" "$SHA_DIV"
+
+# a card branch that diverged on origin only: no local branch is made
+git -C "$REPO" push -q origin "$SHA_DIV:refs/heads/fleet/38-remote-diverged" 2>/dev/null
+WT38="$BASE/38-remote-diverged"
+run_wt create 38 fleet/38-remote-diverged "$WT38" fleet/30-parent
+assert_exit "create-start-branch-origin-diverged: exit" 1
+assert_false "create-start-branch-origin-diverged: no local branch" \
+  git -C "$REPO" show-ref --verify --quiet refs/heads/fleet/38-remote-diverged
+
+# a card branch that already contains the start branch keeps its own commits
+SHA_OWN="$(git -C "$REPO" commit-tree "$SHA_PAR^{tree}" -p "$SHA_PAR" -m OWN)"
+git -C "$REPO" branch fleet/39-ahead "$SHA_OWN"
+WT39="$BASE/39-ahead"
+run_wt create 39 fleet/39-ahead "$WT39" fleet/30-parent
+assert_exit "create-start-branch-contains: exit" 0
+assert_eq "create-start-branch-contains: a branch with its own commits on the start branch keeps its head" \
+  "$(git -C "$WT39" rev-parse HEAD 2>/dev/null)" "$SHA_OWN"
+run_wt create 39 fleet/39-ahead "$WT39" fleet/30-parent
+assert_exit "create-start-branch-contains-worktree: exit" 0
+assert_eq "create-start-branch-contains-worktree: head unchanged" "$(git -C "$WT39" rev-parse HEAD 2>/dev/null)" "$SHA_OWN"
+
+# a missing start branch fails for an existing card branch too
+run_wt create 39 fleet/39-ahead "$WT39" fleet/99-missing
+assert_exit "create-start-branch-missing-existing: exit" 1
 
 WT34="$BASE/34-bad"
 run_wt create 34 fleet/34-bad "$WT34" main

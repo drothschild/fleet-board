@@ -317,6 +317,9 @@ VALIDATION_SCRIPT='
                    then "providers.\($n).review_command must not contain \($flag)" else empty end),
                 (if $v.base_url != null then "providers.\($n) sets both review_command and base_url" else empty end)
               else empty end),
+              # A review stage calls base_url or command, never review_command.
+              (if ($v | has("review_command")) and $v.base_url == null and ($v | has("command") | not) and ($staged | index($n)) != null
+               then "providers.\($n) is named by a review stage and needs base_url or command" else empty end),
               (if ($v | has("implement_command")) and (($v.implement_command | type) != "string" or $v.implement_command == "")
                then "providers.\($n).implement_command must be a non-empty string" else empty end),
               (if $v | has("command") then
