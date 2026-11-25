@@ -1038,6 +1038,7 @@ for v in '""' 5; do
   invalid_field_case "providers.corp.implement_command rejects $v" $'providers:\n  corp:\n    implement_command: '"$v" "providers.corp.implement_command must be a non-empty string"
 done
 invalid_field_case "implement_command does not excuse an unsafe base_url" $'providers:\n  corp:\n    implement_command: my-cli\n    base_url: "http://evil.example"' "providers.corp.base_url must start with https://"
+invalid_field_case "a review stage naming a provider with only an implement_command" $'review:\n  stages:\n    - { name: sec, provider: corp, model: m }\nproviders:\n  corp:\n    implement_command: my-cli' "providers.corp.base_url must start with https://"
 for word in '`implementor.provider`' '`implementor.model`' '`implement_command`'; do
   if grep -F "$word" "${SCRIPT_DIR}/../docs/config.md" >/dev/null; then
     pass "docs/config.md documents $word"
@@ -1195,6 +1196,17 @@ invalid_field_case "board.allowed_hosts entry holding *" '  allowed_hosts: ["*.t
 invalid_field_case "board.tailscale.allowed_logins set to a string instead of a list" $'  tailscale:\n    allowed_logins: "owner@example.com"' "board.tailscale.allowed_logins"
 invalid_field_case "board.tailscale.allowed_logins entry that is not a string" $'  tailscale:\n    allowed_logins: [5]' "board.tailscale.allowed_logins"
 invalid_field_case "board.tailscale.allowed_logins entry that is empty" $'  tailscale:\n    allowed_logins: [""]' "board.tailscale.allowed_logins"
+
+# A review stage calls its provider through base_url or command; review_command is only for models.reviewer
+SEC_STAGE=$'review:\n  stages:\n    - { name: sec, provider: corp, model: m }'
+RC_ONLY=$'providers:\n  corp:\n    review_command: "my-cli -C {dir}"'
+RC_MSG="providers.corp is named by a review stage and needs base_url or command"
+check_case "a review stage naming a provider that has only review_command is rejected" "$SEC_STAGE"$'\n'"$RC_ONLY" 5 "$RC_MSG"
+check_case "a review stage naming a provider with only review_command and implement_command is rejected" "$SEC_STAGE"$'\n'"$RC_ONLY"$'\n    implement_command: my-cli' 5 "$RC_MSG"
+check_case "a review stage naming a provider that has both command and review_command is accepted" "$SEC_STAGE"$'\n'"$RC_ONLY"$'\n    command: "my-cli {model}"' 0
+check_case "a review stage naming the built-in codex preset is accepted" $'review:\n  stages:\n    - { name: sec, provider: codex, model: m }' 0
+check_case "a review_command-only provider used only by models.reviewer, with models.escalation set, is accepted" \
+  "models: { reviewer: { provider: corp, model: m }, escalation: opus }"$'\n'"$RC_ONLY" 0
 
 echo ""
 echo "-----------------------------------"
