@@ -38,6 +38,19 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `blocked_by` naming a missing card or the card itself is refused on write (exit 2). A
   dependency outside this board stays in the body as prose. `migrate-card-fields.sh
   [--dry-run]` upgrades an older store in place (idempotent).
+- **Epics.** An epic is a record for a change that spans several cards: `<board.dir>/epics/<id>/epic.json`
+  `{id, title, state: open|closed, repo, intent, design_rev, conversation, attention: [{reason, card, at}],
+  created_at, updated_at, exported}`, with `design.md` and `log.jsonl` beside it, and `<board.dir>/epics/next`
+  the next id. The first `epic.sh create` makes `epics/`; a store without it has no epics and needs no migration.
+  `epic.sh create|read|list|set-intent|set-state|clear-attention` (exit 0 done, 1 failure, 2 usage, 3 `epic E<id>
+  does not exist`) is the only writer; writes go through `fl_write_epic` (`adapters/local/epic-lib.sh`, refuses
+  anything but one object with that id, state open or closed, string title and intent, integer design_rev and an
+  attention array: `fl_epic_shape_ok`) under `fl_epic_lock`, and a file without that shape is read as absent.
+  `design.md` and `log.jsonl` reach jq as files, never as arguments. The stored `state` is only `open` or `closed`; `complete` is derived on `read`/`list` (`effective_state`:
+  at least one child, every child done or dropped, every Done child with a `pr_url` has a `log.jsonl` line whose
+  `card` is its number) and never stored. A child is a card whose `epic` is the id; its `progress` is `waiting`
+  (backlog, or ready with a `blocked_by` card not done), `ready`, `in_flight` (in_progress, in_review, a stage
+  state, merging, human_qa), `blocked`, `done` or `dropped` (wont_do).
   Canonical states (`FB_STATES` in `board-lib.sh`, set by `fb_load_config`, not a
   constant): backlog ready in_progress in_review human_qa blocked done wont_do
   (stages are not states); board names come from `board.states.*` or the default.
