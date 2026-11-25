@@ -248,7 +248,9 @@ When a card with an `epic` has merged and reached Done, the scheduler plans a ne
   and has no pull request yet has its premise stamp cleared and is marked for a recheck,
   so the premise check runs before it starts. A person moving a marked Backlog card into
   Ready does not re-stamp it (today `move.sh` re-stamps every such move); the premise
-  check removes the mark when it stamps the card. The mark is the owner's decision of
+  check removes the mark when it stamps the card. A person's edit of the marked card does
+  not re-stamp it either, and every stamp write (a `go` verdict, an approved proposal)
+  removes the mark. The mark is the owner's decision of
   2026-11-25. This covers a decision that is not visible in the files a card names.
   **(My call.)**
 - **Failure.** A failed or rejected session counts on a counter of its own, kept in the
@@ -519,7 +521,7 @@ re-authoring them.
 ### 11. Status and docs
 
 `fleet-board status` gains a short epics section: each open epic with its counts. The README
-and `docs/config.md` document epics, the Architect, the new config keys and the renamed
+and `plugins/fleet-board/docs/config.md` document epics, the Architect, the new config keys and the renamed
 ones. The plugin's `CLAUDE.md` gains the epic record's contract.
 
 ## Suggested split
