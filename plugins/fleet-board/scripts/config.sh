@@ -303,7 +303,7 @@ VALIDATION_SCRIPT='
       else empty end),
       (if (.providers | type) != "object" then "providers must be an object"
        else
-        (.providers | to_entries[] | . as $e | $e.key as $n | $e.value as $v
+        (stage_providers as $staged | .providers | to_entries[] | . as $e | $e.key as $n | $e.value as $v
           | if ($n | test("^[a-z][a-z0-9_-]*$") | not) then "providers.\($n) name must match ^[a-z][a-z0-9_-]*$"
             elif ($v | type) != "object" then "providers.\($n) must be an object"
             else
@@ -317,13 +317,18 @@ VALIDATION_SCRIPT='
                    then "providers.\($n).review_command must not contain \($flag)" else empty end),
                 (if $v.base_url != null then "providers.\($n) sets both review_command and base_url" else empty end)
               else empty end),
+              # A review stage calls base_url or command, never review_command.
+              (if ($v | has("review_command")) and $v.base_url == null and ($v | has("command") | not) and ($staged | index($n)) != null
+               then "providers.\($n) is named by a review stage and needs base_url or command" else empty end),
               (if ($v | has("implement_command")) and (($v.implement_command | type) != "string" or $v.implement_command == "")
                then "providers.\($n).implement_command must be a non-empty string" else empty end),
               (if $v | has("command") then
                 (if ($v.command | type) != "string" or $v.command == "" then "providers.\($n).command must be a non-empty string" else empty end),
                 (if $v.base_url != null then "providers.\($n) sets both command and base_url" else empty end),
                 (if $v.api_key_env != null then "providers.\($n).api_key_env must be null when command is set" else empty end)
-              elif (($v | has("review_command")) or (($v | has("implement_command")) and $v.base_url == null)) | not then
+              # An implementor-only entry needs no chat API settings, but a
+              # review stage naming it calls that API, so it is checked then.
+              elif (($v | has("review_command")) or (($v | has("implement_command")) and $v.base_url == null and ($staged | index($n) | not))) | not then
                 # The authority (after the scheme, up to the first / ? # or end)
                 # must hold no userinfo ("localhost:@evil.example" is a request to
                 # evil.example). A plain-http host must itself be loopback, with
