@@ -2205,6 +2205,10 @@ def stamps(b):
     return [c for c in b.calls if c[:2] == ('premise.sh', 'stamp')]
 
 
+def premise_events(b):
+    return [e['payload']['message'] for e in b.state.events if e['type'] == 'premise']
+
+
 def test_check_premise_starts_a_session_in_a_premise_worktree(base):
     b = premise_board(base)
     b.plans(check_plan('checker-go'))
@@ -2256,6 +2260,8 @@ def test_go_stamps_the_commit_the_session_saw(base):
     assert ('worktree.sh', 'remove', '12', b.premise_path) in b.calls, b.calls
     assert b.card()['state'] == 'ready' and 12 not in b.state.active
     assert any('## Status' in c for c in b.comments()), 'the driver posts the accepted report'
+    assert premise_events(b) == ['premise #12: go -> stamped'], premise_events(b)
+    assert b.state.snapshot()['premise'] == dict(CHECK_COUNTS, checked=1, go=1), b.state.snapshot()['premise']
 
 
 def assert_one_failed_check(b):
@@ -2268,6 +2274,8 @@ def assert_one_failed_check(b):
     assert parses and all(c[1:5] == ('--role', 'checker', '--mode', 'check') for c in parses), parses
     assert ('worktree.sh', 'remove', '12', b.premise_path) in b.calls, b.calls
     assert b.card()['state'] == 'ready'
+    assert not premise_events(b), premise_events(b)
+    assert b.state.snapshot()['premise']['failed'] == 1, b.state.snapshot()['premise']
 
 
 def test_an_empty_final_reply_counts_one_failure(base):
@@ -2373,6 +2381,8 @@ def test_built_blocks_with_the_evidence_and_never_closes(base):
     note = b.note()
     assert note['blocked_from'] == 'ready' and note['action_failures'] == 0, note
     assert not stamps(b), b.calls
+    assert premise_events(b) == ['premise #12: built -> asked: close as already built'], premise_events(b)
+    assert b.state.snapshot()['premise'] == dict(CHECK_COUNTS, checked=1, built=1)
 
 
 def test_built_missing_evidence_for_an_item_is_a_plain_question(base):
@@ -2408,6 +2418,8 @@ def test_stale_with_a_proposal_blocks_with_the_rewrite(base):
         assert part in text, (part, text)
     assert text.index('now owns the stamp') < text.index('src/calc.js') < text.index('Change `plugins/'), text
     assert ('board-move.sh', '12', 'ready') not in b.calls and not stamps(b), b.calls
+    assert premise_events(b) == ['premise #12: stale -> asked: approve rewrite'], premise_events(b)
+    assert b.state.snapshot()['premise'] == dict(CHECK_COUNTS, checked=1, stale=1)
 
 
 def test_stale_without_a_proposal_blocks_with_the_summary(base):
@@ -2417,6 +2429,7 @@ def test_stale_without_a_proposal_blocks_with_the_summary(base):
     posted = [t for t in b.comments() if t.startswith(QUESTION)]
     assert len(posted) == 1 and 'The script moved.' in posted[0], b.comments()
     assert not stamps(b), b.calls
+    assert premise_events(b) == ['premise #12: stale -> asked: could not settle'], premise_events(b)
 
 
 def test_no_verdict_stamps_except_go(base):
@@ -2428,6 +2441,7 @@ def test_no_verdict_stamps_except_go(base):
             assert b.card().get('premise') is None, (report, b.card())
 
 
+CHECK_COUNTS = {'checked': 0, 'go': 0, 'needs': 0, 'built': 0, 'stale': 0, 'drafted': 0, 'failed': 0}
 QUESTION = 'Waiting for a person: the premise check could not settle this card.'
 
 
@@ -2462,6 +2476,8 @@ def test_needs_adds_the_dependency_and_leaves_the_card_ready(base):
     assert b.card()['state'] == 'ready' and 40 in b.card()['blocked_by'], b.card()
     assert not stamps(b), b.calls
     assert b.note()['action_failures'] == 0
+    assert premise_events(b) == ['premise #12: needs -> depends on #40'], premise_events(b)
+    assert b.state.snapshot()['premise'] == dict(CHECK_COUNTS, checked=1, needs=1)
 
 
 def test_needs_a_card_already_listed_changes_nothing_and_asks(base):
@@ -2496,6 +2512,7 @@ def test_needs_a_missing_card_asks(base):
     b.plans(check_plan(needs_text(999)))
     needs_run(b)
     asked(b, 'needs #999, which does not exist')
+    assert premise_events(b) == ['premise #12: needs -> asked: could not settle'], premise_events(b)
 
 
 def test_needs_itself_asks(base):
@@ -2607,6 +2624,7 @@ def test_draft_duplicate_closes_with_a_link(base):
     assert ('board-move.sh', '12', 'wont_do') in b.calls, b.calls
     assert 'Follow-up draft: duplicate of #40.' in b.comments(), b.comments()
     assert not stamps(b) and not [c for c in b.calls if c[:2] == ('premise.sh', 'apply-draft')], b.calls
+    assert premise_events(b) == ['premise #12: duplicate -> closed as duplicate of #40'], premise_events(b)
     parses = [c for c in b.calls if c[0] == 'parse-report.sh']
     assert parses and all(c[1:5] == ('--role', 'checker', '--mode', 'draft') for c in parses), parses
     assert ('worktree.sh', 'remove', '12', b.premise_path) in b.calls, b.calls
@@ -2634,6 +2652,7 @@ def test_draft_fixed_closes_with_the_evidence(base):
     assert len(posted) == 1, b.comments()
     assert '`bash plugins/fleet-board/tests/test-premise.sh` :: failed: 0' in posted[0], posted[0]
     assert not stamps(b), b.calls
+    assert premise_events(b) == ['premise #12: fixed -> closed as already fixed'], premise_events(b)
 
 
 def test_drafted_bug_with_a_failing_repro_goes_to_ready(base):
@@ -2655,6 +2674,8 @@ def test_drafted_bug_with_a_failing_repro_goes_to_ready(base):
     assert card['premise']['by'] == 'check' and card['premise']['sha'] == PREMISE_HEAD, card['premise']
     assert b.state.followups_auto_ready == 1
     assert not left_comments(b), b.comments()
+    assert premise_events(b) == ['premise #12: drafted -> drafted, to Ready'], premise_events(b)
+    assert b.state.snapshot()['premise'] == dict(CHECK_COUNTS, drafted=1), b.state.snapshot()['premise']
 
 
 def stays(b, reason, number=12):
@@ -2669,6 +2690,7 @@ def test_drafted_out_of_scope_stays_in_backlog(base):
     b = draft_board(base, kind='out_of_scope')
     draft_run(b, draft_text('checker-drafted'))
     stays(b, 'not a bug report.')
+    assert premise_events(b) == ['premise #12: drafted -> drafted, in Backlog'], premise_events(b)
     assert b.state.followups_auto_ready == 0
 
 
@@ -2739,6 +2761,7 @@ def test_a_draft_that_keeps_failing_is_marked_failed_and_left_as_filed(base):
     assert posted == ['Follow-up draft failed after 3 attempts' + DRAFT_FAILED_SUFFIX], b.comments()
     assert b.card()['state'] == 'backlog' and not stamps(b), b.calls
     assert ('worktree.sh', 'remove', '12', b.premise_path) in b.calls, b.calls
+    assert not premise_events(b), premise_events(b)
 
 
 def test_draft_followup_reserves_no_scope(base):
