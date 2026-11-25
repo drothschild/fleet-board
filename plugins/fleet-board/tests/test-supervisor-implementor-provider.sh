@@ -245,8 +245,9 @@ def case_a_running_provider_implementor_fills_its_provider_concurrency(sub):
 
 
 def status_line(b):
-    got = dc.scripts.run(b.root, 'status.sh', env=b.env)
-    assert got.rc == 0, got
+    got = dc.subprocess.run(['bash', str(dc.PLUGIN / 'scripts' / 'status.sh')], cwd=str(b.root), capture_output=True,
+                            text=True, env=dict(os.environ, **b.env))   # not one of the supervisor's own scripts
+    assert got.returncode == 0, got
     return [line for line in got.stdout.splitlines() if line.startswith('  #12 ')][0]
 
 
