@@ -415,6 +415,59 @@ def case_provider_concurrency_counts_a_home_card_under_the_home_provider(sub):
     assert [r['provider'] for r in prepared] == ['codex', 'claude'], prepared
 
 
+STRAY_THEN_SLEEP = 'echo stray > "%s/stray.txt"; : > "$PROVIDER_DIR/ready"; sleep 20\n'
+
+
+def stray_then_sleep_board(sub):
+    b = runner_board(sub, card_state='in_progress', supervisor={'shutdown_grace_seconds': 0.01, 'attempt_timeout_seconds': 60})
+    (b.provider_dir / 'actions').write_text(STRAY_THEN_SLEEP % b.root)
+    return b
+
+
+def wait_until_sleeping(b):
+    end = dc.time.monotonic() + 20
+    while not (b.provider_dir / 'ready').exists():
+        assert dc.time.monotonic() < end, 'the provider never started'
+        dc.time.sleep(0.05)
+
+
+def assert_role_guard_from_the_stopped_run(b, result, err):
+    assert result.exit_code == 3, (result, err)
+    guard = b.note().get('role_guard')
+    assert guard, (b.note(), result, err)
+    reason = b.state.attention['12']['reason']
+    assert 'stray.txt changed outside the worktree' in reason, reason
+    assert guard == {'role': 'implementor', 'status': 'attention', 'reason': reason}, guard
+    assert events(b, 'attention') and b.note()['action_failures'] == 0, (list(b.state.events), b.note())
+    assert 12 not in b.state.active
+
+
+def case_a_cancelled_provider_implementor_still_gets_the_post_run_check(sub):
+    b = stray_then_sleep_board(sub)
+    started = dc.begin(b, 'continue_implementor', state='in_progress')
+    assert started.kind == 'session', (started, b.state.attention)
+    wait_until_sleeping(b)
+    started.action.session.cancel(0.01)   # as the loop does, with shutdown_grace_seconds
+    result, outcome, err = finish(b, started)
+    assert result.cancelled, result
+    assert_role_guard_from_the_stopped_run(b, result, err)
+
+
+def case_a_provider_implementor_stopped_at_the_attempt_timeout_gets_the_post_run_check(sub):
+    b = stray_then_sleep_board(sub)
+    margin = dc.driver._RUNNER_MARGIN
+    dc.driver._RUNNER_MARGIN = -57   # attempt timeout 60: the supervisor's deadline passes after 3s, before the runner's
+    try:
+        started = dc.begin(b, 'continue_implementor', state='in_progress')
+    finally:
+        dc.driver._RUNNER_MARGIN = margin
+    assert started.kind == 'session', (started, b.state.attention)
+    wait_until_sleeping(b)
+    result, outcome, err = finish(b, started)
+    assert result.timed_out, result
+    assert_role_guard_from_the_stopped_run(b, result, err)
+
+
 only = os.environ.get('FLEET_TEST_ONLY')
 names = sorted(n for n in dict(globals()) if n.startswith('case_') and (not only or n == only))
 if only:
