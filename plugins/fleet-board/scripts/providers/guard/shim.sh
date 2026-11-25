@@ -17,7 +17,11 @@ GUARD_DIR="$1"; NAME="$2"; shift 2
 # shellcheck disable=SC1090
 . "$GUARD_DIR/guard.env" || { echo "fleet-board guard: cannot read the guard settings; blocking" >&2; exit 2; }
 
-block() { printf 'fleet-board guard: %s\n' "$1" >&2; exit 2; }
+# note_block TEXT: records a blocked call in <guard-dir>/blocked.log, which a runner reads afterwards
+note_block() { printf '%s: %s\n' "$NAME" "$1" | tr '\r' ' ' >> "$GUARD_DIR/blocked.log" 2>/dev/null || true; }
+# refuse: block without recording (a git command outside the worktree, as a test suite may run)
+refuse() { printf 'fleet-board guard: %s\n' "$1" >&2; exit 2; }
+block() { note_block "$1"; refuse "$1"; }
 
 # word_text ARG: ARG as a shell word for the gate. A word with a $ or a backtick stays bare, so the
 # gate sees the substitution and blocks it; a plain word stays bare; anything else is single-quoted.
@@ -39,6 +43,7 @@ PAYLOAD="$(jq -nc --arg c "$CMD" --arg d "$PWD" \
 GATE_ERR="$(PATH="$GUARD_REAL_PATH" bash "$GUARD_GATE" <<<"$PAYLOAD" 2>&1 >/dev/null)"
 GATE_RC=$?
 if [ "$GATE_RC" -ne 0 ]; then
+  note_block "$(printf '%s' "$GATE_ERR" | head -n 1) ($CMD)"
   printf '%s\n' "$GATE_ERR" >&2
   exit 2
 fi
@@ -115,7 +120,7 @@ case "$NAME" in
           has_subst "$d" && block "git -C path '$d' holds a substitution; blocking"
           case "$d" in /*) dirs+=("$d") ;; *) dirs+=("${dirs[$((${#dirs[@]} - 1))]}/$d") ;; esac ;;
         --git-dir|--git-dir=*|--work-tree|--work-tree=*|--super-prefix|--super-prefix=*)
-          block "git $a would point git outside the card's worktree" ;;
+          refuse "git $a would point git outside the card's worktree" ;;
         -c|--namespace|--exec-path) i=$((i + 1)) ;;
         -*) ;;
         *) sub="$a" ;;
@@ -123,7 +128,7 @@ case "$NAME" in
       i=$((i + 1))
     done
     for d in "${dirs[@]}"; do
-      under_worktree "$d" || block "git against $d, outside the card's worktree $GUARD_WORKTREE"
+      under_worktree "$d" || refuse "git against $d, outside the card's worktree $GUARD_WORKTREE"
     done
     case "$sub" in
       add|rm|mv|checkout|restore|apply|stash|reset|clean|commit|switch|update-index)
