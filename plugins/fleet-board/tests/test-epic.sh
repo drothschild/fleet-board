@@ -254,7 +254,7 @@ awk 'BEGIN { for (i = 0; i < 5000; i++) printf "{\"card\": %d, \"built\": \"a lo
   > "$R/.fleet-board/epics/3/log.jsonl"
 run "$R" read 3
 eq "read a large design: rc" "$RC" "0"
-eq "read a large design: design" "$(jq -r .design <<<"$OUT" | cmp -s - "$WORK/big.md" && echo same)" "same"
+eq "read a large design: design" "$(jq -j .design <<<"$OUT" | cmp -s - "$WORK/big.md" && echo same)" "same"
 eq "read a large log: entries" "$(jq '.log | length' <<<"$OUT")" "5000"
 run "$R" list
 eq "list with a large design: rc" "$RC" "0"

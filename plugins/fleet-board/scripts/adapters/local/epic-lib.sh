@@ -7,10 +7,21 @@
 fl_epics_dir() { printf '%s/epics\n' "$(fl_dir)"; }
 fl_epic_dir() { printf '%s/%s\n' "$(fl_epics_dir)" "$1"; }
 
-# fl_epic_exists <id>: true only for a folder whose epic.json is an object with that id.
+# fl_epic_shape_ok <id> <file>: true only when the file holds exactly one JSON value, an
+# object with that integer id, state open or closed, a string title and intent, a
+# non-negative integer design_rev and an attention array.
+fl_epic_shape_ok() {
+  jq -s -e --argjson n "$1" 'length == 1 and (.[0] | type == "object" and .id == $n
+    and (.state == "open" or .state == "closed")
+    and (.title | type) == "string" and (.intent | type) == "string"
+    and (.design_rev | type) == "number" and .design_rev >= 0 and .design_rev == (.design_rev | floor)
+    and (.attention | type) == "array")' "$2" >/dev/null 2>&1
+}
+
+# fl_epic_exists <id>: true only for a folder whose epic.json has the shape above.
 fl_epic_exists() {
   case "$1" in ''|*[!0-9]*) return 1 ;; esac
-  jq -e --argjson n "$1" 'type == "object" and .id == $n' "$(fl_epic_dir "$1")/epic.json" >/dev/null 2>&1
+  fl_epic_shape_ok "$1" "$(fl_epic_dir "$1")/epic.json"
 }
 
 # fl_next_epic_id: allocates and prints the next epic id under <epics dir>/.next.lock.
@@ -50,8 +61,8 @@ fl_epic_lock() {
 # fl_write_epic <id> <json-file>: atomic replace of the epic's epic.json.
 fl_write_epic() {
   local dir tmp
-  jq -e --argjson n "$1" 'type == "object" and .id == $n' "$2" >/dev/null 2>&1 \
-    || fb_die 1 "refusing to write epic E$1: the new content is not a JSON object with id $1; the stored epic is unchanged"
+  fl_epic_shape_ok "$1" "$2" \
+    || fb_die 1 "refusing to write epic E$1: the new content is not one epic object with id $1; the stored epic is unchanged"
   dir="$(fl_epic_dir "$1")"; mkdir -p "$dir" || fb_die 1 "cannot create $dir"
   tmp="$(mktemp "$dir/.tmp.XXXXXX")" || fb_die 1 "cannot write a temporary file in $dir"
   if ! cat "$2" > "$tmp"; then rm -f "$tmp"; fb_die 1 "cannot write epic E$1"; fi

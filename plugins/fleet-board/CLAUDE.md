@@ -44,8 +44,9 @@ no file here. The gate's residual bypasses and false positives are listed in the
   the next id. The first `epic.sh create` makes `epics/`; a store without it has no epics and needs no migration.
   `epic.sh create|read|list|set-intent|set-state|clear-attention` (exit 0 done, 1 failure, 2 usage, 3 `epic E<id>
   does not exist`) is the only writer; writes go through `fl_write_epic` (`adapters/local/epic-lib.sh`, refuses
-  anything that is not an object with that id) under `fl_epic_lock`, and a file without that shape is read as
-  absent. The stored `state` is only `open` or `closed`; `complete` is derived on `read`/`list` (`effective_state`:
+  anything but one object with that id, state open or closed, string title and intent, integer design_rev and an
+  attention array: `fl_epic_shape_ok`) under `fl_epic_lock`, and a file without that shape is read as absent.
+  `design.md` and `log.jsonl` reach jq as files, never as arguments. The stored `state` is only `open` or `closed`; `complete` is derived on `read`/`list` (`effective_state`:
   at least one child, every child done or dropped, every Done child with a `pr_url` has a `log.jsonl` line whose
   `card` is its number) and never stored. A child is a card whose `epic` is the id; its `progress` is `waiting`
   (backlog, or ready with a `blocked_by` card not done), `ready`, `in_flight` (in_progress, in_review, a stage

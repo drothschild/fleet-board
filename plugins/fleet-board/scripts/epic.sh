@@ -79,19 +79,19 @@ fb_load_config
 # epic_view <id>: prints the epic with design, log, children, progress and effective_state.
 # One jq pass over the card files; never a process per card.
 epic_view() {
-  local id="$1" dir design log stages cards
+  local id="$1" dir design_f log_f stages cards
   dir="$(fl_epic_dir "$id")"
-  design="$(jq -Rs . < "$dir/design.md" 2>/dev/null)" || design='""'
-  [ -f "$dir/design.md" ] || design='""'
-  log="$(jq -cRn '[inputs | fromjson? | select(type == "object")]' < "$dir/log.jsonl" 2>/dev/null)" || log='[]'
-  [ -n "$log" ] || log='[]'
+  # read as files, never as arguments: a long design must not hit the argument limit
+  design_f="$dir/design.md"; [ -f "$design_f" ] || design_f=/dev/null
+  log_f="$dir/log.jsonl"; [ -f "$log_f" ] || log_f=/dev/null
   stages="$(fb_stage_states | jq -Rn '[inputs | select(length > 0)]')"
   cards="$(fl_cards_dir)"
   set -- "$cards"/*.json
   [ -e "$1" ] || set -- /dev/null
-  jq -s -c --argjson id "$id" --argjson design "$design" --argjson log "$log" --argjson stages "$stages" \
+  jq -s -c --argjson id "$id" --rawfile design "$design_f" --rawfile lograw "$log_f" --argjson stages "$stages" \
     --slurpfile epic "$dir/epic.json" '
     [.[] | select(type == "object")] as $cards
+    | [$lograw | split("\n")[] | select(length > 0) | (fromjson? // empty) | select(type == "object")] as $log
     | ($cards | map({key: (.number | tostring), value: .state}) | from_entries) as $st
     | def prog:
         if .state == "backlog" then "waiting"
