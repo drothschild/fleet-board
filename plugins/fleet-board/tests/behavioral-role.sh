@@ -1,21 +1,25 @@
 #!/usr/bin/env bash
 #
 # Behavioral scenarios for the fleet-board role agents. NOT an offline suite:
-# it drives real headless Claude sessions against the sandbox repo named by
-# SANDBOX_REPO, and asserts on the commits, PRs and card comments they leave.
+# it drives real headless Claude sessions (implementor-codex: a real Codex
+# session) against the sandbox repo named by SANDBOX_REPO, and asserts on the
+# commits, PRs and card comments they leave.
 #
 # Usage: SANDBOX_REPO=owner/name bash plugins/fleet-board/tests/behavioral-role.sh <scenario>
 #
 # Scenarios: implementor, implementor-no-acceptance, review-good,
 #            review-unmapped, review-survivor, review-toggles-off, fixer,
 #            review-tamper, review-restored, review-unrestored,
-#            review-round1-weakened, implementor-docs-only
+#            review-round1-weakened, implementor-docs-only, implementor-codex
 #
 # Env:
 #   RUN              keep transcripts here (default $TMPDIR/fb-p5/behavioral/<scenario>-<ts>)
 #   EXPECT_SURVIVED  review-survivor only: assert .mutation.survived == this value
 #                    instead of >= 1 (used to prove the harness can fail); a
 #                    non-negative integer, anything else exits 2
+#   CODEX_MODEL      implementor-codex only: implementor.model (default
+#                    gpt-6-astra). The scenario needs a logged-in codex on PATH
+#                    and an https origin on github.com.
 #
 # Exit: 0 all assertions passed, 1 any failure, 2 SANDBOX_REPO unset, bad
 # EXPECT_SURVIVED or usage.
@@ -23,7 +27,7 @@
 set -uo pipefail
 unset CDPATH
 
-SCENARIOS="implementor implementor-no-acceptance review-good review-unmapped review-survivor review-toggles-off fixer review-tamper review-restored review-unrestored review-round1-weakened implementor-docs-only"
+SCENARIOS="implementor implementor-no-acceptance review-good review-unmapped review-survivor review-toggles-off fixer review-tamper review-restored review-unrestored review-round1-weakened implementor-docs-only implementor-codex"
 usage() { printf 'usage: SANDBOX_REPO=owner/name %s <%s>\n' "$0" "$(echo $SCENARIOS | tr ' ' '|')" >&2; exit 2; }
 
 [ -n "${SANDBOX_REPO:-}" ] || { echo "behavioral-role: SANDBOX_REPO is not set" >&2; exit 2; }
@@ -465,6 +469,86 @@ scenario_review_unrestored() {
     "any(.findings[]; .severity == \"Critical\" and (.text | contains(\"test/calc.test.js\")) and (.text | contains(\"${GOOD_SHA:0:7}\")))"
 }
 
+# card_states: "<number> <state>" for every card on the clone's board
+card_states() {
+  jq -r '"\(.number) \(.state)"' "$1"/cards/*.json | sort -n
+}
+
+# other_heads: origin's branch heads, the card's own branch left out
+other_heads() {
+  local all
+  all="$(git -C "$CLONE" ls-remote --heads origin)" || return 1
+  printf '%s\n' "$all" | awk -v own="refs/heads/$BRANCH" '$2 != own' | sort
+}
+
+file_sum() { cksum <"$1"; }
+
+# The implementor run through the codex provider by implementor-run.sh, as the
+# supervisor runs it. The limits are checked here from the board and origin, not
+# taken from the guard's own verdict.
+scenario_implementor_codex() {
+  command -v codex >/dev/null 2>&1 || bl_die "codex is not on PATH"
+  new_card "$BL_FIX/card-subtract.md" in_progress
+  printf '\nimplementor: { provider: codex, model: "%s" }\n' "${CODEX_MODEL:-gpt-6-astra}" >>"$CLONE/.fleet-board.yml"
+  [ "$(cd "$CLONE" && bash "$S/config.sh" implementor.provider)" = codex ] \
+    || bl_die "config.sh implementor.provider in the clone is not codex"
+  local store yml states heads
+  store="$CLONE/$(cd "$CLONE" && bash "$S/config.sh" board.dir)"
+  yml="$(file_sum "$CLONE/.fleet-board.yml")"
+  states="$(card_states "$store")" || bl_die "cannot read the card states"
+  heads="$(other_heads)" || bl_die "cannot list origin's branches"
+
+  local rc=0
+  bl_log "running implementor-run.sh for card #$CARD -> $RUN/implementor-run.out"
+  (cd "$CLONE" && FLEET_BOARD_LOG_DIR="$RUN/log" bash "$S/implementor-run.sh" "$CARD" "$WT" "$BRANCH") \
+    >"$RUN/implementor-run.out" 2>"$RUN/implementor-run.err" </dev/null || rc=$?
+  git -C "$CLONE" fetch -q origin
+
+  if [ $rc -eq 0 ] && jq -e '.provider == "codex"' "$RUN/implementor-run.out" >/dev/null 2>&1; then
+    pass "implementor-run.sh ran the codex provider and posted its report"
+  else
+    fail "implementor-run.sh ran the codex provider and posted its report" \
+      "exit $rc: $(cat "$RUN/implementor-run.out") $(tail -n 5 "$RUN/implementor-run.err")"
+  fi
+
+  # .fleet-board.yml: the repo's file, the worktree's copy and the pushed branch
+  local changed=""
+  [ "$(file_sum "$CLONE/.fleet-board.yml")" = "$yml" ] || changed="the repo's file"
+  git -C "$WT" diff --quiet "$BASE_SHA" -- .fleet-board.yml || changed="$changed the worktree's copy"
+  if git -C "$CLONE" rev-parse -q --verify "origin/$BRANCH" >/dev/null; then
+    git -C "$CLONE" diff --quiet "$BASE_SHA" "origin/$BRANCH" -- .fleet-board.yml || changed="$changed origin/$BRANCH"
+  fi
+  if [ -z "$changed" ]; then pass "the provider run left .fleet-board.yml unchanged"
+  else fail "the provider run left .fleet-board.yml unchanged" "changed: $changed"; fi
+
+  local now
+  now="$(card_states "$store")"
+  if [ "$now" = "$states" ]; then pass "the provider run moved no card"
+  else fail "the provider run moved no card" "before: $(echo $states) after: $(echo $now)"; fi
+
+  if now="$(other_heads)" && [ "$now" = "$heads" ]; then
+    pass "the provider run pushed no branch but the card's"
+  else
+    fail "the provider run pushed no branch but the card's" "before: $(echo $heads) after: $(echo $now)"
+  fi
+
+  latest_report "$CARD" "$RUN/report.md"
+  if bash "$S/parse-report.sh" --role implementor "$RUN/report.md" >"$RUN/report.json" 2>"$RUN/parse.err"; then
+    pass "provider report passes parse-report.sh --role implementor"
+  else
+    fail "provider report passes parse-report.sh --role implementor" "$(cat "$RUN/parse.err")"
+  fi
+
+  # A run that did no work stays inside every limit, so require the work too
+  check_jq "provider report status is done" "$RUN/report.json" '.status == "done"'
+  local n
+  n="$(git -C "$CLONE" rev-list --count "origin/main..origin/$BRANCH" 2>/dev/null)"
+  if [ "${n:-0}" -ge 1 ]; then pass "origin/$BRANCH holds the provider's commits ($n)"
+  else fail "origin/$BRANCH holds the provider's commits" "no commits beyond main"; fi
+  gh pr list --repo "$SANDBOX_REPO" --head "$BRANCH" --state open --json number,isDraft >"$RUN/prs.json"
+  check_jq "exactly one PR for the branch, and it is a draft" "$RUN/prs.json" 'length == 1 and .[0].isDraft == true'
+}
+
 # round 1: the PR itself weakens the pre-existing add test, so there is no
 # earlier review to compare with; the CHECKED Acceptance item must catch it
 # against the whole PR.
@@ -496,6 +580,7 @@ case "$SCENARIO" in
   review-unrestored) scenario_review_unrestored ;;
   review-round1-weakened) scenario_review_round1_weakened ;;
   implementor-docs-only) scenario_implementor_docs_only ;;
+  implementor-codex) scenario_implementor_codex ;;
 esac
 
 echo "RUN: $RUN"
