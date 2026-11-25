@@ -204,6 +204,94 @@ run "$R" list
 eq "list with an unparsable card: exit 1" "$RC" "1"
 eq "list with an unparsable card: no output" "$OUT" ""
 
+# --- review round 1 ----------------------------------------------------------
+R="$(mkrepo r9)"
+run "$R" create --title-file "$(title)"
+run "$R" read 1
+eq "read a new epic: rc" "$RC" "0"
+eq "read a new epic: stderr empty" "$ERR" ""
+run "$R" list
+eq "list a new epic: stderr empty" "$ERR" ""
+
+# a file holding several JSON values, or the wrong shape, is read as absent
+run "$R" create --title-file "$(title)"
+E2="$R/.fleet-board/epics/2/epic.json"
+GOOD="$(cat "$E2")"
+printf '"junk"\n%s\n' "$GOOD" > "$E2"
+run "$R" read 2
+eq "read two values: exit 3" "$RC" "3"
+run "$R" list
+eq "list skips two values: rc" "$RC" "0"
+eq "list skips two values: ids" "$(jq -c 'map(.id)' <<<"$OUT")" "[1]"
+printf '%s\n%s\n' "$GOOD" "$GOOD" > "$E2"
+run "$R" set-intent 2 "$WORK/title.txt"
+eq "set-intent on two objects: exit 3" "$RC" "3"
+for bad in '.state = "bogus"' '.attention = 7' '.id = "2"' '.design_rev = "x"'; do
+  jq -c "$bad" <<<"$GOOD" > "$E2"
+  run "$R" read 2
+  eq "read bad shape ($bad): exit 3" "$RC" "3"
+done
+printf '%s\n' "$GOOD" > "$E2"
+
+# fl_write_epic refuses content that is not one object of the epic's shape
+wr() {
+  ( cd "$R" && FLEET_BOARD_CONFIG="$R/.fleet-board.yml" bash -c '
+      . "$1/board-lib.sh"; fb_load_config; . "$1/adapters/local/local-lib.sh"; . "$1/adapters/local/epic-lib.sh"
+      fl_write_epic 2 "$2"' _ "$SCRIPTS" "$1" ) >/dev/null 2>&1
+}
+printf '%s\n%s\n' "$GOOD" "$GOOD" > "$WORK/two.json"
+wr "$WORK/two.json"; eq "fl_write_epic two objects: refused" "$?" "1"
+eq "fl_write_epic two objects: stored unchanged" "$(jq -c . "$E2")" "$(jq -c . <<<"$GOOD")"
+jq -c '.state = "bogus"' <<<"$GOOD" > "$WORK/bad.json"
+wr "$WORK/bad.json"; eq "fl_write_epic bad state: refused" "$?" "1"
+jq -c '.title = "new"' <<<"$GOOD" > "$WORK/ok.json"
+wr "$WORK/ok.json"; eq "fl_write_epic good: written" "$(ej "$R" .title 2)" '"new"'
+
+# a large design and log are read
+awk 'BEGIN { for (i = 0; i < 30000; i++) print "a line of the design, long enough " i }' > "$WORK/big.md"
+run "$R" create --title-file "$(title)" --design-file "$WORK/big.md"
+awk 'BEGIN { for (i = 0; i < 5000; i++) printf "{\"card\": %d, \"built\": \"a long line of what the card built\"}\n", i }' \
+  > "$R/.fleet-board/epics/3/log.jsonl"
+run "$R" read 3
+eq "read a large design: rc" "$RC" "0"
+eq "read a large design: design" "$(jq -r .design <<<"$OUT" | cmp -s - "$WORK/big.md" && echo same)" "same"
+eq "read a large log: entries" "$(jq '.log | length' <<<"$OUT")" "5000"
+run "$R" list
+eq "list with a large design: rc" "$RC" "0"
+
+# a ready card waits while its blocker is in any state but done
+R="$(mkrepo r10)"
+run "$R" create --title-file "$(title)"
+for s in backlog ready blocked in_progress wont_do; do
+  card "$R" 4 "$s" null; card "$R" 5 ready 1 '[4]'
+  run "$R" read 1
+  eq "progress ready, blocker $s" "$(jq -r '.children[0].progress' <<<"$OUT")" "waiting"
+done
+
+# a blocked child keeps the epic from complete; list shows a complete epic
+rm -f "$R/.fleet-board/cards/"*.json
+card "$R" 5 done 1; card "$R" 6 blocked 1
+run "$R" read 1
+eq "blocked child: not complete" "$(jq -r .effective_state <<<"$OUT")" "open"
+card "$R" 6 wont_do 1
+run "$R" list
+eq "list shows a complete epic" "$(jq -c 'map([.id, .effective_state])' <<<"$OUT")" '[[1,"complete"]]'
+
+# concurrent creates take distinct ids
+R="$(mkrepo r11)"
+for i in 1 2 3 4 5 6; do
+  ( cd "$R" && FLEET_BOARD_CONFIG="$R/.fleet-board.yml" bash "$SCRIPTS/epic.sh" create --title-file "$(title)" ) \
+    > "$WORK/c$i" 2>/dev/null &
+done
+wait
+eq "concurrent creates: distinct ids" "$(cat "$WORK"/c[1-6] | jq -s -c 'map(.id) | sort')" "[1,2,3,4,5,6]"
+eq "concurrent creates: next" "$(tr -d '[:space:]' < "$R/.fleet-board/epics/next")" "7"
+
+# a title's trailing newlines are dropped
+printf 'Titled\n\n' > "$WORK/nl.txt"
+run "$R" create --title-file "$WORK/nl.txt"
+eq "create: trailing newlines dropped" "$(ej "$R" .title 7)" '"Titled"'
+
 # --- usage -------------------------------------------------------------------
 run "$R"
 eq "usage: no verb" "$RC" "2"
