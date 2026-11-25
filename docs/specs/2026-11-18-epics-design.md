@@ -245,8 +245,11 @@ When a card with an `epic` has merged and reached Done, the scheduler plans a ne
   revision moved while the session ran. Anything other than `holds` under `## Intent` adds
   an `attention` entry to the epic.
 - **Affected siblings.** Each card named under `## Affects` that is a child of the same epic
-  and has no pull request yet has its premise stamp cleared, so the premise check runs
-  before it starts. This covers a decision that is not visible in the files a card names.
+  and has no pull request yet has its premise stamp cleared and is marked for a recheck,
+  so the premise check runs before it starts. A person moving a marked Backlog card into
+  Ready does not re-stamp it (today `move.sh` re-stamps every such move); the premise
+  check removes the mark when it stamps the card. The mark is the owner's decision of
+  2026-11-25. This covers a decision that is not visible in the files a card names.
   **(My call.)**
 - **Failure.** A failed or rejected session counts on a counter of its own, kept in the
   epic's folder, not on `action_failures`, whose limit would move a Done card to Blocked.
@@ -291,9 +294,13 @@ with no epic yet appear in the Architect panel.
   `conversation/` folder. The owner can untick the epic and create plain cards. **(My
   call.)**
 - A conversation opened from an existing epic can draft more cards into that epic.
-- An import that did not start from a conversation (the import form, or the
-  `/fleet-board:import-plan` skill) offers an epic the same way and leaves its
-  `conversation` empty. The owner can start one from the epic page later.
+- An import from the board page's import form, without a conversation, offers an epic the
+  same way and leaves its `conversation` empty. The owner can start one from the epic page
+  later.
+- The `/fleet-board:import-plan` skill runs in a Claude session, where G5 blocks
+  `epic.sh create`, so it never makes an epic. It attaches cards only to an epic that
+  already exists, by id; to start one, it tells the owner to make it on the board page or
+  in a terminal first. The owner's decision of 2026-11-25.
 - The epics list has a New epic control that makes an empty epic from a title and an
   intent, and the card drawer can set or clear a card's epic. That is how existing cards
   are gathered into one. **(My call.)**
@@ -332,13 +339,13 @@ The Architect still edits no card. It proposes, and the owner approves.
 - **Card rewrites.** The Architect writes one proposal per card: a full Scope and
   acceptance and a paragraph on why. The server stores it as the card's `proposal`, kind
   `rewrite`, with a new key `source: architect` and `head` set to the default branch's
-  head at that moment. It then moves the card to Blocked with `blocked_from` set to the
-  column it was in, as a premise-check question does, so the supervisor cannot start the
+  head at that moment. It records the column the card was in as the proposal's `from` (not the note's
+  `blocked_from`, which `note.sh` limits to supervisor states) and moves the card to Blocked, as a premise-check question does, so the supervisor cannot start the
   card while the proposal waits. All of this is **(my call)** and needs
   `premise-settle.sh` changed, since today `propose` drops unknown keys and `approve`
   always moves the card to Ready:
   - `propose` keeps `source`.
-  - `approve` on a proposal with `source: architect` returns the card to `blocked_from`,
+  - `approve` on a proposal with `source: architect` returns the card to the proposal's `from`,
     so a Backlog card goes back to Backlog. A premise-check proposal still goes to Ready.
   - The owner approves or rejects. There is no edit of a proposal, here or for the premise
     check. To change one, the owner asks the Architect for a revised proposal, which

@@ -14,8 +14,8 @@
 
 ## Global Constraints
 
-- All paths below are relative to `plugins/fleet-board/` unless they start with `docs/` or `.claude-plugin/`.
-- One PR per task, test-first: the first commit holds only the failing test. Leave `.claude-plugin/plugin.json` and the fleet-board entry of the repo's `.claude-plugin/marketplace.json` alone; the merge lane bumps the version.
+- All paths below are relative to `plugins/fleet-board/` unless they start with `docs/specs/`, `docs/plans/`, `plugins/` or `.claude-plugin/`, which are relative to the repository root. The plugin's own docs are `plugins/fleet-board/docs/`.
+- One PR per task, test-first: the first commit holds only the failing test. Leave `plugins/fleet-board/.claude-plugin/plugin.json` and the fleet-board entry of the repo's `.claude-plugin/marketplace.json` alone; the merge lane bumps the version.
 - Run only the suites the task names, then `bash plugins/fleet-board/tests/test-clean-room.sh`. Never the full suite.
 - No file under `agents/` and no `skills/{reporting,status}/SKILL.md` is edited.
 - The board server reads card and epic files directly and writes only through scripts. It never runs text that a session, a card, an epic or an outbox file supplies.
@@ -51,6 +51,8 @@ This plan was written against `main` at `7f8ae3b9` on 2026-11-18. Before a card 
 - **Tasks 1 to 3** rename things that every later task names. Later tasks use the new names.
 - **`scripts/board-web.py` and `scripts/board-web/static/board.js`** are touched by most tasks, so the scheduler will run them one at a time. That is expected.
 
+Review of 2026-11-25 (on #530), for Task 20: `## Depends on` has three parsers, not one. Besides `fl_split_body` and `parse-report.sh`, `deps.sh parse` (used by tick-plan and lint) and `board-web.py`'s `depends_on` accept only `#n` and `owner/repo#n`. Task 20 must change all four, or a `- C4` bullet gets `blocked_by` with a lint warning and a wrong page view.
+
 ## Review Focus
 
 1. **A conversation whose stored provider session is gone** (the provider pruned it, or the owner moved machines). Expected: the turn starts a new session seeded with the stored transcript, the owner sees one line saying so, and nothing is lost. (Task 5.)
@@ -76,7 +78,7 @@ Files:
 - `tests/test-planner-persona-paths.sh`
 - `tests/test-planner-persona-no-card-edits.sh`
 - `fixtures/supervisor/driver_cases.py`
-- `docs/config.md`
+- `plugins/fleet-board/docs/config.md`
 
 Interfaces:
 - Produces: config keys `architect.{persona, persona_append, provider, model}`, with the defaults and the validation `planner.*` has today.
@@ -229,7 +231,8 @@ Files:
 Interfaces:
 - Consumes: `epic.sh create`, `epic.sh read`, card field `epic`, `import-plan.sh` passing `epic` (core); conversations with `meta.json` (Task 5).
 - Produces: the import's `meta.json` gains `conversation` (an id or null).
-- Produces: `cards.json` may carry a top-level `epic` object `{title, intent, design}`, drafted by the import session when the file holds two or more cards. `skills/import-plan/SKILL.md` gains the step that writes it from the spec or the conversation. A cards file with one card has none.
+- Produces: `cards.json` may carry a top-level `epic` object `{title, intent, design}`, drafted by the board page's import session when the file holds two or more cards. A cards file with one card has none. Only the board server creates the epic from it; `import-plan.sh` never runs `epic.sh create`.
+- Produces: `skills/import-plan/SKILL.md` gains `--epic <id>`, which puts that existing id on every card; the skill never creates an epic (G5 blocks it in a session) and, when the owner wants a new one, tells them to make it on the board page or in a terminal and rerun with its id.
 - Produces: `PATCH /api/import/<id>/epic` with `{title?, intent?, design?, enabled?}` edits the proposed epic; `enabled: false` makes the import create plain cards.
 - Produces: `POST /api/import/<id>/create`, when the epic is enabled: runs `epic.sh create`, gives every card that id, creates the cards, writes the conversation's id into `epic.json` as `conversation`, moves the conversation's folder to `<board.dir>/epics/<id>/conversation/`, and sets `epic` in its `meta.json`. The reply gains `epic: <id>`.
 - Produces: an import started from an existing epic's conversation creates its cards in that epic and proposes no new one.
@@ -246,7 +249,8 @@ Test steps:
 - Creating with `enabled: false` makes two cards with no `epic` and no epic folder.
 - An import started with the import form (no conversation) and two cards creates an epic whose `conversation` is null.
 - An import drafted from the conversation of epic 1 creates its cards with `epic` 1 and makes no second epic.
-- When `import-plan.sh` fails after `epic.sh create` succeeded, the reply is an error that names `E<id>` and the epic exists with no children.
+- When creating the cards fails after the server's `epic.sh create` succeeded, the reply is an error that names `E<id>` and the epic exists with no children.
+- `/fleet-board:import-plan --epic 1` creates its cards with `epic` 1; `--epic 9` with no E9 stops before anything is created; the skill text names no `epic.sh create` step.
 
 ## Task 7: The epics list and the epic page
 
@@ -420,7 +424,7 @@ Files:
 
 Interfaces:
 - Consumes: `collect_outbox` and its handlers (Task 10); a proposal with `source: "architect"` and `from`, and `premise-settle.sh propose|approve|reject` (core); the proposal routes and buttons of #476; `fl_default_head` through `premise.sh`.
-- Produces: the outbox handler for `rewrite-<n>.json`: `{card: <n>, scope: <string>, acceptance: [<string>], summary: <string>}`. For an accepted file the server builds `{kind: "rewrite", source: "architect", from: <the card's state>, head: <the default branch's head>, scope, acceptance, summary}`, runs `premise-settle.sh propose <n> <file>`, moves the card to Blocked with `board-move.sh`, writes the note's `blocked_from` to the card's former state, and comments `Waiting for a person: approve this rewrite from the Architect?` followed by the summary and the current and proposed Scope and acceptance.
+- Produces: the outbox handler for `rewrite-<n>.json`: `{card: <n>, scope: <string>, acceptance: [<string>], summary: <string>}`. For an accepted file the server builds `{kind: "rewrite", source: "architect", from: <the card's state>, head: <the default branch's head>, scope, acceptance, summary}`, runs `premise-settle.sh propose <n> <file>`, moves the card to Blocked with `board-move.sh`, and comments `Waiting for a person: approve this rewrite from the Architect?` followed by the summary and the current and proposed Scope and acceptance.
 - A file is dropped, with the reason shown in the turn, when: the card does not exist; its state is not `backlog` or `ready` (`C<n> is <state>; only a Backlog or Ready card can be rewritten`); it has a pull request (`C<n> has a pull request`); it already holds a premise-check proposal (`C<n> already has a premise-check proposal`); the proposed Scope names no repository path; the default head cannot be read.
 - A second `rewrite-<n>.json` for a card that holds an Architect proposal replaces it and posts no second move.
 - Produces: the turn's `rewrites: [{card, summary}]`, shown in the chat as a line per card linking to the card, where #476's Approve and Reject buttons act on it.
@@ -429,7 +433,7 @@ Interfaces:
 
 Test steps:
 - A valid `rewrite-12.json` for a Backlog card stores a proposal with `source` `architect`, `from` `backlog` and a 40-hex `head`.
-- That card is then in Blocked and its note's `blocked_from` is `backlog`.
+- That card is then in Blocked; its note's `blocked_from` is not written (`note.sh` accepts no `backlog` value), and the proposal's `from` is `backlog`.
 - The card gains one comment starting `Waiting for a person: approve this rewrite from the Architect?` that holds the summary.
 - The turn's `rewrites` holds `{card: 12, summary}`.
 - Approving the proposal through the page's route returns the card to Backlog with the proposed Scope and acceptance.
@@ -439,7 +443,7 @@ Test steps:
 - A `rewrite-12.json` for a Ready card with a `pr_url` is dropped with `C12 has a pull request`.
 - A `rewrite-12.json` for a card holding a premise-check proposal is dropped with `C12 already has a premise-check proposal` and that proposal is unchanged.
 - A `rewrite-99.json` for a card that does not exist is dropped.
-- A second `rewrite-12.json` replaces the stored proposal, leaves the card Blocked with `blocked_from` still `backlog`, and adds no second move.
+- A second `rewrite-12.json` replaces the stored proposal, leaves the card Blocked with the proposal's `from` still `backlog`, and adds no second move.
 - A proposed Scope naming no path is dropped with `Scope names no repository path`.
 - The chat renders one line per rewrite linking to `/cards/<n>`.
 
@@ -646,7 +650,7 @@ Files:
 - `tests/test-epic-export.sh`
 - `tests/test-config.sh`
 - `tests/test-board-epics-page.sh`
-- `docs/config.md`
+- `plugins/fleet-board/docs/config.md`
 - `README.md`
 
 Interfaces:
@@ -689,14 +693,14 @@ Files:
 - `tests/test-status.sh`
 - `tests/test-readme-claims.sh`
 - `README.md`
-- `docs/config.md`
+- `plugins/fleet-board/docs/config.md`
 - `CLAUDE.md`
 
 Interfaces:
 - Consumes: `epic.sh list` (core); everything the earlier tasks added.
 - Produces: `status.sh` prints, after the columns, a section `Epics` with one line per open epic: `E<id> <title> · <done>/<total> done · <in flight> in flight · <blocked> blocked`, followed by ` · needs attention` when the epic has an attention entry. With no open epic the section is not printed. `status.sh` makes one `epic.sh list` call and none when `<board.dir>/epics` does not exist.
 - Produces: a README section `Epics` covering what an epic is, how one is made (Draft cards, the New epic control, the offer after a second card), how the design is revised when a child merges, the as-built log, the conversation, samples and attachments, the report, the export, and what a session can and cannot change. A README section `The Architect` replaces the chat's section.
-- Produces: `docs/config.md` rows for `architect.*`, `models.architect_record`, `epics.record` and `epics.export_dir`.
+- Produces: `plugins/fleet-board/docs/config.md` rows for `architect.*`, `models.architect_record`, `epics.record` and `epics.export_dir`.
 - Produces: the epic record's contract in the plugin's `CLAUDE.md`: the folder, `epic.json`'s keys, the `epic.sh` verbs and exit codes, the `record_epic` action and its failure rule, the outbox and the kinds it accepts, and gate rule G5.
 - `skills/status/SKILL.md` is clean-room and is not edited; the section reaches the user because the skill prints what `status.sh` prints.
 
@@ -708,7 +712,7 @@ Test steps:
 - A store with no `epics` directory prints as before and `epic.sh` is not called.
 - The README holds the headings `Epics` and `The Architect`.
 - The README's Gates section names rule G5.
-- `docs/config.md` documents `architect.model`, `models.architect_record`, `epics.record` and `epics.export_dir` with their defaults.
+- `plugins/fleet-board/docs/config.md` documents `architect.model`, `models.architect_record`, `epics.record` and `epics.export_dir` with their defaults.
 - `test-readme-claims.sh` passes with a claim added for each new config key's default.
 
 ## Task 19: The offer to make an epic after a second card

@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- All paths below are relative to `plugins/fleet-board/` unless they start with `docs/` or `.claude-plugin/`.
+- All paths below are relative to `plugins/fleet-board/` unless they start with `docs/specs/`, `docs/plans/`, `plugins/` or `.claude-plugin/`, which are relative to the repository root. The plugin's own docs are `plugins/fleet-board/docs/`.
 - This part is built by hand, outside the fleet, because it changes `scripts/tick-plan.sh`, `scripts/supervisor/driver.py` and `hooks/gate.sh`, which the fleet runs on while it builds.
 - One branch and one draft PR per task, opened before any code. Test-first: the first commit holds only the failing test. Run only the suites the task names, then `bash plugins/fleet-board/tests/test-clean-room.sh`. Never the full suite.
 - Each PR gets the adversarial code review before it merges. Never skip it.
@@ -42,6 +42,8 @@ This plan was written against `main` at `7f8ae3b9` on 2026-11-18. The board runs
 - **Names, not line numbers.** `tick-plan.sh` and `driver.py` move often; this plan names functions and rows and gives no line numbers.
 - **#476, #477, #478 (premise check).** #476 adds proposal routes to `board-web.py`; Task 8 changes what `premise-settle.sh approve` and `reject` do for one kind of proposal, so re-read #476's use of them once it merges.
 - **#463 (parallel passes).** It touches the scheduler's reviewer rules; re-check Task 5's one-per-epic rule against it.
+- **Provider runners (#566, #567, Task 7).** A provider implementor builds its own prompt and `role_prompt` is skipped when `run.script` is set; an evidence-review provider reviewer never uses `_SECTIONS`. Task 7's Epic section must reach those prompts too, with a test for each, or say why not. Cards Task 15 (samples) inherits the same gap.
+- **Failure paths (Task 6).** Any `_Fail` from a `_do_*` reaches `_failed`, which calls `failure_patch`, and an escaped exception reaches `loop._count_exception`, which writes `action_failures`. `record_epic` must bypass both: test a failed `worktree.sh epic` and a raised exception, not only an empty reply, and assert the card's note is unchanged.
 - **The Architect rename** (cards plan, Tasks 1 to 3) may merge first. It moves `skills/planner/` and renames the `planner.*` keys. Nothing here depends on either name.
 
 ## Review Focus
@@ -206,7 +208,7 @@ In `tests/test-board-local.sh`, the assertions that pin whole list rows gain `"e
 - Produces: `epic.sh approve-design <id> <file>`: the same revision step with no log line. The cards plan uses it; it is here because it shares the code and must be gated from the first day.
 - Produces: `epic.sh fail <id> <card>`: raises the card's count in `<epic dir>/failures.json` and prints the new count. A card's count is removed when `record` writes its line.
 - Produces: `epic.sh pending`: prints `[{epic, card, pr_url, failures}]` for every card in `done` with an `epic` that exists, a non-null `pr_url`, and no line for it in that epic's log, by card number. A card whose epic is missing or malformed is left out with `fleet-board: warning: card C<n> names epic E<id>, which cannot be read` on stderr. Exit 0 with `[]` when there is no `epics/` directory.
-- Produces: gate rule G5 in `hooks/gate.sh`: a Bash command that runs `epic.sh` (or `epic`) with any verb other than `read`, `list`, `pending` or `report` is blocked with `fleet-board gate: only a person or the supervisor changes an epic; use the board page or a terminal`. It follows G4's parser (`parse_settle`) and fails closed the same way: a verb it cannot resolve is blocked.
+- Produces: gate rule G5 in `hooks/gate.sh`: a Bash command that runs `epic.sh` with any verb other than `read`, `list`, `pending` or `report` is blocked with `fleet-board gate: only a person or the supervisor changes an epic; use the board page or a terminal`. G5 matches `epic.sh` only where it runs: as the command word of a simple command (at the start, after `;`, `&&`, `||`, `|`, `(`, a command substitution's opening, or leading `VAR=value` words), or as the script argument of `bash` or `sh`. A word anywhere else, such as `cat scripts/epic.sh`, `git diff -- scripts/epic.sh`, `sed -i.bak ... scripts/epic.sh` or `grep -rn epic plugins/`, is not a run and is allowed; the bare word `epic` is never matched. This is narrower than G4, which matches the basename of every word in `gate.sh`'s word loop and so also blocks reads of the premise settle script; do not copy that. Once G5 has found a run, it takes the verb as G4's `parse_settle` does and fails closed the same way: a verb it cannot resolve is blocked.
 
 - [ ] **Step 1: Write the failing tests.**
 
@@ -247,6 +249,9 @@ G5 blocks:   epic.sh record 1 7 f.json | bash scripts/epic.sh set-intent 1 f | e
 G5 allows:   epic.sh read 1 | epic.sh list | epic.sh list --all | epic.sh pending | epic.sh report 1
 G5 unknown:  epic.sh "$V" 1 (a verb held in a variable) -> blocked
 G5 inert:    the same commands in a directory with no .fleet-board.yml -> allowed
+G5 reads:    cat scripts/epic.sh | sed -n 1,5p scripts/epic.sh | grep -n create scripts/epic.sh
+             | git diff origin/main -- scripts/epic.sh | sed -i.bak 's/a/b/' scripts/epic.sh
+             | grep -rn epic plugins/ -> each allowed
 ```
 
 - [ ] **Step 2: Run** `test-epic.sh` and `test-gate.sh`. Expected: the new cases fail.
@@ -257,16 +262,17 @@ G5 inert:    the same commands in a directory with no .fleet-board.yml -> allowe
 ### Task 5: The scheduler plans `record_epic`
 
 **Files:**
-- Modify: `scripts/tick-plan.sh`, `scripts/config-defaults.json`, `scripts/config.sh`, `scripts/supervisor/scheduler.py`, `tests/tick-plan-lib.sh`, `tests/test-tick-plan-merging.sh`, `tests/test-config.sh`, `fixtures/supervisor/scheduler_cases.py`, `CLAUDE.md`, `docs/config.md`
+- Modify: `scripts/tick-plan.sh`, `scripts/config-defaults.json`, `scripts/config.sh`, `scripts/supervisor/scheduler.py`, `scripts/supervisor/state.py`, `scripts/supervisor/loop.py`, `scripts/supervisor/driver.py`, `tests/tick-plan-lib.sh`, `tests/test-tick-plan-merging.sh`, `tests/test-config.sh`, `fixtures/supervisor/scheduler_cases.py`, `CLAUDE.md`, `plugins/fleet-board/docs/config.md`
 
 **Interfaces:**
 - Consumes: `epic.sh pending` (Task 4).
 - Produces: config `epics: {record: false}` (boolean; `config.sh` refuses anything else with `epics.record must be true or false`) and `models.architect_record` (string, default `"sonnet"`). **The default is `false` in this task**: until Task 6 the driver does not know the action, and an action the driver refuses would be planned on every cycle. Task 6 flips it to `true`.
-- Produces: plan action `record_epic`, reason `merged child of E<id> is not recorded`. The row carries `state: "done"` and `epic: <id>`. It appears in the plan and in `--candidates`. `--candidates --card <n>` for such a card returns the same row.
+- Produces: plan action `record_epic`, reason `merged child of E<id> is not recorded`. The row carries `state: "done"` and `epic: <id>`. It appears in the plan and in `--candidates`. `--candidates --card <n>` for such a card returns the same row; today that mode reads only the active states, so this task adds `done` to the states it reads for a single card.
 - When it is planned: `epics.record` is true, `<board.dir>/epics` exists, and `epic.sh pending` lists the card. `tick-plan.sh` runs `epic.sh pending` at most once per plan and not at all when the directory is absent. It lists no Done column and reads no Done card's note for this.
-- A failed `epic.sh pending` (non-zero exit or output that is not an array) plans nothing for epics and warns once on stderr; the rest of the plan is unchanged.
+- A failed `epic.sh pending` (non-zero exit or output that is not an array) plans nothing for epics and adds one entry to the plan's JSON `warnings` array (the channel `candidates.py` surfaces; stderr never reaches the supervisor); the rest of the plan is unchanged.
 - Never planned in `--settle-merge` mode.
 - Produces, in `scheduler.py`: `record_epic` in `_ACTION_CLASS` (the class the premise check uses) and in `SCOPE_FREE_ACTIONS`. A new rule: at most one `record_epic` per `epic` value is admitted, and none while a `record_epic` for that epic is running; the held row's reason is `E<id> is recording C<other>`. Rows of different epics are admitted together. The lowest card number goes first.
+- The running half of that rule needs the epic on a running claim, which it does not have today: `state.Action` gains `epic` (int or null), `driver.begin` copies it from the plan row, and `loop._active_claims` carries it, so the scheduler sees `epic` on running `record_epic` actions. `test_every_planned_action_is_classified` in `scheduler_cases.py` pins the `_ACTION_CLASS` set; add `record_epic` to its expected set.
 - `tests/tick-plan-lib.sh`: `setup_case` writes `epics: {record: false}` into the case config unless the case's extra YAML sets the key, so no existing scenario changes when Task 6 flips the default.
 
 - [ ] **Step 1: Write the failing tests.**
@@ -277,8 +283,8 @@ In `tests/test-tick-plan-merging.sh`, with the lib's `plan` and `assert_jq`, and
 epic-pending:          done card 7, epic 1, pr_url set, no log line, epics.record true -> a row for 7 with action "record_epic", reason "merged child of E1 is not recorded", epic 1, state "done"
 epic-recorded:         the log has a line for 7 -> no row for 7
 epic-off:              epics.record false -> no row for 7
-epic-no-dir:           no epics/ directory, a done card -> the plan has no record_epic row and the fake epic.sh was never called
-epic-pending-fails:    epic.sh pending exits 1 -> no record_epic row, every other row as without it, one warning on stderr
+epic-no-dir:           no epics/ directory, a done card -> the plan has no record_epic row and no warnings entry
+epic-pending-fails:    epic.sh pending exits 1 (its cards directory made unreadable with chmod 000 for the case, since tick-plan runs the real epic.sh from its own directory and the suites fake only gh) -> no record_epic row, every other row as without it, one entry in the plan's warnings
 epic-candidates:       --candidates has the row for 7 with epic 1
 epic-one-card:         --candidates --card 7 returns the record_epic row
 epic-settle:           --settle-merge 7 -> no record_epic row
@@ -291,6 +297,7 @@ In `scheduler_cases.py`:
 ```
 test_one_record_epic_per_epic_is_admitted          candidates 7 and 8, both epic 1 -> 7 admitted; 8 held, reason "E1 is recording C7"
 test_record_epic_waits_for_a_running_one           7 running record_epic for epic 1 -> 8 held
+test_a_running_claim_carries_its_epic              driver.begin on a record_epic row -> the Action and loop._active_claims hold epic 1
 test_record_epics_of_two_epics_run_together        7 (epic 1) and 9 (epic 2) -> both admitted
 test_record_epic_is_scope_free                     admitted beside a start of another card whose Scope overlaps the child's
 test_record_epic_is_a_classified_action            'record_epic' in the classified actions; it never goes to attention as unknown
@@ -312,7 +319,8 @@ In `tests/test-config.sh`: `epics.record: "yes"` is refused with the message abo
 **Interfaces:**
 - Consumes: plan action `record_epic` with `epic` (Task 5); `parse-report.sh --role architect --mode record` (Task 3); `epic.sh read|record|fail` (Tasks 1 and 4).
 - Produces: `worktree.sh epic <n>`: the same behaviour as `worktree.sh premise <n>` with the path `<base>/<n>-epic_record`; prints `{path, head}`. The driver removes it with the path form of `worktree.sh remove`. Update the Invariants line in `CLAUDE.md` that lists which checkouts the driver removes.
-- Produces: `premise.sh clear <n>`: sets the card's `premise` to null under the card's lock; exit 0, 3 when the card cannot be read.
+- Produces: `premise.sh clear <n>`: sets the card's `premise` to null and `premise_recheck` to true under the card's lock; exit 0, 3 when the card cannot be read.
+- Produces: `adapters/local/move.sh` does not re-stamp a card moved into Ready by a person while its `premise_recheck` is true, so a Backlog sibling named under `## Affects` is still checked before it starts. The premise check drops `premise_recheck` when it stamps the card. `scripts/adapters/local/move.sh` and `tests/test-board-local.sh` join this task's Files.
 - Produces: `resolver.resolve` returns `Dispatch('claude', None, CLAUDE, <models.architect_record or 'sonnet'>, False)` for `record_epic`.
 - Produces: `ROLE_ACTIONS` and `_ROLE_OF` gain `record_epic -> 'architect'`. `scripts.ALLOWED` gains `epic.sh`. `driver._FLAGS` gains `--design-file` and `--expect-rev`.
 - Produces: an `architect` entry in `_SECTIONS` and `_LABELS`. Its inputs, in order: card number, title, body, numbered acceptance; `mode` (`record`); `pull_request` (the number and the merge commit); `reports` (every role report comment on the card, oldest first, each under its author line; a role report is a comment with `## Status` and a `VERIFIED:` line); `epic_intent`; `epic_design` (with its revision number); `epic_log` (one line per entry: `#<card>: <built>`, then its decisions and departures); `siblings` (each child of the epic with no `pr_url` in `backlog` or `ready`, as `C<n> <state> <title>` followed by its Scope text and numbered acceptance); `design_out` (an absolute path the session writes a revised design to); the checkout path; the scripts directory; `instructions` (the text of `defaults/epic-record-prompt.md`); the config.
@@ -368,7 +376,7 @@ test_the_usage_line_is_a_card_line_in_done
     kind 'card', column 'done', action 'record_epic', role 'architect'
 ```
 
-In `resolver_cases.py`: the dispatch above, and a configured `models.architect_record` is used. In `tests/test-worktree.sh`: `epic 12` prints a path ending `/12-epic_record` and the default head; `remove 12 <that path>` deletes it and leaves `<base>/12-some-slug` and `<base>/12-premise_check`. In `tests/test-premise.sh`: `clear` on a stamped card leaves `premise` null and `premise.sh moved` then reports `no premise stamp`; `clear 999` exits 3. In `tests/test-config.sh`: the default `epics.record` is now `true`.
+In `resolver_cases.py`: the dispatch above, and a configured `models.architect_record` is used. In `tests/test-worktree.sh`: `epic 12` prints a path ending `/12-epic_record` and the default head; `remove 12 <that path>` deletes it and leaves `<base>/12-some-slug` and `<base>/12-premise_check`. In `tests/test-premise.sh`: `clear` on a stamped card leaves `premise` null and `premise_recheck` true, and `premise.sh moved` then reports `no premise stamp`; `clear 999` exits 3; a stamp written by the premise check removes `premise_recheck`. In `tests/test-board-local.sh`: a Backlog card with `premise_recheck` true that a person moves to Ready keeps `premise` null; one without it is stamped as today. In `tests/test-config.sh`: the default `epics.record` is now `true`.
 
 - [ ] **Step 2: Run** `test-supervisor-driver.sh` (one test at a time with `FLEET_TEST_ONLY=<name>`), `test-supervisor-resolver.sh`, `test-worktree.sh`, `test-premise.sh` and `test-config.sh`. Expected: the new cases fail.
 - [ ] **Step 3: Implement.** `_do_record_epic` follows `_do_check_premise`'s shape. Keep the failure path separate from `failure_patch`, which writes the note.
