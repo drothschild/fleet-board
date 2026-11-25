@@ -204,8 +204,18 @@
 #     unblock), k >= max: skip (unblock is not tried again), with reason
 #     "unblock made no progress after <k> attempts: <error>" and the warning
 #     "#<n>: unblock made no progress after <k> attempts: <error>; move the card by hand, then run: bash <scripts>/note.sh reset-failures <n>".
+#     The same holds for the unblock of a card with no PR (below).
 #     Any other blocked card has no unblock to fail: it gets the table's
 #     skip "blocked", whatever k is.
+# Blocked with no PR: a blocked card with no PR (note.pr and the row's pr
+# null), note.blocked_from in_progress, no note.blocking_pr and no
+# note.no_progress_block (the supervisor sets that on its own blocks for no
+# progress) plans unblock, reason "blocked with no PR; back to Ready". The
+# driver counts every unblock of a card with no PR in note.no_pr_returns,
+# which no action's reset clears. When an unblock is due for a card with no PR
+# and no_pr_returns is max or more: skip, reason
+# "unblock made no progress after <returns> attempts", with the same warning;
+# note.sh reset-failures clears the count.
 #   <scripts> is this script's absolute directory, single-quoted when it
 #   holds a character the shell would split or expand. A hand move does not
 #   reset k (it lives in the note), so without the reset the card would stay
@@ -1473,10 +1483,22 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
               else act("rerun_checks"; "PR #\($c.pr) checks failed at \($h[0:7]) (\($names)); re-running the failed jobs once") end
           else act("wait"; "waiting for a human merge or green checks") end
         elif $c.state == "blocked" then
+          ($c.pr == null and $n.pr == null) as $no_pr
+          | ($n.no_pr_returns // 0) as $returns
           # A card a merger attention blocked waits for a person, whatever its blocking PR does
-          if $n.blocked_from == "merging" then act("skip"; "blocked, waiting for a person")
-          elif $n.blocking_pr != null and $c.blocking_merged == true then act("unblock"; "blocking PR #\($n.blocking_pr) merged")
-          else act("skip"; "blocked") end
+          | (if $n.blocked_from == "merging" then act("skip"; "blocked, waiting for a person")
+             elif $n.blocking_pr != null and $c.blocking_merged == true then act("unblock"; "blocking PR #\($n.blocking_pr) merged")
+             # The implementor blocked it before opening a PR: nothing to save, and blocked_by and the premise
+             # check hold it in Ready until it can start
+             elif $no_pr and $n.blocked_from == "in_progress" and $n.blocking_pr == null and $n.no_progress_block != true
+             then act("unblock"; "blocked with no PR; back to Ready")
+             else act("skip"; "blocked") end) as $b
+          # The returns of a card with no PR are bounded, and so is an unblock of one that keeps failing
+          | if $no_pr and $b.action == "unblock" and $returns >= $max
+            then act("skip"; "unblock made no progress after \($returns) attempts")
+            elif $no_pr and $b.action == "unblock" and $fails >= $max
+            then act("skip"; "unblock made no progress after \($fails) attempts: \($err)")
+            else $b end
         else act("skip"; "state \($c.state) is not planned") end;
 
   map(. as $c | (first($actual_scope[] | select(.number == $c.number)) // {paths:[],unknown:false}) as $actual

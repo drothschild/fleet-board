@@ -611,6 +611,71 @@ def test_unblock_returns_a_card_without_scope_to_ready(base):
     assert note['action_failures'] == 0 and note['last_action_error'] is None and note['blocked_from'] is None, note
 
 
+IMPLEMENTOR_BLOCKED = """## Status
+blocked
+
+## Findings
+- [Important] The card needs a script that does not exist yet.
+
+## For the card
+Declare the dependency, then move the card back to Ready.
+
+## PR
+No PR: blocked before any test was written.
+
+VERIFIED: `ls start.sh | wc -l` -> 0 files found
+"""
+
+
+def test_unblock_of_a_card_with_no_pr_counts_the_returns(base):
+    b = board_for(base, 'blocked')
+    b.put_note({'blocked_from': 'in_progress', 'state': 'blocked', 'branch': BRANCH})
+    assert begin(b, 'unblock', state='blocked', pr=None).kind == 'done'
+    assert b.card()['state'] == 'ready', b.card()
+    assert b.note()['no_pr_returns'] == 1, b.note()
+    # a later implementor block keeps the count
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.plans({'report': IMPLEMENTOR_BLOCKED})
+    outcome = run_role(b, begin(b, 'start', pr=None))
+    assert outcome.progressed is True, b.state.events
+    note = b.note()
+    assert b.card()['state'] == 'blocked' and note['blocked_from'] == 'in_progress', note
+    assert note['no_pr_returns'] == 1 and not note.get('no_progress_block') and note['pr'] is None, note
+    assert begin(b, 'unblock', state='blocked', pr=None).kind == 'done'
+    note = b.note()
+    assert note['no_pr_returns'] == 2 and note['action_failures'] == 0, note
+    r = scripts.run(b.root, 'note.sh', 'reset-failures', 12, env=b.env)
+    assert r.rc == 0, r
+    assert b.note()['no_pr_returns'] == 0, b.note()
+
+
+def test_unblock_of_a_card_with_a_pr_does_not_count_a_return(base):
+    b = board_for(base, 'blocked')
+    b.put_note({'blocking_pr': 9, 'blocked_from': 'in_review', 'pr': 34})
+    assert begin(b, 'unblock', state='blocked').kind == 'done'
+    assert not b.note().get('no_pr_returns'), b.note()
+
+
+def test_a_no_progress_block_is_marked_and_an_implementor_block_clears_the_mark(base):
+    for number, reason in enumerate(('no progress after 3 attempts: worktree is busy',
+                                     'implementor produced no PR after 3 attempts')):
+        sub = Path(base) / str(number)
+        sub.mkdir()
+        b = board_for(sub, 'in_progress')
+        assert begin(b, 'block', state='in_progress', pr=None, reason=reason).kind == 'done'
+        assert b.note()['no_progress_block'] is True, b.note()
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.plans({'report': IMPLEMENTOR_BLOCKED})
+    run_role(b, begin(b, 'continue_implementor', state='in_progress', pr=None))
+    note = b.note()
+    assert note['blocked_from'] == 'in_progress' and not note.get('no_progress_block'), note
+    # reset-failures clears the mark too
+    b.put_note({'no_progress_block': True})
+    r = scripts.run(b.root, 'note.sh', 'reset-failures', 12, env=b.env)
+    assert r.rc == 0, r
+    assert not b.note().get('no_progress_block'), b.note()
+
+
 PENDING = {'out_of_scope': [{'title': 'Docs', 'detail': 'd'}, {'title': 'Cache', 'detail': 'c'}],
            'bugs': [{'title': 'Crash', 'repro': 'r', 'expected': 'e', 'observed': 'o'}], 'pr': None}
 
