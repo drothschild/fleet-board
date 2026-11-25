@@ -114,10 +114,12 @@ missing tool (`gh`, `jq` or `git`). Then run init.sh again.
 
 ## Step 7: On success
 
-Show the written `.fleet-board.yml`, and suggest committing it:
+Show the written `.fleet-board.yml`. Tell the user not to commit it: each board keeps its
+own copy, and `init.sh` lists it in `.gitignore`. Suggest committing that `.gitignore`
+change:
 
 ```bash
-git add .fleet-board.yml && git commit -m "chore: add fleet-board config"
+git add .gitignore && git commit -m "chore: ignore fleet-board local files"
 ```
 
 ## Step 8: Moving an existing GitHub board (optional)
