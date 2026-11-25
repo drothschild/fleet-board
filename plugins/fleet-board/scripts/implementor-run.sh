@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# implementor-run.sh <card> <worktree> <branch> - run the implementor through implementor.provider:
+# implementor-run.sh <card> <worktree> <branch> [<model>] - run the implementor through implementor.provider
+# (on <model> in place of implementor.model when given, as the supervisor does for an escalated card):
 # the provider's implement_command in the card's worktree, behind providers/guard/, then check and
 # post the one report it wrote. Run from the card's repo checkout.
 #
@@ -21,14 +22,14 @@ die() {
   exit "${2:-1}"
 }
 
-[ $# -eq 3 ] || die "usage: implementor-run.sh <card> <worktree> <branch>" 2
+[ $# -eq 3 ] || [ $# -eq 4 ] || die "usage: implementor-run.sh <card> <worktree> <branch> [<model>]" 2
 N="$1" WT_IN="$2" BRANCH="$3"
 fb_valid_number "$N" || die "card number must be numeric, got: $N" 2
 
 fb_load_config
 PROVIDER="$(fb_cfg implementor.provider)"
 [ "$PROVIDER" != claude ] || die "implementor.provider is claude: the supervisor runs that implementor" 2
-MODEL="$(fb_cfg implementor.model)"
+MODEL="${4:-$(fb_cfg implementor.model)}"
 [ -n "$MODEL" ] || die "implementor.model must be set for provider $PROVIDER"
 COMMAND="$(jq -r --arg p "$PROVIDER" '.providers[$p].implement_command // empty' <<<"$FLEET_CFG")"
 [ -n "$COMMAND" ] || die "providers.$PROVIDER has no implement_command"

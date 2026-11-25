@@ -9,7 +9,7 @@ Dispatch = namedtuple('Dispatch', 'runner agent provider model escalated')
 
 SCRIPTS = 'scripts'
 CLAUDE = 'claude'
-PROVIDER_IMPLEMENTOR = 'provider-implementor'   # no runner yet: the driver raises an attention instead
+PROVIDER_IMPLEMENTOR = 'provider-implementor'   # scripts/implementor-run.sh
 IMPLEMENT = ('start', 'continue_implementor')
 _REVIEW = ('review', 'start_review')
 
@@ -18,9 +18,20 @@ def _claude(agent, model, escalated):
     return Dispatch('claude', agent, CLAUDE, model, escalated)
 
 
+def _next_model(config, provider, model):
+    """The model after `model` in providers.<provider>.models (cheapest first), or None when there is none."""
+    entry = ((config or {}).get('providers') or {}).get(provider)
+    models = entry.get('models') if isinstance(entry, dict) else None
+    if not isinstance(models, list) or model not in models:
+        return None
+    after = models[models.index(model) + 1:]
+    return after[0] if after and isinstance(after[0], str) and after[0] else None
+
+
 def resolve(config, candidate, card_config=None):
-    """`card_config` is the config of the card's repo when it is not the home one: implementor.provider and
-    implementor.model come from it."""
+    """`card_config` is the config of the card's repo when it is not the home one: implementor.provider,
+    implementor.model and providers.<name>.models come from it. An escalated provider implementor takes the
+    next model of the same provider; its model is None when there is none."""
     action = candidate.get('action')
     models = candidate.get('models') or {}
     cfg_models = (config or {}).get('models') or {}
@@ -29,7 +40,10 @@ def resolve(config, candidate, card_config=None):
         implementor = ((card_config or config) or {}).get('implementor') or {}
         provider = implementor.get('provider', CLAUDE)
         if provider != CLAUDE:   # never a Claude session in its place
-            return Dispatch(PROVIDER_IMPLEMENTOR, None, provider, implementor.get('model'), escalated)
+            model = implementor.get('model')
+            if escalated:
+                model = _next_model(card_config or config, provider, model)
+            return Dispatch(PROVIDER_IMPLEMENTOR, None, provider, model, escalated)
         return _claude('fleet-board:implementor', models.get('implementor'), escalated)
     if action == 'fix':
         return _claude('fleet-board:fixer', models.get('fixer'), escalated)

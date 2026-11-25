@@ -8,7 +8,8 @@
 # its own line, then one line per card:
 #   #<n> <title> · round <r> · PR #<pr> · <implementor>/<reviewer>
 # with the values from the card's manager note and "—" for a missing one
-# ("PR —" when there is no PR). An empty section prints "(none)". A card
+# ("PR —" when there is no PR; <implementor> of a provider implementor is
+# "<provider>:<model>"). An empty section prints "(none)". A card
 # whose note cannot be read prints "#<n> <title> · note unreadable".
 # A ready card with acceptance items and unmet blockers (deps.sh)
 # ends its line with " · waits for <ref> (<state>)[, ...]", the

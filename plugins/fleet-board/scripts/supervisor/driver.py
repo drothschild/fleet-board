@@ -95,6 +95,7 @@ DEFAULT_PERSONA = Path(__file__).resolve().parent / 'defaults' / 'merger-persona
 PR_FILES_LIMIT = 100   # gh pr view --json files lists at most this many: a full list cannot prove the persona untouched
 _CONFLICT = re.compile(r'conflict', re.I)
 _SCRIPT_RUNNERS = ('stage-review', 'evidence-review')
+_RUNNER_MARGIN = 300   # seconds past implementor-run.sh's own timeout, for its post-run check, before it is killed
 _UNCOUNTED = frozenset(('wait', 'skip'))
 _FLAGS = frozenset(('--all', '--qa-summary', '--role', '--commits-since-review', '--mode', '--by', '--sha', '--pass', '-'))
 _FIXED_BEFORE = ('backlog', 'ready', 'in_progress', 'in_review')
@@ -402,11 +403,18 @@ class _Ctx:
         return value
 
     def models_patch(self, strict=True):
+        """The note's models. A provider implementor is recorded as `<provider>:<model>` by the action that runs
+        it; any other action leaves that record as it is, so the planner's Claude model never replaces it."""
         models = self.row.get('models')
         if not isinstance(models, dict):
             if strict:
                 raise _Invalid('models', models)
             return {}
+        d = resolver.resolve(self.config, dict(self.row, action='continue_implementor'), self.checkout()[1])
+        if d.runner == resolver.PROVIDER_IMPLEMENTOR:
+            models = {k: v for k, v in models.items() if k != 'implementor'}
+            if self.row.get('action') in resolver.IMPLEMENT and d.model is not None:
+                models['implementor'] = '%s:%s' % (d.provider, d.model)
         patch = {'models': models}
         if self.row.get('escalated'):
             patch.update(escalated=True, escalated_at_round=self.row.get('round') or 0)
@@ -498,7 +506,12 @@ class _Run:
 
     @property
     def script(self):
-        return self.dispatch.runner in _SCRIPT_RUNNERS
+        """A provider script runs this role: its stdout is one JSON object and it posts its own report."""
+        return self.dispatch.runner in _SCRIPT_RUNNERS or self.provider_implementor
+
+    @property
+    def provider_implementor(self):
+        return self.dispatch.runner == resolver.PROVIDER_IMPLEMENTOR
 
 
 _PREDATES_LINE = 'skipped: the latest report predates the PR head'
@@ -1056,17 +1069,14 @@ class CardDriver:
         if dispatch is None or (dispatch.runner == 'claude' and not dispatch.agent):
             raise _Fail('%s names no agent' % name)
         rules = None
+        provider_run = dispatch.runner == resolver.PROVIDER_IMPLEMENTOR
         if role == 'implementor':
             try:
-                if dispatch.runner == resolver.PROVIDER_IMPLEMENTOR:
-                    raise _Attention('implementor.provider is %s, which has no implementor runner yet: set '
-                                     'implementor.provider to claude' % _first_line(str(dispatch.provider)))
+                if provider_run and dispatch.escalated and dispatch.model is None:
+                    raise self._no_next_model(c, dispatch.provider)
                 rules = self._implementor_rules(c)
             except _Attention as exc:
-                reason = str(exc)
-                c.merge(dict(_RESET, role_guard={'role': role, 'status': 'attention', 'reason': reason}))
-                self.state.set_attention(c.n, reason)
-                self.state.event('attention', card=c.n, role=role, reason=reason)
+                self._role_attention(c, role, str(exc))
                 return 'attention'
         for field, value in (('agent', dispatch.agent), ('model', dispatch.model)):
             if value is not None and not (isinstance(value, str) and _NAME.fullmatch(value)):
@@ -1079,9 +1089,13 @@ class CardDriver:
         inputs = {'number': c.n, 'title': card.get('title'), 'body': card.get('body'),
                   'acceptance': ''.join('- %s\n' % a for a in card.get('acceptance') or []) or 'none',
                   'config': json.dumps(c.checkout()[1], indent=2, sort_keys=True), 'scripts': str(self.plugin_dir / 'scripts')}
-        if role in ('implementor', 'reviewer', 'fixer'):
+        if role in ('implementor', 'reviewer', 'fixer') and not provider_run:
             inputs['open_cards'] = self._open_cards(c)
-        if role == 'implementor':
+        if provider_run:
+            # implementor-run.sh builds its own prompt; the model is passed only when it is not implementor.model
+            run.stage_args = [c.n, c.worktree(), c.branch()] + ([dispatch.model] if dispatch.escalated else [])
+            run.round = note.get('round') if isinstance(note.get('round'), int) else 0
+        elif role == 'implementor':
             inputs.update(worktree=c.worktree(), branch=c.branch(), project_rules=rules)
             if name == 'continue_implementor':
                 inputs['note'] = note
@@ -1100,6 +1114,21 @@ class CardDriver:
         run.guard = self._role_snapshot(card)
         self._launch(run)
         return 'session'
+
+    def _role_attention(self, c, role, reason):
+        """Hold the card for a person: note.role_guard stops the planner until it is cleared."""
+        c.merge(dict(_RESET, role_guard={'role': role, 'status': 'attention', 'reason': reason}))
+        self.state.set_attention(c.n, reason)
+        self.state.event('attention', card=c.n, role=role, reason=reason)
+
+    @staticmethod
+    def _no_next_model(c, provider):
+        config = c.checkout()[1]
+        model = (config.get('implementor') or {}).get('model')
+        return _Attention(_first_line(
+            'the implementor is due to escalate, but %s has no next model in providers.%s.models: add a stronger '
+            'model after it there (or raise models.escalate_after_rounds), then clear this attention'
+            % (model, provider)))
 
     def _implementor_rules(self, c):
         """The project rules for an implementor session, or None: the implementor.persona file text, then the
@@ -1277,13 +1306,22 @@ class CardDriver:
         home_repo = (self.config_loader().get('board') or {}).get('repo')
         if card_repo and str(card_repo).lower() != str(home_repo or '').lower():
             env['FLEET_BOARD_HOME'] = str(self.root)   # a card of another repo: its board is the home board
+        root, attempt_timeout = self.root, sup.get('attempt_timeout_seconds')
+        if run.provider_implementor:
+            # the runner reads the config of the directory it runs in, and ends a slow provider itself (a
+            # provider failure, with the post-run check): it is killed only well after that
+            root, card_config = c.checkout()
+            own = (card_config.get('implementor') or {}).get('timeout') \
+                or (card_config.get('supervisor') or {}).get('attempt_timeout_seconds') or 7200
+            if _posint(own):
+                attempt_timeout = own + _RUNNER_MARGIN
         argv = self.roles.command(d, run.prompt, c.config, self.plugin_dir, stage_args=run.stage_args)
         mode = None if run.script else ((c.config.get('headless') or {}).get('permission_mode') or 'auto')
         label = 'card-%d-%s-%d-%d' % (c.n, c.row['action'], int(self.clock() * 1000), run.attempt)
         try:
             run.action.session = self.roles.launch(
-                argv, root=self.root, log_dir=self.log_dir, label=label, env=env,
-                attempt_timeout=sup.get('attempt_timeout_seconds'),
+                argv, root=root, log_dir=self.log_dir, label=label, env=env,
+                attempt_timeout=attempt_timeout,
                 progress_timeout=None if run.script else sup.get('progress_timeout_seconds'),
                 permission_mode=mode,
                 kill_grace=sup.get('shutdown_grace_seconds', getattr(self.roles, 'DEFAULT_KILL_GRACE', 5.0)),
@@ -1360,7 +1398,10 @@ class CardDriver:
                   'cache_write': getattr(u, 'cache_write', None), 'cache_read': getattr(u, 'cache_read', None)}
         line = {'run_id': self.state.run_id, 'card': action.card, 'kind': 'card', 'column': ledger_column(action),
                 'action': ('review_' + run.stage) if run.stage else action.action, 'role': action.role,
-                'provider': action.provider, 'model': getattr(u, 'model', None), 'started_at': _iso(action.started_at),
+                'provider': action.provider,
+                # a failed provider implementor prints no model: the one it was started on is the one it ran
+                'model': getattr(u, 'model', None) or (run.dispatch.model if run.provider_implementor else None),
+                'started_at': _iso(action.started_at),
                 'ended_at': _iso(self.clock()), 'log': result.log_path, **counts}
         self.state.add_tokens(counts, action.card)
         try:
@@ -1407,6 +1448,12 @@ class CardDriver:
         c, code = run.c, result.exit_code
         lines = self._error_lines(result)
         last = lines[-1] if lines else ''
+        if run.provider_implementor and code == 3 and not result.timed_out:
+            # the guard or the runner already commented on the card
+            data = _json(result.report_text)
+            reason = data.get('attention') if isinstance(data, dict) else None
+            self._role_attention(c, run.role, _first_line(str(reason or last or 'the provider run raised an attention')))
+            return Outcome(c.n, False, False, None)
         if result.failure:
             if result.timed_out or code not in (2, 6, 7):
                 raise _Fail(last or result.reason or 'exit %s' % code)
