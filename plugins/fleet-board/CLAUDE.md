@@ -91,6 +91,16 @@ no file here. The gate's residual bypasses and false positives are listed in the
   consecutive no-progress actions the card is blocked; at `2*max_rounds` (or `max_rounds`
   for a blocked card awaiting unblock) it is skipped for a person, who clears it with
   `note.sh reset-failures <n>`. tick-plan only reads the count; the supervisor's driver writes it.
+  Blocked with no PR: a Blocked card with no PR, `blocked_from: in_progress`, no `blocking_pr` and no
+  `no_progress_block` (so the implementor blocked it before opening a PR) plans `unblock`, reason
+  `blocked with no PR; back to Ready`; in Ready, `blocked_by` and the premise check hold it until it can
+  start. Cards with a PR, cards blocked from ready, in_review, a review stage or merging, and the
+  supervisor's own no-progress blocks (`no_progress_block: true`, set by the driver's `block` for a
+  `no progress after ...` reason or any block from in_progress) stay Blocked. The returns stop at
+  `review.max_rounds`: the driver counts each unblock of a card with no PR in `note.no_pr_returns`, which
+  no action's reset clears, and once it reaches the limit an unblock that is due (this one or a merged
+  `blocking_pr`) is a `skip`, `unblock made no progress after <k> attempts`, with a warning.
+  `note.sh reset-failures <n>` clears the count and the mark.
   `tick-plan.sh --settle-merge <n>...` (merge-reviewed.sh's planner) plans only the named cards
   (read with `board-read.sh`, no column listed) through the same table, keeping only steps that
   start no agent plus `merge` and `verify_main`: `to_human_qa`, `block` and `mark_ready` stay,
@@ -529,7 +539,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
 - Offline suites: `bash plugins/fleet-board/tests/test-<name>.sh` (fakes: `fake-gh.sh`,
   `fake-claude.sh`, fixtures under `fixtures/`). `test-no-tick-system.sh` pins that the tick system stays
   gone. Run only the suite you touched.
-- The planner (`scripts/tick-plan.sh`) is tested by six suites that share one helper file,
+- The planner (`scripts/tick-plan.sh`) is tested by several suites that share one helper file,
   `tests/tick-plan-lib.sh` (`setup_case`, `plan`, `splan`, `settle`, the assertions, the fake-gh
   setup and the scenario builders). Each scenario lives in exactly one suite; run only the one for
   the rule you changed:
@@ -537,12 +547,13 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `test-tick-plan-review.sh` (in_review: review, fix, escalation, human QA, drift, re-review),
   `test-tick-plan-merging.sh` (merging, update_branch, settle mode, merge only reviewed heads),
   `test-tick-plan-followups.sh` (blocked, pending follow-ups, lookup and action failures),
+  `test-tick-plan-blocked-no-pr.sh` (a Blocked card with no PR going back to Ready, and when that stops),
   `test-tick-plan-scope.sh` (scope overlap, version bumps, base fetch, the candidates cost pass),
   `test-tick-plan-stages.sh` (review stages and their gates),
   `test-tick-plan-repos.sh` (a card of another repo: PR lookups and review stages come from that repo).
   `test-tick-plan-split.sh` pins that shape; add a new scenario to the suite for its area and a
   new helper to the lib, never a copy into a suite. `test-tick-plan.sh` holds no scenario: it
-  runs all six and prints their combined total, for the whole planner or a card that names it.
+  runs them all and prints their combined total, for the whole planner or a card that names it.
   Its second line marks it as an aggregate runner, so CI's `.github/scripts/run-suites.sh`
   skips it and no suite runs twice.
 - `test-supervisor-allowlist.sh` reads every literal `*.sh` name the supervisor package passes to

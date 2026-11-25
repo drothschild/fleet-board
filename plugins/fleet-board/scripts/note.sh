@@ -9,7 +9,9 @@
 #   note.sh put <n> <json-file>        write the note (missing keys get defaults)
 #   note.sh merge <n> <json-patch>     get, merge the patch in, put
 #   note.sh reset-failures <n>         merge {"action_failures": 0,
-#                                      "last_action_error": null} (no file)
+#                                      "last_action_error": null,
+#                                      "no_pr_returns": 0,
+#                                      "no_progress_block": null} (no file)
 #   note.sh fail <n> <error>           merge {"action_failures": <stored> + 1,
 #                                      "last_action_error": <error>} (no file)
 #
@@ -40,6 +42,13 @@
 # A note written before the rename holds setup_failures and last_setup_error:
 # get, parse, merge and put read them as action_failures and
 # last_action_error (the new key wins when both are present) and drop them.
+#
+# no_pr_returns (null or a non-negative integer) counts the times a Blocked
+# card with no PR was unblocked back to Ready; at review.max_rounds
+# tick-plan.sh skips it for a person. no_progress_block (null or a boolean)
+# marks a block the supervisor made for no progress, which tick-plan.sh never
+# returns to Ready on its own. No action's counter reset clears either;
+# reset-failures clears both.
 #
 # blocked_from (null, or ready, in_progress, in_review or merging) is the state the
 # manager blocked the card from; accept.sh moves the card back to it. get
@@ -147,6 +156,8 @@ invalid_field() {
     elif (.implementor_attempts | nint | not) then "implementor_attempts"
     elif (.action_failures | . == null or (int and . >= 0) | not) then "action_failures"
     elif (.last_action_error | . == null or (type == "string" and clean) | not) then "last_action_error"
+    elif (.no_pr_returns | . == null or (int and . >= 0) | not) then "no_pr_returns"
+    elif (.no_progress_block | . == null or type == "boolean" | not) then "no_progress_block"
     elif (.stage | . == null or (type == "string" and test("\\A[a-z][a-z0-9_]*\\z")) | not) then "stage"
     elif (.reviewed_stages | . == null or (type == "array" and all(.[]; type == "string" and test("\\A[a-z][a-z0-9_]*\\z"))) | not) then "reviewed_stages"
     elif (.last_review | . == null or type != "object" or (.stage | . == null or (type == "string" and test("\\A[a-z][a-z0-9_]*\\z"))) | not) then "last_review.stage"
@@ -322,7 +333,8 @@ case "$CMD" in
     note_merge "$PATCH" "merge into"
     ;;
   reset-failures)
-    note_merge '{"action_failures":0,"last_action_error":null}' "reset the action failures on"
+    note_merge '{"action_failures":0,"last_action_error":null,"no_pr_returns":0,"no_progress_block":null}' \
+      "reset the action failures on"
     ;;
   fail)
     OLD="$(note_get)"

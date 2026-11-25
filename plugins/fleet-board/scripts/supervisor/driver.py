@@ -1887,17 +1887,17 @@ class CardDriver:
         blocked_by = parsed.get('blocked_by')
         reason = (parsed.get('for_the_card') or '').strip() or 'the %s reported blocked' % run.role
         if run.conflict:
-            c.merge({'blocked_from': prior, 'blocked_findings': run.conflict,
+            c.merge({'blocked_from': prior, 'blocked_findings': run.conflict, 'no_progress_block': None,
                      'blocking_pr': blocked_by if _posint(blocked_by) else None})
             c.move('blocked')
             c.comment_soft('Blocked: the fixer could not resolve the merge conflicts (%s).\n\n%s'
                            % (', '.join(f['text'] for f in run.conflict), reason))
         elif _posint(blocked_by):
-            c.merge({'blocking_pr': blocked_by, 'blocked_from': prior})
+            c.merge({'blocking_pr': blocked_by, 'blocked_from': prior, 'no_progress_block': None})
             c.move('blocked')
         else:
             entries = self._severe(parsed.get('findings')) or [{'severity': 'Important', 'text': reason}]
-            c.merge({'blocked_from': prior, 'blocked_findings': entries})
+            c.merge({'blocked_from': prior, 'blocked_findings': entries, 'no_progress_block': None})
             c.move('blocked')
             c.comment_soft('Blocked by the %s.\n\n%s' % (run.role, '\n'.join(
                 '- [%s] %s' % (e['severity'], e['text']) for e in entries)))
@@ -2017,6 +2017,9 @@ class CardDriver:
             raise _Invalid('state', came_from)
         left = _LEFT_MERGING if came_from == 'merging' else {}
         match = _NO_PROGRESS.match(reason)
+        # The only blocks planned from in_progress are for no progress: marked, so the planner never returns
+        # such a card to Ready as it does one the implementor blocked
+        left = dict(left, no_progress_block=True if match or came_from == 'in_progress' else None)
         if match:
             c.merge({'blocking_pr': None})
             entries = [{'severity': 'Important', 'text': reason}]
@@ -2514,8 +2517,15 @@ class CardDriver:
         c.merge(dict(_RESET, last_review=review, reviews=reviews, stage=None, reviewed_stages=[]))
 
     def _do_unblock(self, c):
+        note = c.note()
+        patch = dict(_RESET, state='ready', blocking_pr=None, blocked_from=None, blocked_findings=None,
+                     no_progress_block=None)
+        if not (_posint(note.get('pr')) or _posint(c.row.get('pr'))):
+            # Not in _RESET: the count bounds the returns of a card with no PR across its later blocks
+            count = note.get('no_pr_returns')
+            patch['no_pr_returns'] = (count if _posint(count) else 0) + 1
         c.move('ready')
-        c.merge_soft(dict(_RESET, state='ready', blocking_pr=None, blocked_from=None, blocked_findings=None))
+        c.merge_soft(patch)
 
     def _do_file_pending(self, c):
         note = c.note()
