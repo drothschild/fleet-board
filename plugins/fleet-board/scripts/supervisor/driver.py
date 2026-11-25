@@ -96,6 +96,7 @@ PR_FILES_LIMIT = 100   # gh pr view --json files lists at most this many: a full
 _CONFLICT = re.compile(r'conflict', re.I)
 _SCRIPT_RUNNERS = ('stage-review', 'evidence-review')
 _RUNNER_MARGIN = 300   # seconds past implementor-run.sh's own timeout, for its post-run check, before it is killed
+_STOP_CHECK_GRACE = 120   # at least this long from the TERM of a provider implementor to its KILL, for the same check
 _UNCOUNTED = frozenset(('wait', 'skip'))
 _FLAGS = frozenset(('--all', '--qa-summary', '--role', '--commits-since-review', '--mode', '--by', '--sha', '--pass', '-'))
 _FIXED_BEFORE = ('backlog', 'ready', 'in_progress', 'in_review')
@@ -686,6 +687,13 @@ def rejection_text(lines):
         rule = next((r for pattern, r in _RULE_TABLE if pattern.fullmatch(message)), None)
         quoted.append(line + ('\n' + rule if rule else ''))
     return _REJECTED % '\n'.join(quoted)
+
+
+def _allow_stop_check(session):
+    """A cancel with a short grace period still leaves a provider implementor time for the guard's post-run
+    check. A grace of 0 (a second Ctrl-C) stays an immediate kill."""
+    cancel = session.cancel
+    session.cancel = lambda grace: cancel(max(grace, _STOP_CHECK_GRACE) if grace > 0 else grace)
 
 
 class CardDriver:
@@ -1318,17 +1326,22 @@ class CardDriver:
         argv = self.roles.command(d, run.prompt, c.config, self.plugin_dir, stage_args=run.stage_args)
         mode = None if run.script else ((c.config.get('headless') or {}).get('permission_mode') or 'auto')
         label = 'card-%d-%s-%d-%d' % (c.n, c.row['action'], int(self.clock() * 1000), run.attempt)
+        kill_grace = sup.get('shutdown_grace_seconds', getattr(self.roles, 'DEFAULT_KILL_GRACE', 5.0))
+        if run.provider_implementor:
+            kill_grace = max(kill_grace, _STOP_CHECK_GRACE)
         try:
             run.action.session = self.roles.launch(
                 argv, root=root, log_dir=self.log_dir, label=label, env=env,
                 attempt_timeout=attempt_timeout,
                 progress_timeout=None if run.script else sup.get('progress_timeout_seconds'),
                 permission_mode=mode,
-                kill_grace=sup.get('shutdown_grace_seconds', getattr(self.roles, 'DEFAULT_KILL_GRACE', 5.0)),
+                kill_grace=kill_grace,
                 stage=run.script)
         except BaseException:
             self._give_back_attempt(run)   # no session ever existed: the card was not tried
             raise
+        if run.provider_implementor:
+            _allow_stop_check(run.action.session)
         self._runs[id(run.action)] = run   # a card's reviewers run together, so a run is keyed by its action
         self._own_marker(c, run.action, getattr(run.action.session, 'pid', None))
 
@@ -1417,6 +1430,14 @@ class CardDriver:
         tripped = self._guard_tripped(run)
         if tripped is not None:
             return tripped
+        if run.provider_implementor and result.exit_code == 3:
+            # the guard or the runner already commented on the card. This holds for a stopped run too
+            # (cancelled or timed out): the post-run check runs before the runner ends.
+            data = _json(result.report_text)
+            reason = data.get('attention') if isinstance(data, dict) else None
+            reason = reason or next(iter(self._error_lines(result)[-1:]), None) or 'the provider run raised an attention'
+            self._role_attention(c, run.role, _first_line(str(reason)))
+            return Outcome(c.n, False, False, None)
         if result.cancelled:
             return Outcome(c.n, False, False, None)
         if result.failure == 'provider':
@@ -1448,12 +1469,6 @@ class CardDriver:
         c, code = run.c, result.exit_code
         lines = self._error_lines(result)
         last = lines[-1] if lines else ''
-        if run.provider_implementor and code == 3 and not result.timed_out:
-            # the guard or the runner already commented on the card
-            data = _json(result.report_text)
-            reason = data.get('attention') if isinstance(data, dict) else None
-            self._role_attention(c, run.role, _first_line(str(reason or last or 'the provider run raised an attention')))
-            return Outcome(c.n, False, False, None)
         if result.failure:
             if result.timed_out or code not in (2, 6, 7):
                 raise _Fail(last or result.reason or 'exit %s' % code)

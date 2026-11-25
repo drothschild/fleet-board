@@ -267,6 +267,44 @@ run
 check "a session the post-run check rejects is an attention" test "$rc" = 3
 check "a post-run attention: the report is not posted" test "$(comments)" = 1
 
+# --- a stopped run -------------------------------------------------------------------------------
+stop_run() { # start the runner, send it TERM once the provider is sleeping; sets rc and took
+  local pid i=0 start
+  (cd "$REPO" && exec bash "$RUNNER" 12 "$WT" "$BRANCH") > "$TMP/out" 2> "$TMP/err" < /dev/null &
+  pid=$!
+  while [ ! -s "$FAKE/sleeper" ] && [ "$i" -lt 200 ]; do sleep 0.1; i=$((i + 1)); done
+  start=$SECONDS rc=0
+  kill -TERM "$pid"
+  wait "$pid" || rc=$?
+  took=$((SECONDS - start))
+}
+provider_gone() { [ -s "$FAKE/sleeper" ] && ! kill -0 "$(cat "$FAKE/sleeper")" 2>/dev/null; }
+
+setup
+cat > "$FAKE/actions.1" <<ACT
+echo stray > "$REPO/stray.txt"
+sleep 20 & echo \$! > "\$FAKE/sleeper"; wait
+ACT
+stop_run
+check "a stopped provider that wrote outside its worktree: the runner exits 3" test "$rc" = 3
+check "a stopped provider that wrote outside its worktree: stdout is the attention naming the path" \
+  out '.attention | contains("file stray.txt changed outside the worktree")'
+check "a stopped provider that wrote outside its worktree: one comment names the path" \
+  bash -c 'jq -e ".comments | length == 1 and (.[0].body | contains(\"stray.txt\"))" "$1" >/dev/null' _ "$REPO/.fleet-board/cards/12.json"
+check "a stopped provider that wrote outside its worktree: the provider is stopped" provider_gone
+rm -f "$REPO/stray.txt"
+
+setup
+printf 'sleep 20 & echo $! > "$FAKE/sleeper"; wait\n' > "$FAKE/actions.1"
+stop_run
+check "a stopped provider that only sleeps: the runner exits without an attention" test "$rc" = 1
+check "a stopped provider that only sleeps: no attention on stdout or the card" \
+  test "$(cat "$TMP/out")" = "" -a "$(comments)" = 0
+check "a stopped provider that only sleeps: the runner does not wait for the provider" test "$took" -lt 15
+check "a stopped provider that only sleeps: the provider is stopped" provider_gone
+check "a stopped provider that only sleeps: no guard snapshot directory is left" \
+  test -s "$FAKE/tmpdir" -a ! -e "$(cat "$FAKE/tmpdir")"
+
 # --- the codex preset ----------------------------------------------------------------------------
 preset() { jq -er '.codex.implement_command' "$SCRIPTS/providers/presets.json" 2>/dev/null; }
 preset_has() { case "$(preset)" in *"$1"*) return 0 ;; esac; return 1; }

@@ -10,6 +10,8 @@
 #    rejected the session, a gated call was blocked, or implementor.persona cannot be read.
 # 4: provider failure (non-zero exit, empty output, timeout): nothing posted, retry later.
 # 6: two rejected reports: nothing posted.
+# On INT or TERM the guard stops the provider and runs its post-run check before anything is deleted:
+# exit 3 with the attention when it raises one, else exit 1.
 
 set -uo pipefail
 unset CDPATH
@@ -55,6 +57,16 @@ if [ -n "$COMMON" ]; then CHECKOUT="$(dirname "$COMMON")"; else CHECKOUT="$PWD";
 umask 077
 TMP="" PTMP="" FB_ACTIVE_FILE=""
 trap 'rm -rf ${TMP:+"$TMP"} ${PTMP:+"$PTMP"}; if [ -n "$FB_ACTIVE_FILE" ]; then rm -f "$FB_ACTIVE_FILE"; fi' EXIT
+GPID="" STOPPED=0
+stopped() { # INT or TERM: let the guard stop the provider and check, before the EXIT trap deletes PTMP
+  trap '' INT TERM
+  if [ -n "$GPID" ]; then
+    kill -TERM "$GPID" 2>/dev/null
+    wait "$GPID" 2>/dev/null
+  fi
+  if jq -e 'has("attention")' "$TMP/guard.out" > /dev/null 2>&1; then cat "$TMP/guard.out"; exit 3; fi
+  exit 1
+}
 trap 'exit 1' INT TERM
 # TMP is the runner's own; PTMP is the only temp directory the provider may write.
 TMP="$(mktemp -d)" && TMP="$(cd "$TMP" && pwd -P)" || die "cannot create a temporary directory"
@@ -131,12 +143,19 @@ while :; do
   jq -c '{messages: .}' "$TMP/messages.json" > "$TMP/request.json" || die "cannot build the prompt"
   # The inner shell sits behind the guard. It keeps the reply in the runner's directory, so the
   # guard's own stdout holds nothing but an attention.
-  grc=0
+  # In the background, so that a signal reaches the trap while the provider still runs.
+  grc=0 GPID=""
+  trap 'STOPPED=1' INT TERM
   bash "$HERE/providers/guard/start.sh" "$N" "$FLEET_ROOT" "$WT" "$BRANCH" "$PTMP" -- \
     bash -c 'bash "$1" --command "$2" --model "$3" --timeout "$4" --dir "$5" \
         < "$6/request.json" > "$6/reply.json" 2> "$6/chat.err"; echo $? > "$6/rc"' \
     implementor-run "$HERE/providers/chat.sh" "$RUN" "$MODEL" "$remaining" "$WT" "$TMP" \
-    < /dev/null > "$TMP/guard.out" || grc=$?
+    < /dev/null > "$TMP/guard.out" &
+  GPID=$!
+  trap stopped INT TERM
+  [ "$STOPPED" = 0 ] || stopped
+  wait "$GPID" || grc=$?
+  GPID=""
   if [ "$grc" -ne 0 ]; then
     # start.sh has already commented on the card
     if jq -e 'has("attention")' "$TMP/guard.out" > /dev/null 2>&1; then cat "$TMP/guard.out"; exit 3; fi
