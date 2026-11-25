@@ -32,6 +32,21 @@ The supervisor skips the merger session after a successful merge, and records th
 
 Project rules for the implementor. `implementor.persona` is a path relative to the repo root, with no `..`, under the same rules as `merge.persona`; `null` (the default) adds nothing. `implementor.persona_append` is inline text, not a path; `null` or a blank string adds nothing. Unlike the merger's, the implementor's persona replaces nothing: the built-in implementor always applies, and the file text, then the appended text, are added to its inputs under `## Project rules`. The implementor follows a project rule where it conflicts with a built-in default (for example which Acceptance items get a test), but a rule never changes the report shape, the worktree and branch rules, or the "Never" list. A path that is set but missing is an attention naming the path, and no implementor session starts for the card. For a card of another repo on a multi-repo board, the keys come from that card's repo.
 
+## `implementor.provider` and `implementor.model`
+
+Who runs the implementor. `implementor.provider` defaults to `claude`, a headless Claude session on `models.implementor`. It may also name a provider: an entry under [`providers`](#providers) or a built-in preset. `implementor.model` (default `null`) is the model of a provider implementor; when set it must match `^[A-Za-z0-9][A-Za-z0-9._:/-]*$`. The Claude implementor does not read it. `config.sh` exits 5, naming the key, for a provider that does not exist or a model that does not match, and with `providers.<name> has no implement_command` when the named provider has no `implement_command`. No built-in preset has one, so the provider needs it under `providers`.
+
+```yaml
+implementor:
+  provider: codex
+  model: gpt-6-astra
+providers:
+  codex:
+    implement_command: "my-implementor -C {dir} -m {model}"
+```
+
+**No provider runner exists yet, so `claude` is the only value that runs.** With any other provider the supervisor raises an attention naming `implementor.provider` and starts no implementor session; it never falls back to Claude. To go on, set `implementor.provider: claude`, then clear the card's attention. `supervisor.provider_concurrency` counts an implementor under its provider; that key is read from the home repo's config, so the provider named there must also be `claude` or under the home `providers`. For a card of another repo on a multi-repo board, `implementor.provider` and `implementor.model` come from that card's repo.
+
 ## `merge.ignore_checks`
 
 A list of dated, reasoned exceptions for checks that should not hold up a merge. Each entry has a `name` (a case-sensitive shell glob: `*` is any run of characters, `?` one character), a `reason`, and an `until` date (`YYYY-MM-DD`, valid through that day, UTC). A red check whose name matches an unexpired entry counts as green. An entry that also says `pending: true` covers a matching check that is still running, so the supervisor merges without waiting for it to finish; without it, a pending check is never green. A `pending: true` entry also covers a red check of the same name: it means "don't wait for this check, whatever it says". A check with no name or context is never covered by any entry.
@@ -187,6 +202,7 @@ Built-in presets are `openai`, `gemini`, `openrouter`, `ollama` and `codex` (a c
 | `max_tokens_param` | `max_tokens` or `max_completion_tokens`; ignored when `command` is set |
 | `command` | optional string run with `sh -c` instead of an HTTP call, with `{model}` replaced by the stage's `model`. Needs `base_url` and `api_key_env` to be null (`providers.<name> sets both command and base_url`, `providers.<name>.api_key_env must be null when command is set`, both exit 5) |
 | `review_command` | optional command for evidence review in a scratch clone. Requires `{dir}` and supports `{model}`. Exclusive with `base_url`. Sandbox bypass flags and `danger-full-access` are forbidden. |
+| `implement_command` | the command of a provider implementor, a non-empty string. Required when `implementor.provider` names the provider; nothing runs it yet. A provider with it and no `base_url` needs no chat API settings. |
 
 If a stage's `api_key_env` variable is unset or empty, `tick-plan.sh` warns once (`stage <name>: <ENV> is not set; provider reviews will fail`) and plans that stage's `review_stage` as `wait` with the reason `stage <name>: <ENV> is not set`, so the card is not failed on every plan; a card entering the stage still moves, and its review waits until the variable is set. To make the whole plan hold instead, add a preflight check (see [`commands.preflight`](#commandspreflight)): `test -n "$OPENAI_API_KEY"`, and for stage labels `review-stages.sh setup`.
 
