@@ -22,7 +22,11 @@
 #       exit 2), a branch that exists neither locally nor on origin is created from
 #       origin's copy of <start-branch> instead of origin/HEAD; when that is missing the
 #       call exits 1 with "fleet-board: origin/<start-branch> does not exist" and adds no
-#       worktree and no branch. When the branch already exists the argument is ignored.
+#       worktree and no branch. When the branch already exists (locally, on origin or in a
+#       worktree), success means it contains origin/<start-branch>: a branch that is only
+#       behind is fast-forwarded in the card worktree, and one that has diverged exits 1
+#       with its head unchanged and no worktree added. A missing origin/<start-branch>
+#       exits 1 here too.
 #   worktree.sh review <n> <pr> [<stage> [--pass <i>]] [<base-branch>]
 #       Fetches the PR head (into refs/fleet-board/pull/<pr>) and puts a
 #       detached worktree <base>/<n>-review on it, creating it (and running
@@ -165,9 +169,32 @@ run_setup() {
   fi
 }
 
+# need_start <start-branch>: fails unless origin has the branch
+need_start() {
+  g rev-parse --verify --quiet "refs/remotes/origin/$1^{commit}" >/dev/null \
+    || fb_die 1 "origin/$1 does not exist"
+}
+
+# check_start <card-ref> <start-branch>: fails unless the card branch contains
+# origin's copy of the start branch or can be fast-forwarded to it
+check_start() {
+  need_start "$2"
+  g merge-base --is-ancestor "refs/remotes/origin/$2" "$1" && return 0
+  g merge-base --is-ancestor "$1" "refs/remotes/origin/$2" && return 0
+  fb_die 1 "${1#refs/*/} cannot be fast-forwarded to origin/$2: it does not contain that start branch and has commits of its own"
+}
+
+# forward_to_start <worktree> <start-branch>: a no-op when the worktree's branch
+# already contains the start branch
+forward_to_start() {
+  git -C "$1" merge -q --ff-only "refs/remotes/origin/$2" >&2 \
+    || fb_die 1 "cannot fast-forward $1 to origin/$2"
+}
+
 case "$CMD" in
   create)
     B="$3"
+    START_BRANCH="${5:-}"
     re='^fleet/[0-9]+-[a-z0-9-]{1,40}$'
     [[ "$B" =~ $re ]] || fb_die 2 "branch must match fleet/<n>-<slug>, got: $B"
     P="$(resolve_under_base "$4")" || fb_die 1 "refusing a path outside $BASE: $4"
@@ -175,6 +202,10 @@ case "$CMD" in
     g fetch -q origin >&2 || fb_die 1 "git fetch origin failed"
     if [ -e "$P" ]; then
       if is_our_worktree "$P" && [ "$(git -C "$P" symbolic-ref -q --short HEAD 2>/dev/null)" = "$B" ]; then
+        if [ -n "$START_BRANCH" ]; then
+          check_start "refs/heads/$B" "$START_BRANCH"
+          forward_to_start "$P" "$START_BRANCH"
+        fi
         fb_mark_active "$N"
         printf '%s\n' "$P"
         exit 0
@@ -194,15 +225,21 @@ case "$CMD" in
       fb_die 1 "branch $B is checked out at $OTHER; remove that worktree (git worktree remove, or git worktree prune when its directory is gone) or restore worktrees.dir"
     fi
     NEW_BRANCH=""
+    # An existing card branch is checked against the start branch before anything
+    # is added, so a refused call leaves no worktree and no branch behind
+    EXISTING=""
+    if g show-ref --verify --quiet "refs/heads/$B"; then EXISTING="refs/heads/$B"
+    elif g show-ref --verify --quiet "refs/remotes/origin/$B"; then EXISTING="refs/remotes/origin/$B"
+    fi
+    if [ -n "$START_BRANCH" ] && [ -n "$EXISTING" ]; then check_start "$EXISTING" "$START_BRANCH"; fi
     if g show-ref --verify --quiet "refs/heads/$B"; then
       g worktree add -q "$P" "$B" >&2 || fb_die 1 "cannot add a worktree for $B at $P"
     elif g show-ref --verify --quiet "refs/remotes/origin/$B"; then
       g worktree add -q --track -b "$B" "$P" "origin/$B" >&2 || fb_die 1 "cannot add a worktree tracking origin/$B at $P"
     else
-      if [ $# -eq 5 ]; then
-        g rev-parse --verify --quiet "refs/remotes/origin/$5^{commit}" >/dev/null \
-          || fb_die 1 "origin/$5 does not exist"
-        START="origin/$5"
+      if [ -n "$START_BRANCH" ]; then
+        need_start "$START_BRANCH"
+        START="origin/$START_BRANCH"
       elif g rev-parse --verify --quiet "refs/remotes/origin/HEAD^{commit}" >/dev/null; then START=origin/HEAD
       elif g rev-parse --verify --quiet "refs/remotes/origin/main^{commit}" >/dev/null; then START=origin/main
       else fb_die 1 "neither origin/HEAD nor origin/main exists"
@@ -210,6 +247,7 @@ case "$CMD" in
       g worktree add -q --no-track -b "$B" "$P" "$START" >&2 || fb_die 1 "cannot add a worktree for $B from $START at $P"
       NEW_BRANCH="$B"
     fi
+    [ -z "$START_BRANCH" ] || forward_to_start "$P" "$START_BRANCH"
     run_setup "$P" "$NEW_BRANCH"
     fb_mark_active "$N"
     printf '%s\n' "$P"
