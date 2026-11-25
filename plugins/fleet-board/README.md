@@ -137,6 +137,7 @@ More on how planning, notes, follow-ups and the `main` check work: [docs/config.
 | `merge.policy` | `human` | `human` or `auto` ([details](docs/config.md#mergepolicy)) |
 | `merge.persona` / `merge.persona_append` | `null` / `null` | the merger's instructions: a path relative to the repo root (default `.fleet-board/merger.md` when present), and text added after it ([details](#merger-and-deploys)) |
 | `implementor.persona` / `implementor.persona_append` | `null` / `null` | project rules added to the implementor's inputs: a path relative to the repo root, and inline text added after it ([details](docs/config.md#implementorpersona-and-implementorpersona_append)) |
+| `implementor.provider` / `implementor.model` | `claude` / `null` | who runs the implementor: `claude`, or a provider with an `implement_command` (such as the `codex` preset) and its model. A provider is sent the repository's code and the card ([details](#provider-implementor)) |
 | `merge.ignore_checks` | `[]` | red checks treated as green, each with `name`, `reason` and `until` ([details](docs/config.md#mergepersona-mergepersona_append-and-mergeignore_checks)) |
 | `review.mutation` | `true` | the reviewer runs mutation testing against the diff |
 | `review.verify_claim` | `true` | the reviewer re-runs one claim from the implementor's report |
@@ -219,6 +220,25 @@ Moving the card out of Blocked sets `"merger": null`, `"merge_refusal": null` an
 ## Gates
 
 A `PreToolUse` hook blocks any agent command that would move a card out of Human QA, merge a PR under `merge.policy: human`, mark a card Ready without acceptance items, or run the premise-proposal script's `approve`, `confirm` or `reject` (only a person decides a premise proposal; a script file that calls that script, and a direct POST to the board page's premise routes, are not seen by the gate). It does nothing in repos without `.fleet-board.yml`. It is a text check, so it has blind spots and some false positives; [docs/gates.md](docs/gates.md) lists them, along with how fleet-board behaves alongside other plugins. Branch protection on GitHub remains the backstop for merges.
+
+## Provider implementor
+
+The implementor can run on another provider's agent instead of a Claude session. Name a provider that has an `implement_command` (of the built-in presets only `codex` does) and a model:
+
+```yaml
+implementor:
+  provider: codex
+  model: gpt-6-astra
+  timeout: 3600     # optional, seconds
+```
+
+The `codex` preset needs `codex` on `PATH` and logged in, and an `origin` on github.com reached over HTTPS. The supervisor then runs `scripts/implementor-run.sh` for each implementor dispatch and never falls back to Claude. These keys do not change the reviewer, fixer or merger. See [docs/config.md](docs/config.md#implementorprovider-and-implementormodel) for escalation, the runner and its exit codes.
+
+**What the guard replicates.** A provider session runs without the Claude Code hook, so `scripts/providers/guard/` applies the limits outside the model. Command shims run the [gate](#gates)'s rules plus the implementor's own: no card move or premise decision, no PR merge or ready, no push except to the card's branch (never forced), no `git` command outside the card's worktree, no git write to `.fleet-board.yml` or `.fleet-board/`, no write request to the board server. The provider's own sandbox limits where it can write. A post-run check raises an attention when `.fleet-board.yml`, the board's files, the card's state, another branch on origin or a file outside the worktree changed. A program called by absolute path skips the shims, and the post-run check only detects a change after it happened ([details](docs/gates.md#provider-sessions)).
+
+**Data egress.** A provider implementor sends the repository's code and the card to the provider's service: the card title, body and acceptance items, the config, the manager note, the open cards' titles, the project rules, and whatever the session reads while it works. The `codex` preset sends them to OpenAI through the Codex CLI; its sandbox limits writes, not reads, so it can read the whole repository. Use a provider only for repos whose code and cards you may send to it.
+
+A paid scenario checks a real Codex run against these limits on a throwaway sandbox repo: `SANDBOX_REPO=owner/name bash plugins/fleet-board/tests/behavioral-role.sh implementor-codex` (`CODEX_MODEL` picks the model).
 
 ## Stacked pull requests
 
