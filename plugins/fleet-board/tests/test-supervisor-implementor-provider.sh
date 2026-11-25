@@ -415,6 +415,25 @@ def case_provider_concurrency_counts_a_home_card_under_the_home_provider(sub):
     assert [r['provider'] for r in prepared] == ['codex', 'claude'], prepared
 
 
+def case_provider_concurrency_caps_a_running_provider_implementor_and_status_lists_its_provider(sub):
+    b = runner_board(sub, 'sleep 2\n' + GOOD, supervisor={'provider_concurrency': {'codex': 1}})
+    b.seed(13)
+    started = dc.begin(b, 'start')
+    assert started.kind == 'session', (started, b.state.attention)
+    sup = loop.Supervisor(b.root, config_loader=lambda: b.config, state=b.state, driver=b.driver,
+                          scheduler=scheduler.Scheduler(), run=b.run)
+    rows, _ = sup._prepare([dc.candidate('start', number=13, declared_paths=['c'])], b.config, 1000.0)
+    try:
+        result = sup.scheduler.admit(rows, active=sup._active_claims(), limits=sup._limits(b.config), now=1000.0)
+    finally:
+        sup.scheduler.close()
+    assert result['admitted'] == [], result
+    assert [(w['number'], w['reason']) for w in result['waits']] == [(13, 'provider capacity')], result
+    assert b.note()['models']['implementor'] == 'codex:gpt-5', b.note()['models']
+    assert 'codex:gpt-5/opus' in status_line(b), status_line(b)
+    finish(b, started)
+
+
 only = os.environ.get('FLEET_TEST_ONLY')
 names = sorted(n for n in dict(globals()) if n.startswith('case_') and (not only or n == only))
 if only:
