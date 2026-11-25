@@ -9,6 +9,8 @@ commands:
   # in any other suite the selection shows zero or many tests and the reviewer runs the file
   test_case: "FLEET_TEST_ONLY={name} bash {file}"
   lint: "bash plugins/fleet-board/tests/test-version-bumped.sh"
+implementor:
+  persona: docs/implementor-persona.md
 merge:
   policy: "auto"
 supervisor:
