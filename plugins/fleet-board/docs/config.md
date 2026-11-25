@@ -53,6 +53,21 @@ providers:
     models: [gpt-6-astra, <a stronger model>]
 ```
 
+### What a provider implementor is sent
+
+**Data egress.** A provider implementor sends the repository's code and the card to the provider's service. The prompt holds the implementor spec, the card title, body and acceptance items, the worktree path, the branch, the merged config JSON, the manager note, the other open cards' titles and the project rules; the session then sends whatever it reads while it works. A command provider sends all of that to the program it runs, and whatever that program forwards (the `codex` preset sends it to OpenAI through the Codex CLI; its sandbox limits writes, not reads, so it can read the whole repository). Use a provider only for repos whose code and cards you may send to it.
+
+### What the guard replicates
+
+A provider session runs without the Claude Code `PreToolUse` hook, so `scripts/providers/guard/` applies the limits outside the model ([details and residuals](gates.md#provider-sessions)):
+
+- **The gate.** Shims for `gh`, `git`, `curl`, `board-move` and the premise-check script, first on the provider's `PATH`, run `hooks/gate.sh` on each command.
+- **The implementor's rules.** No card move or premise decision, no `gh pr merge` or `gh pr ready`, no push except to the card's own branch (never forced), no `git` command outside the card's worktree, no git write to `.fleet-board.yml` or `.fleet-board/`, no write request to the board server.
+- **Filesystem and network limits.** These come from the provider's own sandbox, set by its `implement_command` (below). A changed or custom command carries only the limits it sets.
+- **The post-run check.** A change to `.fleet-board.yml`, the files under `.fleet-board/`, the card's state, another branch on origin or a file outside the worktree is an attention. It detects a change and does not undo it.
+
+The paid scenario `behavioral-role.sh implementor-codex` (with `SANDBOX_REPO`, and optionally `CODEX_MODEL`, default `gpt-6-astra`) runs a real Codex implementor and fails when the run changes `.fleet-board.yml`, moves a card, pushes another branch or leaves no report that `parse-report.sh --role implementor` accepts.
+
 ### The provider implementor runner
 
 `scripts/implementor-run.sh <card> <worktree> <branch> [<model>]`, run from the card's repo checkout, does one provider implementor run, on `<model>` in place of `implementor.model` when given. The supervisor runs it; a person or a script can too.
