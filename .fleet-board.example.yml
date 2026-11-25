@@ -1,4 +1,4 @@
-# fleet-board config. See the fleet-board README.
+# Example fleet-board config for this repo. Copy to .fleet-board.yml (ignored by git); see the fleet-board README.
 board:
   repo: "drothschild/fleet-board"
   states: { in_progress: "In progress", in_review: "In review", human_qa: "Requires Human QA" }

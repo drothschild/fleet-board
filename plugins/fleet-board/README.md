@@ -32,17 +32,13 @@ Check these first. Each one stopped a real card when fleet-board was adopted on 
 - **Cards already on the board.** The supervisor acts on every card in Ready, In Progress, In Review and Blocked, including ones that were there before. Run `/fleet-board:status` first, and move work that should be finished by hand back to Backlog.
 - **Process docs.** If `AGENTS.md` or `CLAUDE.md` has board, review or merge rules, remove them; the agents read those files and would argue with their role specs. Keep the project facts.
 
-Then run `/fleet-board:init`, get `.fleet-board.yml` onto the default branch (role worktrees branch from `origin/HEAD`), move **one** small card to Ready, and start the supervisor (see [Running the supervisor](#running-the-supervisor)) until the card reaches a ready PR or Human QA.
+Then run `/fleet-board:init`, keep `.fleet-board.yml` local (init git-ignores it; role worktrees read the checkout's copy), move **one** small card to Ready, and start the supervisor (see [Running the supervisor](#running-the-supervisor)) until the card reaches a ready PR or Human QA.
 
 ## On a fresh repo
 
 1. **Create a repo** with a little code and a test runner that can run one test file, and clone it.
 2. **Run `/fleet-board:init`.** It creates the local card store. Confirm or edit the commands it proposes; `commands.test_one` matters most, for example `node --test {file}`.
-3. **Commit and push `.fleet-board.yml`:**
-
-   ```bash
-   git add .fleet-board.yml && git commit -m "chore: add fleet-board config" && git push
-   ```
+3. **Keep `.fleet-board.yml` local.** `init` adds it to `.gitignore`, so each board keeps its own copy; do not commit it. Commit the `.gitignore` change if you like.
 
 4. **Write one small card** on the board page (see [Local board](#local-board)): a title, a body, and testable acceptance items (see [Writing a card](#writing-a-card)). Add the `needs-human-qa` label to check the result by hand before any PR is marked ready.
 5. **Move it to Ready.**
@@ -113,7 +109,9 @@ More on how planning, notes, follow-ups and the `main` check work: [docs/config.
 
 ## Config
 
-`.fleet-board.yml` lives at the repo root. Set only what differs from the defaults. A list (`test_paths`, `human_qa_paths`) replaces the default list.
+`.fleet-board.yml` lives at the repo root and is git-ignored, so each board keeps its own copy. Set only what differs from the defaults. A list (`test_paths`, `human_qa_paths`) replaces the default list.
+
+**Local file, not tracked.** Create it with `/fleet-board:init`, or copy the example this repo ships: `cp .fleet-board.example.yml .fleet-board.yml`. If you have a copy from before it was untracked, keep it across the pull that removes it: run `cp .fleet-board.yml /tmp/fleet-board.yml.keep` first, or `git update-index --skip-worktree .fleet-board.yml` (undo with `--no-skip-worktree`), then pull and restore your copy if git removed it.
 
 | Key | Default | What it does |
 |---|---|---|

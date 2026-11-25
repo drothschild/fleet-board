@@ -141,7 +141,8 @@ In a Claude Code session opened in your repository:
 1. **Run `/fleet-board:init`.** It creates `.fleet-board.yml` and the local card store, and checks your tools and GitHub
    scopes. Confirm the commands it proposes. The one that matters most is `commands.test_one`, which runs a single test
    file, for example `npx vitest run {file}` or `pytest {file}`.
-2. **Commit and push `.fleet-board.yml`** to your default branch. Agents work in worktrees cut from it.
+2. **Keep `.fleet-board.yml` local.** `init` adds it to `.gitignore`, so do not commit it. Commit and push the
+   `.gitignore` change to your default branch if you like.
 3. **Check that `main` is green**, and that `worktrees.setup` (`npm ci`, `uv sync`, ...) works in a fresh worktree. A
    test that already fails, or a setup that only works in your own checkout, will trip every card.
 

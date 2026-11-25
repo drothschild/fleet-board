@@ -740,6 +740,7 @@ assert_cfg "local: config has the repo" board.repo "acme/toy"
 assert_count "local: cards dir exists" "$([ -d "$TARGET/.fleet-board/cards" ] && echo 1 || echo 0)" 1
 assert_count "local: next is 1" "$(cat "$TARGET/.fleet-board/next" 2>/dev/null)" 1
 assert_count "local: .gitignore has one .fleet-board/ line" "$(grep -cxF '.fleet-board/' "$TARGET/.gitignore" 2>/dev/null)" 1
+assert_count "local: .gitignore has one .fleet-board.yml line" "$(grep -cxF '.fleet-board.yml' "$TARGET/.gitignore" 2>/dev/null)" 1
 assert_count "local: no label create" "$(calls_of label create | count_lines)" 0
 assert_count "local: no label call at all" "$(calls_of label list | count_lines)" 0
 assert_count "local: no gh label invocation of any subcommand" "$(for f in $(all_calls); do [ "$(sed -n 1p "$f")" = "label" ] && echo x; done | count_lines)" 0
@@ -750,6 +751,7 @@ echo '{"number":1}' > "$TARGET/.fleet-board/cards/1.json"
 run_init --repo acme/toy --dir "$TARGET" --force
 assert_exit "local: second run exit 0" 0
 assert_count "local: second run keeps one .fleet-board/ line" "$(grep -cxF '.fleet-board/' "$TARGET/.gitignore")" 1
+assert_count "local: second run keeps one .fleet-board.yml line" "$(grep -cxF '.fleet-board.yml' "$TARGET/.gitignore")" 1
 assert_count "local: second run does not reset next" "$(cat "$TARGET/.fleet-board/next")" 7
 assert_count "local: second run keeps the cards" "$([ -f "$TARGET/.fleet-board/cards/1.json" ] && echo 1 || echo 0)" 1
 
