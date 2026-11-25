@@ -9,7 +9,8 @@ Dispatch = namedtuple('Dispatch', 'runner agent provider model escalated')
 
 SCRIPTS = 'scripts'
 CLAUDE = 'claude'
-_IMPLEMENT = ('start', 'continue_implementor')
+PROVIDER_IMPLEMENTOR = 'provider-implementor'   # no runner yet: the driver raises an attention instead
+IMPLEMENT = ('start', 'continue_implementor')
 _REVIEW = ('review', 'start_review')
 
 
@@ -17,12 +18,18 @@ def _claude(agent, model, escalated):
     return Dispatch('claude', agent, CLAUDE, model, escalated)
 
 
-def resolve(config, candidate):
+def resolve(config, candidate, card_config=None):
+    """`card_config` is the config of the card's repo when it is not the home one: implementor.provider and
+    implementor.model come from it."""
     action = candidate.get('action')
     models = candidate.get('models') or {}
     cfg_models = (config or {}).get('models') or {}
     escalated = bool(candidate.get('escalated'))
-    if action in _IMPLEMENT:
+    if action in IMPLEMENT:
+        implementor = ((card_config or config) or {}).get('implementor') or {}
+        provider = implementor.get('provider', CLAUDE)
+        if provider != CLAUDE:   # never a Claude session in its place
+            return Dispatch(PROVIDER_IMPLEMENTOR, None, provider, implementor.get('model'), escalated)
         return _claude('fleet-board:implementor', models.get('implementor'), escalated)
     if action == 'fix':
         return _claude('fleet-board:fixer', models.get('fixer'), escalated)
@@ -46,6 +53,6 @@ def resolve(config, candidate):
     return None
 
 
-def provider_for(config, candidate):
-    dispatch = resolve(config, candidate)
+def provider_for(config, candidate, card_config=None):
+    dispatch = resolve(config, candidate, card_config)
     return SCRIPTS if dispatch is None else dispatch.provider
