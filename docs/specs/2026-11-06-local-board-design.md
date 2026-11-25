@@ -181,6 +181,14 @@ also carry the header `X-Fleet-Board: 1` and an `Origin` equal to the server's o
 (or no `Origin`, for curl); otherwise 403. This stops a page in another tab from driving
 the board.
 
+The one exception is the tailnet, through Tailscale `serve`. A `Host` listed in
+`board.allowed_hosts` (default `[]`, matched without regard to case) is also served, but
+only when the request comes from a loopback peer (`tailscale serve` proxies from loopback)
+and its `Tailscale-User-Login` is listed in `board.tailscale.allowed_logins` (default `[]`);
+otherwise 403, reads included. A mutating request may also carry the `Origin`
+`https://<allowed host>`, and still needs `X-Fleet-Board: 1`. Open terminal
+(`POST /api/cards/<n>/terminal`) is 403 for a tailnet `Host`.
+
 ### API
 
 Reads go straight to the store files. Writes run the same script an agent would, with
