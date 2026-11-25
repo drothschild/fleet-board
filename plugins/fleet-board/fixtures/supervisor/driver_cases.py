@@ -95,9 +95,9 @@ class Board:
         """Script names in call order, without the note reads and merges."""
         return [c[0] for c in self.calls if c[0] != 'note.sh']
 
-    def seed(self, number, card_state='ready', body='', acceptance=('does it',)):
+    def seed(self, number, card_state='ready', body='', acceptance=('does it',), blocked_by=()):
         card = {'number': number, 'title': 'Add subtract', 'body': body, 'state': card_state, 'labels': [],
-                'acceptance': list(acceptance), 'blocked_by': [], 'next_comment_id': 1, 'comments': [],
+                'acceptance': list(acceptance), 'blocked_by': list(blocked_by), 'next_comment_id': 1, 'comments': [],
                 'created_at': '2026-01-01T00:00:00Z'}
         (self.root / '.fleet-board' / 'cards' / ('%d.json' % number)).write_text(json.dumps(card))
 
@@ -313,6 +313,81 @@ def test_update_branch_conflict_counts_once_and_never_blocks(base):
     assert begin(b, 'update_branch', state='in_review').kind == 'done'
     note = b.note()
     assert note['action_failures'] == 1 and note['last_action_error'].startswith('merge of origin/main')
+    assert b.card()['state'] == 'in_review' and 'board-move.sh' not in b.scripts_called()
+
+
+def test_land_runs_worktree_then_stack_land(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'action_failures': 2, 'last_action_error': 'older'})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['stack-land.sh'] = ok()
+    assert begin(b, 'land', state='in_review').kind == 'done'
+    assert b.scripts_called() == ['worktree.sh', 'stack-land.sh'], b.calls
+    assert b.calls[0] == ('worktree.sh', 'create', '12', BRANCH, b.worktree)
+    assert ('stack-land.sh', '12', '34', BRANCH, b.worktree) in b.calls
+    note = b.note()
+    assert note['action_failures'] == 0 and note['last_action_error'] is None
+    assert b.card()['state'] == 'in_review' and 'board-move.sh' not in b.scripts_called()
+
+
+def test_a_landing_clears_a_stale_conflicted_files(base):
+    # #476 (2026-11-18): a conflict recorded before the parent merged survived a clean landing, so the
+    # planner sent a fixer for a conflict that no longer existed and the card blocked itself
+    b = board_for(base, 'in_review')
+    b.put_note({'conflicted_files': ['plugins/x/scripts.py']})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['stack-land.sh'] = ok()
+    assert begin(b, 'land', state='in_review').kind == 'done'
+    assert not b.note().get('conflicted_files'), b.note()
+
+
+def test_a_clean_update_branch_clears_a_stale_conflicted_files(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'conflicted_files': ['plugins/x/scripts.py']})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['update-branch.sh'] = ok()
+    assert begin(b, 'update_branch', state='in_review').kind == 'done'
+    assert not b.note().get('conflicted_files'), b.note()
+
+
+def test_a_landing_that_waits_keeps_conflicted_files(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'conflicted_files': ['plugins/x/scripts.py']})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['stack-land.sh'] = fail_with('parent not landed yet\n', rc=3)
+    assert begin(b, 'land', state='in_review').kind == 'done'
+    assert b.note().get('conflicted_files') == ['plugins/x/scripts.py'], b.note()
+
+
+def test_land_without_a_pr_passes_a_dash(base):
+    b = board_for(base, 'in_progress')
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['stack-land.sh'] = ok()
+    assert begin(b, 'land', state='in_progress', pr=None).kind == 'done'
+    assert ('stack-land.sh', '12', '-', BRANCH, b.worktree) in b.calls, b.calls
+
+
+def test_land_exits_3_and_4_are_not_failures(base):
+    for rc in (3, 4):
+        sub = Path(base) / ('rc%d' % rc)
+        sub.mkdir()
+        b = board_for(sub, 'in_review')
+        b.put_note({'action_failures': 1, 'last_action_error': 'older'})
+        b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+        b.stubs['stack-land.sh'] = fail_with('waiting or attention\n', rc=rc)
+        assert begin(b, 'land', state='in_review').kind == 'done'
+        note = b.note()
+        assert note['action_failures'] == 1 and note['last_action_error'] == 'older', (rc, note)
+        assert b.card()['state'] == 'in_review' and 'board-move.sh' not in b.scripts_called()
+
+
+def test_land_exit_1_counts_one_failure(base):
+    b = board_for(base, 'in_review')
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['stack-land.sh'] = fail_with('git push origin fleet/12 was rejected\n', rc=1)
+    assert begin(b, 'land', state='in_review').kind == 'done'
+    note = b.note()
+    assert note['action_failures'] == 1 and note['last_action_error'].startswith('git push'), note
     assert b.card()['state'] == 'in_review' and 'board-move.sh' not in b.scripts_called()
 
 
@@ -933,7 +1008,17 @@ def test_rules_match_the_reporting_skill_table_cell_for_cell(base):
     import re
     briefer = {'role <role> requires ## <section>', 'out of scope entry needs <title> :: <detail>: <entry>'}
     # A rule the driver adds after the table: parse-report.sh emits it, the skill's table does not list it.
-    driver_only = ['status not_reproducible needs no commits since the reviewed head, found <n>']
+    driver_only = ['status not_reproducible needs no commits since the reviewed head, found <n>',
+                   'checker status <s> is not allowed in mode <m>',
+                   'checker report needs ## <section> for status <s>',
+                   '## Card must hold exactly one card number (#<n>)',
+                   '## Proposed scope and ## Proposed acceptance must both be present or both absent',
+                   '## Proposed acceptance has no bullet',
+                   '## Proposed scope names no repository path',
+                   '## Evidence has no entry',
+                   '## Evidence item must be an acceptance item number',
+                   'malformed ## Evidence line (want - <number> :: `<command>` :: <output>): <line>',
+                   'malformed ## Evidence line (want - `<command>` :: <output>): <line>']
     lines = (PLUGIN / 'skills' / 'reporting' / 'SKILL.md').read_text().splitlines()
     start = [i for i, l in enumerate(lines) if l.startswith('| Rejection message')][0]
     rows = []
@@ -1651,6 +1736,60 @@ def test_agent_stage_dispatches_the_stage_agent_with_its_brief(base):
     assert review['model'] == 'opus' and review['sha'] == 'abc1234', review
 
 
+def _first_stage_board(base, stage, last_review=None, round_=1):
+    b = board_for(base, 'in_review')
+    note = {'round': round_, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree}
+    if last_review:
+        note['last_review'] = last_review
+    b.put_note(note)
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    return b
+
+
+def test_a_round_1_agent_stage_with_no_record_and_no_last_review_starts_from_the_worktree_base(base):
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'b', 'provider': None}
+    b = _first_stage_board(base, stage)
+    b.env['FAKE_ROLE_ROLE'] = 'stage-reviewer'
+    b.plans({'report': 'stage-reviewer-ok'})
+    started = begin(b, 'review_stage', state='in_review', stage=stage, round=1)
+    assert started.kind == 'session', b.state.events
+    assert 'bace000' in b.prompt(), b.prompt()
+
+
+def test_a_round_1_provider_stage_with_no_record_and_no_last_review_passes_the_worktree_base(base):
+    stage = {'name': 'security', 'provider': 'codex', 'model': 'gpt-5', 'agent': None}
+    b = _first_stage_board(base, stage)
+    b.gh_result = ok('abc1234\n')
+    out = {'status': 'posted', 'report_file': report_file(b, 'stage-reviewer-ok'), 'parsed': {},
+           'provider': 'codex', 'model': 'gpt-5', 'input_tokens': 5, 'output_tokens': 6, 'attempts': 1}
+    fake_plugin(b, 0, json.dumps(out))
+    started = begin(b, 'review_stage', state='in_review', stage=stage, round=1)
+    assert started.kind == 'session', b.state.events
+    run_role(b, started)
+    args = (b.fake / 'args.txt').read_text().split('\n')
+    assert args[args.index('--prev-sha') + 1] == 'bace000', args
+    assert b.note()['action_failures'] == 0, b.note()
+
+
+def test_a_round_1_stage_with_a_last_review_and_no_record_still_gets_the_last_review_sha(base):
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'b', 'provider': None}
+    b = _first_stage_board(base, stage, last_review=dict(LAST_REVIEW, sha='feed123'))
+    b.env['FAKE_ROLE_ROLE'] = 'stage-reviewer'
+    b.plans({'report': 'stage-reviewer-ok'})
+    begin(b, 'review_stage', state='in_review', stage=stage, round=1)
+    prompt = b.prompt()
+    assert 'feed123' in prompt and 'bace000' not in prompt, prompt
+
+
+def test_a_round_2_stage_with_no_previous_sha_still_fails_with_no_previous_review_sha(base):
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'b', 'provider': None}
+    b = _first_stage_board(base, stage, round_=2)
+    started = begin(b, 'review_stage', state='in_review', stage=stage, round=2)
+    assert started.kind == 'done', started
+    assert 'no previous review sha' in b.note()['last_action_error'], b.note()
+
+
 def test_the_evidence_and_a_stage_report_of_one_card_both_reach_note_reviews(base):
     # Both reviewers are launched from the same starting note and report back to back: each is applied to the
     # note the other left, so note.reviews ends with both entries
@@ -1700,6 +1839,48 @@ def test_a_stage_report_carrying_pass_is_recorded_in_review_passes_beside_review
     assert passes[1]['sha'] == head and passes[1]['round'] == 1 and passes[1]['critical'] == 0, passes
     assert note['reviews']['security']['sha'] == head, note['reviews']
     assert note['reviews']['security']['pass'] == 2, note['reviews']
+
+
+def test_pass_2_of_a_stage_starts_in_its_own_checkout_and_its_prompt_holds_no_other_pass_report(base):
+    head = 'a' * 40
+    b = board_for(base, 'in_review')
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'Look for token leaks.',
+             'provider': None, 'required_passes': 3}
+    card = b.card()
+    report = '## Status\n%s\n\n## Findings\n- none\n\n## For the card\nx\n%s\nVERIFIED: `t` -> 1 test\n'
+    card['comments'] = [{'id': 1, 'author': 'a', 'body': report % ('done IMPLEMENTOR-REPORT-MARK', '\n## PR\nDraft PR #34.\n'), 'created_at': '2026-01-01T00:00:00Z'},
+                        {'id': 2, 'author': 'a', 'body': report % ('done PASS-ONE-REPORT-MARK', ''), 'created_at': '2026-01-01T00:01:00Z'}]
+    card['next_comment_id'] = 3
+    (b.root / '.fleet-board' / 'cards' / '12.json').write_text(json.dumps(card))
+    first = {'pass': 1, 'round': 1, 'sha': head, 'critical': 0, 'important': 0, 'findings': []}
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'stage': None, 'branch': BRANCH,
+                'worktree': b.worktree, 'last_review': LAST_REVIEW, 'review_passes': {'security': [first]}})
+    b.stubs['worktree.sh'] = lambda *a: ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': head, 'base': 'bace000'})
+                                           if a[0] == 'review' else b.worktree + '\n')
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'stage-reviewer-ok', 'sleep': 1})
+    started = begin(b, 'review_stage', state='in_review', stage=stage, round=1, head_sha=head, **{'pass': 2})
+    assert started.kind == 'session', [e['payload'] for e in b.state.events]
+    assert ('worktree.sh', 'review', '12', '34', 'security', '--pass', '2') in b.calls, b.calls
+    prompt = b.prompt()
+    assert 'PASS-ONE-REPORT-MARK' not in prompt, 'pass 2 sees no other pass report'
+    assert 'IMPLEMENTOR-REPORT-MARK' in prompt, 'the implementor report is still given'
+    b.driver.finish(started.action, wait_for(started))
+
+
+def test_pass_1_of_a_stage_passes_no_pass_flag_to_worktree_review(base):
+    b = board_for(base, 'in_review')
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'x', 'provider': None,
+             'required_passes': 3}
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'stage': None, 'branch': BRANCH,
+                'worktree': b.worktree, 'last_review': LAST_REVIEW})
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'stage-reviewer-ok', 'sleep': 1})
+    started = begin(b, 'review_stage', state='in_review', stage=stage, round=1, **{'pass': 1})
+    assert started.kind == 'session'
+    assert ('worktree.sh', 'review', '12', '34', 'security') in b.calls, b.calls
+    b.driver.finish(started.action, wait_for(started))
 
 
 def test_a_stage_report_without_pass_leaves_review_passes_alone(base):
@@ -1988,8 +2169,608 @@ def test_the_launch_column_stays_ready_while_the_ledger_column_is_in_progress(ba
         wait_for(started)
 
 
+# premise check (card 473) -------------------------------------------------------------------------------
+PREMISE_HEAD = 'c' * 40
+CHECK_PROMPT = PLUGIN / 'scripts' / 'supervisor' / 'defaults' / 'premise-check-prompt.md'
+FAILED_SUFFIX = '; move the card to Ready to start it without a check'
+
+
+def premise_board(base, **kw):
+    b = board_for(base, **kw)
+    b.premise_path = str(b.root / '.fw' / '12-premise_check')
+    b.stubs['worktree.sh'] = lambda *a: (ok(json.dumps({'path': b.premise_path, 'head': PREMISE_HEAD}) + '\n')
+                                         if a[0] == 'premise' else ok())
+    return b
+
+
+def begin_check(b, **kw):
+    kw.setdefault('worktree', None)
+    kw.setdefault('reason', 'ground moved: src/calc.js')
+    return b.driver.begin(candidate('check_premise', **kw))
+
+
+def finish_all(b, started):
+    """Finish the session, and the one re-dispatch a rejected report earns."""
+    outcome = run_role(b, started)
+    while outcome.redispatch:
+        outcome = b.driver.finish(started.action, wait_for(started))
+    return outcome
+
+
+def check_plan(report, **kw):
+    return dict({'report': report, 'post': False}, **kw)
+
+
+def stamps(b):
+    return [c for c in b.calls if c[:2] == ('premise.sh', 'stamp')]
+
+
+def premise_events(b):
+    return [e['payload']['message'] for e in b.state.events if e['type'] == 'premise']
+
+
+def test_check_premise_starts_a_session_in_a_premise_worktree(base):
+    b = premise_board(base)
+    b.plans(check_plan('checker-go'))
+    started = begin_check(b)
+    assert started.kind == 'session' and started.action.role == 'checker', started
+    assert ('worktree.sh', 'premise', '12') in b.calls, b.calls
+    assert not [c for c in b.calls if c[:2] == ('worktree.sh', 'create')], b.calls
+    argv = b.fake_calls(1)[0]['argv']
+    assert None not in argv and '--agent' not in argv, argv
+    assert argv[argv.index('--tools') + 1] == 'Read,Write,Bash,Grep,Glob', argv
+    assert argv.index('--tools') < argv.index('--permission-mode'), argv
+    assert b.card()['state'] == 'ready' and 'board-move.sh' not in b.scripts_called()
+    finish_all(b, started)
+
+
+def test_the_checker_prompt_carries_the_card_and_the_board(base):
+    b = premise_board(base, acceptance=('adds two numbers', 'subtracts them'))
+    b.seed(40, 'in_review', acceptance=('x',))
+    card = b.card(40)
+    card.update(title='Other work', pr_url='https://github.com/acme/toy/pull/9')
+    (b.root / '.fleet-board' / 'cards' / '40.json').write_text(json.dumps(card))
+    b.seed(41, 'backlog', acceptance=('y',))
+    card = b.card(41)
+    card['title'] = 'Idea'
+    (b.root / '.fleet-board' / 'cards' / '41.json').write_text(json.dumps(card))
+    b.plans(check_plan('checker-go'))
+    started = begin_check(b)
+    prompt = b.prompt()
+    for want in ('1. adds two numbers', '2. subtracts them',
+                 '#40 in_review Other work PR https://github.com/acme/toy/pull/9', '#41 backlog Idea',
+                 b.premise_path, CHECK_PROMPT.read_text(), '## Mode\ncheck', 'Add subtract'):
+        assert want in prompt, (want, prompt)
+    finish_all(b, started)
+
+
+def test_go_stamps_the_commit_the_session_saw(base):
+    b = premise_board(base)
+    b.put_note({'action_failures': 2, 'last_action_error': 'older'})
+    b.plans(check_plan('checker-go'))
+    started = begin_check(b)
+    outcome = finish_all(b, started)
+    assert outcome.progressed is True, outcome
+    assert ('premise.sh', 'stamp', '12', '--by', 'check', '--sha', PREMISE_HEAD) in b.calls, b.calls
+    assert b.card()['premise']['sha'] == PREMISE_HEAD and b.card()['premise']['by'] == 'check'
+    note = b.note()
+    assert note['premise_check']['head'] == PREMISE_HEAD and note['premise_check']['verdict'] == 'go', note
+    assert note['premise_check']['at'], note
+    assert note['action_failures'] == 0 and note['last_action_error'] is None, note
+    assert ('worktree.sh', 'remove', '12', b.premise_path) in b.calls, b.calls
+    assert b.card()['state'] == 'ready' and 12 not in b.state.active
+    assert any('## Status' in c for c in b.comments()), 'the driver posts the accepted report'
+    assert premise_events(b) == ['premise #12: go -> stamped'], premise_events(b)
+    assert b.state.snapshot()['premise'] == dict(CHECK_COUNTS, checked=1, go=1), b.state.snapshot()['premise']
+
+
+def assert_one_failed_check(b):
+    note = b.note()
+    assert note['action_failures'] == 1, note
+    assert note['last_action_error'].startswith('premise check failed: '), note
+    assert note['last_action_error'].endswith(FAILED_SUFFIX), note
+    assert not stamps(b), b.calls
+    parses = [c for c in b.calls if c[0] == 'parse-report.sh']
+    assert parses and all(c[1:5] == ('--role', 'checker', '--mode', 'check') for c in parses), parses
+    assert ('worktree.sh', 'remove', '12', b.premise_path) in b.calls, b.calls
+    assert b.card()['state'] == 'ready'
+    assert not premise_events(b), premise_events(b)
+    assert b.state.snapshot()['premise']['failed'] == 1, b.state.snapshot()['premise']
+
+
+def test_an_empty_final_reply_counts_one_failure(base):
+    b = premise_board(base)
+    b.plans(check_plan(''), check_plan(''))
+    started = begin_check(b)
+    outcome = finish_all(b, started)
+    assert outcome.progressed is False, outcome
+    assert_one_failed_check(b)
+
+
+def test_a_report_rejected_twice_counts_one_failure(base):
+    b = premise_board(base)
+    b.plans(check_plan('not a report'), check_plan('still not a report'))
+    started = begin_check(b)
+    finish_all(b, started)
+    assert_one_failed_check(b)
+    assert len([c for c in b.calls if c[0] == 'parse-report.sh']) == 2, b.calls
+
+
+def test_the_card_changed_during_the_check_drops_the_verdict(base):
+    b = premise_board(base)
+    b.plans(check_plan('checker-go'))
+    started = begin_check(b)
+    card = b.card()
+    card['acceptance'] = ['something else entirely']
+    (b.root / '.fleet-board' / 'cards' / '12.json').write_text(json.dumps(card))
+    finish_all(b, started)
+    assert not stamps(b) and 'board-move.sh' not in b.scripts_called(), b.calls
+    note = b.note()
+    assert not note.get('action_failures') and note.get('premise_check') is None, note
+    dropped = [e for e in b.state.events if 'premise verdict dropped: card changed' in json.dumps(e)]
+    assert len(dropped) == 1, list(b.state.events)
+    assert not [e for e in b.state.events if e['type'] == 'action_failed'], list(b.state.events)
+    assert ('worktree.sh', 'remove', '12', b.premise_path) in b.calls, b.calls
+    assert 12 not in b.state.active
+
+
+def test_a_new_comment_alone_does_not_drop_the_verdict(base):
+    b = premise_board(base)
+    b.plans(check_plan('checker-go'))
+    started = begin_check(b)
+    note_file = Path(base) / 'comment.txt'
+    note_file.write_text('a person wrote this')
+    assert scripts.run(b.root, 'board-comment.sh', 12, str(note_file), env=b.env).rc == 0
+    finish_all(b, started)
+    assert len(stamps(b)) == 1, b.calls
+    assert not [e for e in b.state.events if 'verdict dropped' in json.dumps(e)], list(b.state.events)
+
+
+FOLLOWUP_GO = """## Status
+go
+
+## Findings
+- none
+
+## For the card
+Every item holds.
+Out of scope:
+- Tidy the readme :: `true` exits 0
+Bugs found:
+- A crash :: repro: `false` :: expected: exit 0 :: observed: exit 1
+
+VERIFIED: `true` -> 1 command ran
+"""
+
+
+def test_follow_up_lines_in_a_checker_report_file_nothing(base):
+    b = premise_board(base)
+    b.plans(check_plan(FOLLOWUP_GO))
+    started = begin_check(b)
+    finish_all(b, started)
+    assert 'file-followups.sh' not in b.scripts_called(), b.calls
+    assert len(stamps(b)) == 1, b.calls
+    assert b.note().get('pending_followups') is None
+
+
+BUILT_QUESTION = 'Waiting for a person: close as already built?'
+REWRITE_QUESTION = 'Waiting for a person: approve this rewrite?'
+TWO_ITEMS = ('adds two numbers', 'subtracts them')
+
+
+def verdict_run(b, report):
+    b.plans(check_plan(report))
+    finish_all(b, begin_check(b))
+
+
+def test_built_blocks_with_the_evidence_and_never_closes(base):
+    b = premise_board(base, acceptance=TWO_ITEMS)
+    verdict_run(b, 'checker-built')
+    card = b.card()
+    assert card['state'] == 'blocked', card['state']
+    assert ('board-move.sh', '12', 'done') not in b.calls, b.calls
+    assert [c[:3] for c in b.calls if c[0] == 'premise-settle.sh'] == [('premise-settle.sh', 'propose', '12')], b.calls
+    assert card['proposal']['kind'] == 'close' and card['proposal']['head'] == PREMISE_HEAD, card['proposal']
+    assert [e['item'] for e in card['proposal']['evidence']] == [1, 2], card['proposal']
+    posted = [t for t in b.comments() if t.startswith(BUILT_QUESTION)]
+    assert len(posted) == 1, b.comments()
+    for item, command, output in (
+            ('adds two numbers', 'bash plugins/fleet-board/tests/test-premise.sh', 'failed: 0'),
+            ('subtracts them', 'grep -c checker plugins/fleet-board/scripts/parse-report.sh', '4')):
+        assert item in posted[0] and command in posted[0] and output in posted[0], posted[0]
+    note = b.note()
+    assert note['blocked_from'] == 'ready' and note['action_failures'] == 0, note
+    assert not stamps(b), b.calls
+    assert premise_events(b) == ['premise #12: built -> asked: close as already built'], premise_events(b)
+    assert b.state.snapshot()['premise'] == dict(CHECK_COUNTS, checked=1, built=1)
+
+
+def test_built_missing_evidence_for_an_item_is_a_plain_question(base):
+    b = premise_board(base, acceptance=('adds two numbers', 'subtracts them', 'multiplies them'))
+    verdict_run(b, 'checker-built')
+    assert b.card()['state'] == 'blocked' and not b.card().get('proposal'), b.card()
+    assert [t for t in b.comments() if t.startswith(QUESTION)], b.comments()
+    assert not [t for t in b.comments() if t.startswith(BUILT_QUESTION)], b.comments()
+    assert ('board-move.sh', '12', 'done') not in b.calls and not stamps(b), b.calls
+
+
+def test_built_evidence_for_an_item_number_the_card_lacks_is_a_plain_question(base):
+    b = premise_board(base, acceptance=('adds two numbers',))
+    verdict_run(b, 'checker-built')
+    assert b.card()['state'] == 'blocked' and not b.card().get('proposal'), b.card()
+    assert [t for t in b.comments() if t.startswith(QUESTION)], b.comments()
+    assert not [t for t in b.comments() if t.startswith(BUILT_QUESTION)], b.comments()
+
+
+def test_stale_with_a_proposal_blocks_with_the_rewrite(base):
+    b = premise_board(base, acceptance=TWO_ITEMS, body='## Scope\n- `src/calc.js`\n')
+    verdict_run(b, 'checker-stale')
+    card = b.card()
+    assert card['state'] == 'blocked', card['state']
+    assert card['proposal']['kind'] == 'rewrite' and card['proposal']['head'] == PREMISE_HEAD, card['proposal']
+    assert card['proposal']['acceptance'] == ['stamp writes the head', 'stamp refuses a missing card'], card['proposal']
+    posted = [t for t in b.comments() if t.startswith(REWRITE_QUESTION)]
+    assert len(posted) == 1, b.comments()
+    text = posted[0]
+    assert 'plugins/fleet-board/scripts/premise.sh now owns the stamp.' in text, text
+    for part in ('src/calc.js', 'adds two numbers', 'Change `plugins/fleet-board/scripts/premise.sh` only.',
+                 'stamp writes the head'):
+        assert part in text, (part, text)
+    assert text.index('now owns the stamp') < text.index('src/calc.js') < text.index('Change `plugins/'), text
+    assert ('board-move.sh', '12', 'ready') not in b.calls and not stamps(b), b.calls
+    assert premise_events(b) == ['premise #12: stale -> asked: approve rewrite'], premise_events(b)
+    assert b.state.snapshot()['premise'] == dict(CHECK_COUNTS, checked=1, stale=1)
+
+
+def test_stale_without_a_proposal_blocks_with_the_summary(base):
+    b = premise_board(base)
+    verdict_run(b, 'checker-stale-no-proposal')
+    assert b.card()['state'] == 'blocked' and not b.card().get('proposal'), b.card()
+    posted = [t for t in b.comments() if t.startswith(QUESTION)]
+    assert len(posted) == 1 and 'The script moved.' in posted[0], b.comments()
+    assert not stamps(b), b.calls
+    assert premise_events(b) == ['premise #12: stale -> asked: could not settle'], premise_events(b)
+
+
+def test_no_verdict_stamps_except_go(base):
+    for report in ('checker-built', 'checker-stale', 'checker-stale-no-proposal'):
+        with tempfile.TemporaryDirectory() as sub:
+            b = premise_board(Path(sub), acceptance=TWO_ITEMS, body='## Scope\n- `src/calc.js`\n')
+            verdict_run(b, report)
+            assert not stamps(b), (report, b.calls)
+            assert b.card().get('premise') is None, (report, b.card())
+
+
+CHECK_COUNTS = {'checked': 0, 'go': 0, 'needs': 0, 'built': 0, 'stale': 0, 'drafted': 0, 'failed': 0}
+QUESTION = 'Waiting for a person: the premise check could not settle this card.'
+
+
+def needs_board(base, other_state='in_review', other=40, **kw):
+    b = premise_board(base, **kw)
+    if other_state is not None:
+        b.seed(other, other_state, blocked_by=kw.get('other_blocked_by', ()))
+    b.plans(check_plan('checker-needs'))
+    return b
+
+
+def needs_run(b):
+    finish_all(b, begin_check(b))
+
+
+def asked(b, text):
+    note = b.note()
+    assert b.card()['state'] == 'blocked', b.card()['state']
+    assert note['blocked_from'] == 'ready' and note['action_failures'] == 0, note
+    posted = [t for t in b.comments() if t.startswith(QUESTION)]
+    assert len(posted) == 1 and text in posted[0], b.comments()
+    assert not stamps(b), b.calls
+    assert not [c for c in b.calls if c[:2] == ('premise.sh', 'add-dep')], b.calls
+
+
+def test_needs_adds_the_dependency_and_leaves_the_card_ready(base):
+    b = needs_board(base, 'in_review')
+    needs_run(b)
+    assert ('premise.sh', 'add-dep', '12', '40') in b.calls, b.calls
+    assert 'Premise check: needs #40, which is in_review. Added as a dependency.' in b.comments(), b.comments()
+    assert not [c for c in b.calls if c[0] == 'board-move.sh'], b.calls
+    assert b.card()['state'] == 'ready' and 40 in b.card()['blocked_by'], b.card()
+    assert not stamps(b), b.calls
+    assert b.note()['action_failures'] == 0
+    assert premise_events(b) == ['premise #12: needs -> depends on #40'], premise_events(b)
+    assert b.state.snapshot()['premise'] == dict(CHECK_COUNTS, checked=1, needs=1)
+
+
+def test_needs_a_card_already_listed_changes_nothing_and_asks(base):
+    b = premise_board(base, blocked_by=[40])
+    b.seed(40, 'in_review')
+    b.plans(check_plan('checker-needs'))
+    needs_run(b)
+    asked(b, 'needs #40')
+
+
+def test_needs_a_backlog_card_asks(base):
+    b = needs_board(base, 'backlog')
+    needs_run(b)
+    asked(b, 'needs #40, which is backlog')
+
+
+def test_needs_a_closed_card_asks(base):
+    for closed in ('done', 'wont_do'):
+        sub = Path(base) / closed
+        sub.mkdir()
+        b = needs_board(sub, closed)
+        needs_run(b)
+        asked(b, 'needs #40, which is ' + closed)
+
+
+def needs_text(number):
+    return (PLUGIN / 'fixtures' / 'reports' / 'checker-needs.md').read_text().replace('#40', '#%d' % number)
+
+
+def test_needs_a_missing_card_asks(base):
+    b = premise_board(base)
+    b.plans(check_plan(needs_text(999)))
+    needs_run(b)
+    asked(b, 'needs #999, which does not exist')
+    assert premise_events(b) == ['premise #12: needs -> asked: could not settle'], premise_events(b)
+
+
+def test_needs_itself_asks(base):
+    b = premise_board(base)
+    b.plans(check_plan(needs_text(12)))
+    needs_run(b)
+    asked(b, 'needs #12, which is the card itself')
+
+
+def test_needs_a_card_that_depends_on_this_one_asks(base):
+    b = premise_board(base)
+    b.seed(40, 'in_review', blocked_by=[12])
+    b.plans(check_plan('checker-needs'))
+    needs_run(b)
+    asked(b, 'needs #40')
+
+
+def test_needs_a_card_that_depends_on_this_one_through_another_asks(base):
+    b = premise_board(base)
+    b.seed(40, 'in_review', blocked_by=[41])
+    b.seed(41, 'in_review', blocked_by=[12])
+    b.plans(check_plan('checker-needs'))
+    needs_run(b)
+    asked(b, 'needs #40')
+
+
+def test_a_question_resets_the_failure_count_and_records_blocked_from_ready(base):
+    b = needs_board(base, 'backlog')
+    b.put_note({'action_failures': 2, 'last_action_error': 'old'})
+    needs_run(b)
+    note = b.note()
+    assert note['action_failures'] == 0 and note['last_action_error'] is None, note
+    assert note['blocked_from'] == 'ready' and note['state'] == 'blocked', note
+
+
+# follow-up drafts (card 477) ---------------------------------------------------------------------------
+ENTRY = {'title': 'Stamp is lost on a move', 'repro': 'bash tests/stamp.sh', 'expected': 'exit 0', 'observed': 'exit 1'}
+DRAFT_FAILED_SUFFIX = '; left as filed. A person writes the criteria and moves it to Ready.'
+
+
+def draft_config(**followups):
+    return {'board': {'repo': 'acme/toy'}, 'review': {'stages': [], 'max_rounds': 3}, 'commands': {},
+            'followups': dict({'status': 'ready', 'auto_ready': 'bugs', 'auto_ready_cap': 5}, **followups)}
+
+
+def add_followup(b, number=12, kind='bug', draft='pending', frm=7):
+    path = b.root / '.fleet-board' / 'cards' / ('%d.json' % number)
+    card = json.loads(path.read_text())
+    card['followup'] = {'draft': draft, 'kind': kind, 'entry': ENTRY if kind == 'bug' else {
+        'title': 'Tidy the readme', 'detail': '`true` exits 0'}, 'from': frm}
+    path.write_text(json.dumps(card))
+
+
+def draft_board(base, kind='bug', **followups):
+    b = premise_board(base, card_state='backlog', config=draft_config(**followups), body='## Bug\nStamp is lost\n',
+                      acceptance=('`bash tests/stamp.sh` gives the expected result: exit 0',))
+    add_followup(b, kind=kind)
+    b.seed(7, 'in_review', acceptance=('x',))
+    return b
+
+
+def begin_draft(b, number=12):
+    return b.driver.begin(candidate('draft_followup', number=number, state='backlog', worktree=None,
+                                    reason='follow-up awaits a draft'))
+
+
+def draft_text(name, **replace):
+    text = (PLUGIN / 'fixtures' / 'reports' / ('%s.md' % name)).read_text()
+    for old, new in replace.items():
+        text = text.replace(old, new)
+    return text
+
+
+def draft_run(b, report, number=12):
+    b.plans(check_plan(report))
+    return finish_all(b, begin_draft(b, number))
+
+
+def left_comments(b, number=12):
+    return [t for t in b.comments(number) if t.startswith('Drafted; left in Backlog: ')]
+
+
+def test_the_draft_prompt_carries_the_entry_and_every_card(base):
+    b = draft_board(base)
+    for number, state_name, title in ((40, 'done', 'Closed one'), (41, 'wont_do', 'Dropped one'), (42, 'ready', 'Open one')):
+        b.seed(number, state_name)
+        card = b.card(number)
+        card['title'] = title
+        (b.root / '.fleet-board' / 'cards' / ('%d.json' % number)).write_text(json.dumps(card))
+    b.plans(check_plan('checker-drafted'))
+    started = begin_draft(b)
+    assert started.kind == 'session' and started.action.role == 'checker', started
+    prompt = b.prompt()
+    for want in ('## Mode\ndraft', 'Stamp is lost on a move', 'bash tests/stamp.sh', '#40 done Closed one',
+                 '#41 wont_do Dropped one', '#42 ready Open one', '#7 in_review', CHECK_PROMPT.read_text(),
+                 b.premise_path):
+        assert want in prompt, (want, prompt)
+    assert '7' in prompt.split('## Filed by card\n', 1)[1].split('\n', 1)[0], prompt
+    assert ('worktree.sh', 'premise', '12') in b.calls, b.calls
+    finish_all(b, started)
+
+
+def test_draft_duplicate_closes_with_a_link(base):
+    b = draft_board(base)
+    b.seed(40, 'done')
+    outcome = draft_run(b, draft_text('checker-duplicate', **{'#12': '#40'}))
+    assert outcome.progressed is True, outcome
+    assert b.card()['state'] == 'wont_do', b.card()['state']
+    assert ('board-move.sh', '12', 'wont_do') in b.calls, b.calls
+    assert 'Follow-up draft: duplicate of #40.' in b.comments(), b.comments()
+    assert not stamps(b) and not [c for c in b.calls if c[:2] == ('premise.sh', 'apply-draft')], b.calls
+    assert premise_events(b) == ['premise #12: duplicate -> closed as duplicate of #40'], premise_events(b)
+    parses = [c for c in b.calls if c[0] == 'parse-report.sh']
+    assert parses and all(c[1:5] == ('--role', 'checker', '--mode', 'draft') for c in parses), parses
+    assert ('worktree.sh', 'remove', '12', b.premise_path) in b.calls, b.calls
+
+
+def test_draft_duplicate_of_itself_or_a_missing_card_is_a_failed_draft(base):
+    for number in (12, 999):
+        sub = Path(base) / ('dup%d' % number)
+        sub.mkdir()
+        b = draft_board(sub)
+        draft_run(b, draft_text('checker-duplicate', **{'#12': '#%d' % number}))
+        assert b.card()['state'] == 'backlog', (number, b.card()['state'])
+        assert not [c for c in b.calls if c[0] == 'board-move.sh'], b.calls
+        assert not [t for t in b.comments() if t.startswith('Follow-up draft:')], b.comments()
+        note = b.note()
+        assert note['action_failures'] == 1 and note['last_action_error'], (number, note)
+        assert not note['last_action_error'].startswith('premise check failed'), note
+
+
+def test_draft_fixed_closes_with_the_evidence(base):
+    b = draft_board(base)
+    draft_run(b, draft_text('checker-fixed'))
+    assert b.card()['state'] == 'wont_do', b.card()['state']
+    posted = [t for t in b.comments() if t.startswith('Follow-up draft: already fixed on the default branch.')]
+    assert len(posted) == 1, b.comments()
+    assert '`bash plugins/fleet-board/tests/test-premise.sh` :: failed: 0' in posted[0], posted[0]
+    assert not stamps(b), b.calls
+    assert premise_events(b) == ['premise #12: fixed -> closed as already fixed'], premise_events(b)
+
+
+def test_drafted_bug_with_a_failing_repro_goes_to_ready(base):
+    b = draft_board(base)
+    outcome = draft_run(b, draft_text('checker-drafted'))
+    assert outcome.progressed is True, outcome
+    applied = [c for c in b.calls if c[:3] == ('premise.sh', 'apply-draft', '12')]
+    assert len(applied) == 1 and len(applied[0]) == 4, b.calls
+    names = [c[:2] for c in b.calls if c[0] in ('premise.sh', 'card-lint.sh', 'board-move.sh')]
+    assert names.index(('premise.sh', 'apply-draft')) < names.index(('card-lint.sh', '12')) \
+        < names.index(('premise.sh', 'stamp')) < names.index(('board-move.sh', '12')), names
+    card = b.card()
+    assert card['state'] == 'ready', card['state']
+    assert '## Why\nThe stamp is lost on a move.' in card['body'] and '## Scope' in card['body'], card['body']
+    assert 'plugins/fleet-board/scripts/premise.sh' in card['body'], card['body']
+    assert card['acceptance'] == ['stamp survives a move', 'stamp is read back'], card['acceptance']
+    assert card['followup']['draft'] == 'done', card['followup']
+    assert ('premise.sh', 'stamp', '12', '--by', 'check', '--sha', PREMISE_HEAD) in b.calls, b.calls
+    assert card['premise']['by'] == 'check' and card['premise']['sha'] == PREMISE_HEAD, card['premise']
+    assert b.state.followups_auto_ready == 1
+    assert not left_comments(b), b.comments()
+    assert premise_events(b) == ['premise #12: drafted -> drafted, to Ready'], premise_events(b)
+    assert b.state.snapshot()['premise'] == dict(CHECK_COUNTS, drafted=1), b.state.snapshot()['premise']
+
+
+def stays(b, reason, number=12):
+    posted = left_comments(b, number)
+    assert len(posted) == 1 and posted[0].endswith(reason), b.comments(number)
+    assert b.card(number)['state'] == 'backlog', b.card(number)['state']
+    assert ('board-move.sh', str(number), 'ready') not in b.calls, b.calls
+    assert b.card(number)['followup']['draft'] == 'done', b.card(number)['followup']
+
+
+def test_drafted_out_of_scope_stays_in_backlog(base):
+    b = draft_board(base, kind='out_of_scope')
+    draft_run(b, draft_text('checker-drafted'))
+    stays(b, 'not a bug report.')
+    assert premise_events(b) == ['premise #12: drafted -> drafted, in Backlog'], premise_events(b)
+    assert b.state.followups_auto_ready == 0
+
+
+def test_drafted_bug_whose_repro_passed_stays(base):
+    b = draft_board(base)
+    draft_run(b, draft_text('checker-drafted', **{'failed :: 1 case failed': 'passed :: 0 cases failed'}))
+    stays(b, 'the repro did not fail on the default branch.')
+
+
+def test_drafted_bug_with_no_repro_stays(base):
+    b = draft_board(base)
+    draft_run(b, draft_text('checker-drafted-no-repro'))
+    stays(b, 'no repro was run.')
+
+
+def test_drafted_bug_failing_lint_stays(base):
+    b = draft_board(base)
+    draft_run(b, draft_text('checker-drafted', **{'- stamp survives a move': '- the stamp survives a move on a device'}))
+    stays(b, 'card lint failed: manual-check.')
+    assert ('card-lint.sh', '12') in b.calls, b.calls
+
+
+def test_auto_ready_none_keeps_every_draft_in_backlog(base):
+    b = draft_board(base, auto_ready='none')
+    draft_run(b, draft_text('checker-drafted'))
+    stays(b, 'followups.auto_ready is none.')
+    assert b.state.followups_auto_ready == 0
+
+
+def test_the_cap_admits_exactly_one_of_two_drafts_finishing_together(base):
+    b = draft_board(base, auto_ready_cap=1)
+    b.seed(13, 'backlog', body='## Bug\nSecond\n', acceptance=('`bash tests/second.sh` gives the expected result: exit 0',))
+    add_followup(b, 13)
+    b.plans(check_plan('checker-drafted'), check_plan('checker-drafted'))
+    first, second = begin_draft(b, 12), begin_draft(b, 13)
+    finish_all(b, first)
+    finish_all(b, second)
+    states = sorted([b.card(12)['state'], b.card(13)['state']])
+    assert states == ['backlog', 'ready'], states
+    held = 12 if b.card(12)['state'] == 'backlog' else 13
+    stays(b, "this run's cap of 1 is used.", held)
+    assert b.state.followups_auto_ready == 1
+
+
+def test_cap_zero_sends_nothing_to_ready(base):
+    b = draft_board(base, auto_ready_cap=0)
+    draft_run(b, draft_text('checker-drafted'))
+    stays(b, "this run's cap of 0 is used.")
+    assert b.state.followups_auto_ready == 0
+
+
+def test_a_draft_that_keeps_failing_is_marked_failed_and_left_as_filed(base):
+    b = draft_board(base)
+    b.put_note({'action_failures': 1, 'last_action_error': 'older'})
+    b.plans(check_plan(''), check_plan(''))
+    finish_all(b, begin_draft(b))
+    assert not [c for c in b.calls if c[:2] == ('premise.sh', 'set-followup')], b.calls
+    assert b.note()['action_failures'] == 2 and b.card()['followup']['draft'] == 'pending'
+    sub = Path(base) / 'again'
+    sub.mkdir()
+    b = draft_board(sub)
+    b.put_note({'action_failures': 2, 'last_action_error': 'older'})
+    b.plans(check_plan(''), check_plan(''))
+    finish_all(b, begin_draft(b))
+    assert ('premise.sh', 'set-followup', '12', 'failed') in b.calls, b.calls
+    assert b.card()['followup']['draft'] == 'failed', b.card()['followup']
+    posted = [t for t in b.comments() if t.startswith('Follow-up draft failed after')]
+    assert posted == ['Follow-up draft failed after 3 attempts' + DRAFT_FAILED_SUFFIX], b.comments()
+    assert b.card()['state'] == 'backlog' and not stamps(b), b.calls
+    assert ('worktree.sh', 'remove', '12', b.premise_path) in b.calls, b.calls
+    assert not premise_events(b), premise_events(b)
+
+
+def test_draft_followup_reserves_no_scope(base):
+    from supervisor import scheduler
+    assert 'draft_followup' in scheduler.SCOPE_FREE_ACTIONS, scheduler.SCOPE_FREE_ACTIONS
+
+
 HEAD40 = 'abc1234' + '0' * 33
-RED = [{'name': 'test-suite', 'detailsUrl': 'https://github.com/acme/toy/actions/runs/123/job/456'}]
+RED =[{'name': 'test-suite', 'detailsUrl': 'https://github.com/acme/toy/actions/runs/123/job/456'}]
 
 
 def test_rerun_checks_reruns_the_failed_run_and_records_it_in_the_note(base):
@@ -2022,13 +2803,194 @@ def test_checks_failed_hands_the_failure_to_the_fixer_as_an_important_finding(ba
     assert len(last['findings']) == 1 and last['findings'][0]['severity'] == 'Important', last
     text = last['findings'][0]['text']
     assert text.startswith('CI failed at abc1234:') and 'test-suite' in text and RED[0]['detailsUrl'] in text, text
-    assert not note.get('reviews') and note['reviewed_stages'] == [], note
+    # the failure is the evidence reviewer's finding; no reviewer's record is dropped (card: a wipe made the
+    # planner re-run every reviewer, they reported clean over the finding, and checks_failed fired again)
+    assert note['reviews']['evidence']['important'] == 1 and note['reviews']['evidence']['sha'] == HEAD40, note
+    assert note['reviews']['evidence']['findings'] == last['findings'], note
+    assert note['reviewed_stages'] == [], note
     assert note['state'] == 'in_review'
+
+
+def test_checks_failed_keeps_every_reviewers_record(base):
+    # Built-in stages on: the evidence reviewer and two stage reviewers all reported clean at the head. The failure
+    # replaces only the evidence record; the stage records stay, so the planner plans the fixer at once instead of
+    # re-running every reviewer (which reported clean again, erased the finding, and looped).
+    b = board_for(base, 'in_review')
+    clean = lambda stage: {'round': 1, 'sha': HEAD40, 'critical': 0, 'important': 0, 'findings': [], 'stage': stage}
+    b.put_note({'state': 'in_review', 'pr': 34, 'round': 1, 'last_review': clean('blast_radius'),
+                'reviews': {'evidence': clean(None), 'documentation': clean('documentation'),
+                            'blast_radius': clean('blast_radius')}})
+    begin(b, 'checks_failed', state='in_review', head_sha=HEAD40, red_checks=RED)
+    note = b.note()
+    reviews = note['reviews']
+    assert set(reviews) == {'evidence', 'documentation', 'blast_radius'}, reviews
+    assert reviews['documentation'] == clean('documentation'), reviews
+    assert reviews['blast_radius'] == clean('blast_radius'), reviews
+    assert reviews['blast_radius']['important'] == 0 and reviews['documentation']['sha'] == HEAD40, reviews
+    assert reviews['evidence']['important'] == 1 and reviews['evidence']['stage'] is None, reviews
+    assert note['last_review']['important'] == 1 and note['last_review']['stage'] is None, note['last_review']
+    assert 'test-suite' in reviews['evidence']['findings'][0]['text'], reviews['evidence']
+
+
+BUILTIN_CONFIG = {'board': {'repo': 'acme/toy'}, 'commands': {},
+                  'review': {'stages': [{'name': 'documentation', 'agent': 'fleet-board:documentation-reviewer',
+                                         'model': 'sonnet'},
+                                        {'name': 'blast_radius', 'agent': 'fleet-board:blast-radius-reviewer',
+                                         'model': 'sonnet'}]}}
+
+
+def _clean_at(stage, sha=HEAD40):
+    return {'round': 1, 'sha': sha, 'critical': 0, 'important': 0, 'findings': [], 'stage': stage, 'agent': None,
+            'model': None, 'provider': None}
+
+
+def _loop_board(base, **note):
+    """An in_review card with the built-in stages on, both stage records clean at HEAD40 and no evidence record,
+    as card 478's note was during its review loop; worktree.sh review reports HEAD40 as the head."""
+    b = board_for(base, 'in_review', config=BUILTIN_CONFIG)
+    b.put_note(dict({'round': 1, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree,
+                     'last_review': _clean_at('blast_radius'),
+                     'reviews': {'documentation': _clean_at('documentation'),
+                                 'blast_radius': _clean_at('blast_radius')}}, **note))
+    b.stubs['worktree.sh'] = lambda *a: ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': HEAD40,
+                                                       'base': 'bace000'}) if a[0] == 'review' else b.worktree + '\n')
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    return b
+
+
+def test_a_clean_evidence_review_with_builtin_stages_keeps_its_record_beside_the_stage_records(base):
+    b = _loop_board(base)
+    b.plans({'report': 'reviewer-ok'})
+    run_role(b, begin(b, 'review', state='in_review', round=1, head_sha=HEAD40, red_checks=RED))
+    reviews = b.note()['reviews']
+    assert set(reviews) == {'evidence', 'documentation', 'blast_radius'}, reviews
+    assert reviews['evidence']['sha'] == HEAD40 and reviews['evidence']['stage'] is None, reviews['evidence']
+    assert reviews['evidence']['critical'] == 0 and reviews['evidence']['important'] == 0, reviews['evidence']
+    assert reviews['documentation'] == _clean_at('documentation'), reviews
+
+
+def test_a_reviewer_report_at_a_new_head_starts_the_lap_count(base):
+    b = _loop_board(base)
+    b.plans({'report': 'reviewer-ok'})
+    run_role(b, begin(b, 'review', state='in_review', round=1, head_sha=HEAD40, red_checks=RED))
+    laps = b.note()['review_laps']
+    assert laps == {'sha': HEAD40, 'checks': ['test-suite'], 'count': 1, 'seen': ['evidence']}, laps
+
+
+def test_a_reviewer_reporting_again_at_the_head_counts_one_more_lap(base):
+    b = _loop_board(base, review_laps={'sha': HEAD40, 'checks': ['test-suite'], 'count': 1,
+                                       'seen': ['documentation', 'blast_radius', 'evidence']})
+    b.plans({'report': 'reviewer-ok'})
+    run_role(b, begin(b, 'review', state='in_review', round=1, head_sha=HEAD40, red_checks=RED))
+    laps = b.note()['review_laps']
+    assert laps == {'sha': HEAD40, 'checks': ['test-suite'], 'count': 2, 'seen': ['evidence']}, laps
+
+
+def test_a_reviewer_first_at_the_head_in_this_lap_joins_it(base):
+    b = _loop_board(base, review_laps={'sha': HEAD40, 'checks': ['test-suite'], 'count': 2, 'seen': ['documentation']})
+    b.plans({'report': 'reviewer-ok'})
+    run_role(b, begin(b, 'review', state='in_review', round=1, head_sha=HEAD40, red_checks=RED))
+    laps = b.note()['review_laps']
+    assert laps == {'sha': HEAD40, 'checks': ['test-suite'], 'count': 2, 'seen': ['documentation', 'evidence']}, laps
+
+
+def test_laps_at_another_head_or_with_other_red_checks_start_again(base):
+    import tempfile
+    other = 'def5678' + '0' * 33
+    # each case on its own board directory
+    for old in ({'sha': other, 'checks': ['test-suite'], 'count': 2, 'seen': ['evidence']},
+                {'sha': HEAD40, 'checks': ['lint'], 'count': 2, 'seen': ['evidence']}):
+        b = _loop_board(tempfile.mkdtemp(dir=str(base)), review_laps=old)
+        b.plans({'report': 'reviewer-ok'})
+        run_role(b, begin(b, 'review', state='in_review', round=1, head_sha=HEAD40, red_checks=RED))
+        laps = b.note()['review_laps']
+        assert laps == {'sha': HEAD40, 'checks': ['test-suite'], 'count': 1, 'seen': ['evidence']}, (old, laps)
+
+
+def test_a_fixer_report_clears_the_lap_count(base):
+    b = board_for(base, 'in_review')
+    seed_fix(b, review_laps={'sha': HEAD40, 'checks': ['test-suite'], 'count': 2, 'seen': ['evidence']})
+    b.plans({'report': 'fixer-ok'})
+    run_role(b, begin(b, 'fix', state='in_review', round=1))
+    assert b.note().get('review_laps') is None, b.note().get('review_laps')
+
+
+def test_a_not_reproducible_fixer_report_clears_the_lap_count(base):
+    b = board_for(base, 'in_review')
+    seed_fix(b, review_laps={'sha': HEAD40, 'checks': ['test-suite'], 'count': 2, 'seen': ['evidence']})
+    b.git_result = ok('0\n')
+    b.plans({'report': 'fixer-not-reproducible'})
+    run_role(b, begin(b, 'fix', state='in_review'))
+    assert b.note().get('review_laps') is None, b.note().get('review_laps')
+
+
+def test_each_required_pass_of_a_stage_is_its_own_reviewer_in_a_lap(base):
+    # pass 1 of security already reported at the head in this lap; pass 2 joins the lap, it does not end it
+    b = board_for(base, 'in_review')
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'b', 'provider': None,
+             'required_passes': 3}
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'stage': None, 'branch': BRANCH, 'worktree': b.worktree,
+                'last_review': LAST_REVIEW,
+                'review_laps': {'sha': HEAD40, 'checks': [], 'count': 1, 'seen': ['evidence', 'security#1']}})
+    b.stubs['worktree.sh'] = lambda *a: ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': HEAD40,
+                                                       'base': 'bace000'}) if a[0] == 'review' else b.worktree + '\n')
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'stage-reviewer-ok'})
+    run_role(b, begin(b, 'review_stage', state='in_review', stage=stage, round=1, head_sha=HEAD40, red_checks=[],
+                      **{'pass': 2}))
+    laps = b.note()['review_laps']
+    assert laps == {'sha': HEAD40, 'checks': [], 'count': 1, 'seen': ['evidence', 'security#1', 'security#2']}, laps
+
+
+def test_a_review_loop_block_moves_the_card_with_one_comment_naming_head_checks_and_release(base):
+    b = _loop_board(base, review_laps={'sha': HEAD40, 'checks': ['test-suite'], 'count': 3, 'seen': ['evidence']})
+    reason = 'review loop: reviewed 3 times at abc1234 with no fixer between; red checks: test-suite'
+    assert begin(b, 'block', state='in_review', reason=reason, head_sha=HEAD40, red_checks=RED).kind == 'done'
+    assert b.card()['state'] == 'blocked'
+    note = b.note()
+    assert note['state'] == 'blocked' and note['blocked_from'] == 'in_review', note
+    assert note.get('review_laps') is None, 'a person who moves the card back starts a fresh count'
+    assert note['blocked_findings'] == [{'severity': 'Important', 'text': reason}], note['blocked_findings']
+    (comment,) = b.comments()
+    assert HEAD40 in comment and 'test-suite' in comment and RED[0]['detailsUrl'] in comment, comment
+    assert 'To release' in comment and 'In Review' in comment, comment
 
 
 def test_rerun_checks_and_checks_failed_reserve_no_scope(base):
     from supervisor import scheduler
     assert {'rerun_checks', 'checks_failed'} <= scheduler.SCOPE_FREE_ACTIONS, scheduler.SCOPE_FREE_ACTIONS
+
+
+def _security_report(b, stage, round_, report):
+    out = {'status': 'posted', 'report_file': report_file(b, report), 'parsed': {}, 'provider': 'codex',
+           'model': 'gpt-5', 'input_tokens': 5, 'output_tokens': 6, 'attempts': 1}
+    fake_plugin(b, 0, json.dumps(out))
+    b.put_note({'round': round_})
+    run_role(b, begin(b, 'review_stage', state='in_review', stage=stage, round=round_))
+    return b.note()
+
+
+def test_a_stage_report_with_findings_counts_one_finding_round_per_card_round(base):
+    b, stage = provider_stage_board(base, 0, '')
+    b.put_note({'state': 'in_review', 'stage': None, 'round': 2, 'last_review': LAST_REVIEW,
+                'reviews': {'evidence': LAST_REVIEW}})
+    note = _security_report(b, stage, 2, 'stage-reviewer-findings')
+    assert note['finding_rounds'] == {'security': {'count': 1, 'last_round': 2}}, note.get('finding_rounds')
+    note = _security_report(b, stage, 2, 'stage-reviewer-findings')
+    assert note['finding_rounds']['security'] == {'count': 1, 'last_round': 2}, note.get('finding_rounds')
+    note = _security_report(b, stage, 3, 'stage-reviewer-findings')
+    assert note['finding_rounds']['security'] == {'count': 2, 'last_round': 3}, note.get('finding_rounds')
+    note = _security_report(b, stage, 4, 'stage-reviewer-ok')
+    assert note['finding_rounds']['security'] == {'count': 2, 'last_round': 3}, note.get('finding_rounds')
+
+
+def test_an_advisory_stage_report_with_findings_is_not_counted(base):
+    b, stage = provider_stage_board(base, 0, '')
+    stage = dict(stage, advisory=True, max_rounds=1)
+    b.put_note({'state': 'in_review', 'stage': None, 'round': 2, 'last_review': LAST_REVIEW,
+                'reviews': {'evidence': LAST_REVIEW}})
+    note = _security_report(b, stage, 2, 'stage-reviewer-findings')
+    assert 'security' not in (note.get('finding_rounds') or {}), note.get('finding_rounds')
 
 
 if __name__ == '__main__':

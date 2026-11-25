@@ -51,7 +51,7 @@ Then run `/fleet-board:init`, keep `.fleet-board.yml` local (init git-ignores it
    | review | In Review | The reviewer's report on the card |
    | hand-off | Human QA, or a ready PR | Human QA with a "What to check" comment, or the PR marked ready for review |
 
-   With `review.stages` configured and a PR that matches a stage, the stage reviews in parallel with the evidence reviewer while the card stays In Review, and its report appears on the card. Human QA or the ready PR follows once every routed reviewer is clean at the head ([details](docs/config.md#reviewstages)). Under `merge.policy: auto` a clean, green PR that needs no Human QA goes to `merging` and is merged instead.
+   With `review.stages` configured and a PR that matches a stage, the stage reviews in parallel with the evidence reviewer while the card stays In Review, and its report appears on the card. A stage with `required_passes` runs that many passes side by side and needs each clean. When reviewers report findings, one shared fixer pass takes all of them, then every routed reviewer reviews the new head. Human QA or the ready PR follows once every routed reviewer is clean at the head ([details](docs/config.md#reviewstages)). Under `merge.policy: auto` a clean, green PR that needs no Human QA goes to `merging` and is merged instead.
 
 8. **Release Human QA by hand** on the board page: check the change, merge the PR, and move the card to Done (or back to Ready). No agent can do this; the gate blocks it.
 
@@ -118,6 +118,7 @@ More on how planning, notes, follow-ups and the `main` check work: [docs/config.
 | `board.repo` | none (required) | `owner/name` of the repo the PRs live in |
 | `board.dir` | `.fleet-board` | where the cards live, relative to the repo root; no `..`, not absolute ([details](docs/config.md#boarddir-and-boardport)) |
 | `board.port` | `8765` | the port of the board page, 1024 to 65535 ([details](docs/config.md#boarddir-and-boardport)) |
+| `board.repos` | `[]` | other repositories whose cards this board holds: a list of `repo` and absolute `path`; a card names its repository in its `repo` field ([details](docs/config.md#boardrepos)) |
 | `board.terminal_command` | `["open", "-a", "Terminal", "{dir}"]` | the command the card's "Open terminal" link runs; `{dir}` is the card's directory ([details](docs/config.md#boardterminal_command)) |
 | `board.states` | `{}` | maps a state to the name the board shows ([details](docs/config.md#boardstates)) |
 | `commands.test_one` | none | runs one test file; `{file}` is replaced by its path |
@@ -133,6 +134,7 @@ More on how planning, notes, follow-ups and the `main` check work: [docs/config.
 | `human_qa_paths` | `[]` | a PR touching any of these globs sends its card to Human QA |
 | `merge.policy` | `human` | `human` or `auto` ([details](docs/config.md#mergepolicy)) |
 | `merge.persona` / `merge.persona_append` | `null` / `null` | the merger's instructions: a path relative to the repo root (default `.fleet-board/merger.md` when present), and text added after it ([details](#merger-and-deploys)) |
+| `implementor.persona` / `implementor.persona_append` | `null` / `null` | project rules added to the implementor's inputs: a path relative to the repo root, and inline text added after it ([details](docs/config.md#implementorpersona-and-implementorpersona_append)) |
 | `merge.ignore_checks` | `[]` | red checks treated as green, each with `name`, `reason` and `until` ([details](docs/config.md#mergepersona-mergepersona_append-and-mergeignore_checks)) |
 | `review.mutation` | `true` | the reviewer runs mutation testing against the diff |
 | `review.verify_claim` | `true` | the reviewer re-runs one claim from the implementor's report |
@@ -152,6 +154,32 @@ More on how planning, notes, follow-ups and the `main` check work: [docs/config.
 | `supervisor.*` | see [config.md](docs/config.md#supervisor) | the reconcile interval, timeouts, retry backoff, aging, per-provider concurrency, `scope_ignore` (paths left out of scope overlap) and `version_files` (JSON files whose version conflicts are resolved and kept above the base) |
 
 The config file is `.fleet-board.yml`, any valid YAML. `board.backend`, `board.project_number` and `board.project_owner` are gone, and so are the tick system's `limits.max_cost_usd`, `limits.tick_interval`, `limits.min_tick_gap`, `limits.max_consecutive_failures` and `models.manager`: `config.sh` exits 5 on any of them (see [Upgrading](#upgrading-from-an-earlier-version)). Tokens are the only unit; an old `price` key is ignored.
+
+## Premise check
+
+Before a card starts, the supervisor checks that its premise still holds. A **stamp** records that a card's
+Scope and acceptance were checked against a commit of the default branch (`premise.sh stamp`). A check runs
+when a Ready card has no stamp, or when files its Scope names changed after the stamped commit. A checker session
+reads the default branch in a throwaway checkout and ends with one of four verdicts:
+
+- `go`: the card holds. The supervisor stamps it and it starts.
+- `needs`: it depends on another card. When that card is on its way to being built, the supervisor adds it as a
+  dependency; otherwise it blocks the card and asks.
+- `built`: every acceptance item already holds. The card is blocked with the evidence. Run
+  `premise-settle.sh confirm <n>` (or use the board page) to close it as built, labelled `fleet:closed-as-built`.
+- `stale`: the card names things that moved. The card is blocked with a proposed rewrite. Run
+  `premise-settle.sh approve <n>` to apply it.
+
+To overrule a proposal, move the card to Ready: it starts as it is. Every settled verdict leaves one event,
+`premise #<n>: <verdict> -> <what was done>`, and `supervisor status` prints one line, `Premise checks: ...`,
+with this run's counts.
+
+Follow-ups filed by roles are drafted by the same checker. A duplicate or already-fixed follow-up goes to Won't do.
+A drafted bug whose repro failed on the default branch goes to Ready while `followups.auto_ready` is `bugs` and
+this run has used fewer than `followups.auto_ready_cap` (default 5) places; any other draft stays in Backlog.
+
+Set `premise_check.enabled: false` to turn the check and the drafting off. `models.checker` picks the model
+(default `sonnet`).
 
 ## Merger and deploys
 
@@ -188,7 +216,25 @@ Moving the card out of Blocked sets `"merger": null`, `"merge_refusal": null` an
 
 ## Gates
 
-A `PreToolUse` hook blocks any agent command that would move a card out of Human QA, merge a PR under `merge.policy: human`, or mark a card Ready without acceptance items. It does nothing in repos without `.fleet-board.yml`. It is a text check, so it has blind spots and some false positives; [docs/gates.md](docs/gates.md) lists them, along with how fleet-board behaves alongside other plugins. Branch protection on GitHub remains the backstop for merges.
+A `PreToolUse` hook blocks any agent command that would move a card out of Human QA, merge a PR under `merge.policy: human`, mark a card Ready without acceptance items, or run the premise-proposal script's `approve`, `confirm` or `reject` (only a person decides a premise proposal; a script file that calls that script, and a direct POST to the board page's premise routes, are not seen by the gate). It does nothing in repos without `.fleet-board.yml`. It is a text check, so it has blind spots and some false positives; [docs/gates.md](docs/gates.md) lists them, along with how fleet-board behaves alongside other plugins. Branch protection on GitHub remains the backstop for merges.
+
+## Stacked pull requests
+
+Stacking lets a card that depends on one card still in review start now, instead of waiting for that parent to merge. It is off by default: set `stacking.enabled: true` to turn it on (see [docs/config.md](docs/config.md)); with it off nothing behaves differently.
+
+- A child starts when its one unmet dependency is in review. Its branch follows the parent's branch.
+- Its pull request stays a draft and targets the parent's branch until the parent merges. Then the PR is retargeted to the default branch (`origin/HEAD`, else `origin/main`) with one bridge merge commit; nothing is rebased or force-pushed.
+- The person's check of a card (Human QA) happens after landing, on the default branch.
+- Landing needs git 2.40 or later (`git merge-tree --write-tree`); an older git stops the landing for a person.
+- `status` shows `stacked on #<parent>` on the card's line, and the board page shows it in the card's drawer.
+
+Three cases stop for a person. The card's line then adds `landing needs attention: <reason>`:
+
+1. The parent was closed unmerged.
+2. The child followed commits that never merged (the parent's head is not what was squashed into the default branch).
+3. A conflict while landing the bridge merge.
+
+To clear a stop, fix the cause (reopen or replace the parent, or resolve the conflict in the card's worktree), then clear the flag with `note.sh merge <n> '{"stack": {...}}'`, writing the card's `stack` object again with `"attention": null`, or set `"stack": null` to make the card an ordinary one.
 
 ## Review quality
 
@@ -243,12 +289,33 @@ It binds `127.0.0.1` only and uses `board.port` unless you pass `--port N`.
 - **Transcripts.** The drawer has a Transcripts list: one link per session of the card (running first, then newest first), each opening that session's transcript as text in a new tab. A running session's transcript is a snapshot taken when the tab opens; reloading the tab refreshes it.
 - **Open terminal.** A card's tile and drawer have an "Open terminal" link that opens a terminal in the card's directory, using `board.terminal_command`.
 - **Start and Stop.** The board page's Start, Pause, Resume and Stop drive the command-line supervisor (`fleet-board supervisor`, which runs `scripts/supervisor.sh`). Start launches one in the background, the same as `fleet-board supervisor start --detach`, or resumes a paused one; Stop offers Drain and Cancel. A supervisor started from a terminal shows up too. The token strip shows tokens for this run, all time, and the planner. A card's drawer breaks its tokens down by column and action. Cards a crashed run left behind get a red border and a STUCK label, with a line that says how to resolve each (`fleet-board supervisor stuck --release N`). A banner gives the count, and Start stays disabled until they are resolved. The page keeps its state under `~/.fleet-board/web/` (`FLEET_BOARD_LOG_DIR` moves it).
-- **Planner.** The chat runs `claude -p` in `dontAsk` mode whatever `headless.permission_mode` says: every call that would prompt is denied, reads outside the repository are refused, and only `WebSearch` is pre-approved. Reads of `.env`, `.env.*`, `*.pem`, `*.key`, `id_*` and anything under `.ssh/` or `.aws/` are denied. The codex planner is unchanged.
-- **Import.** Paste a plan. The page runs `claude -p` with `/fleet-board:import-plan <plan> --preview`, with `limits.max_turns`, in `--permission-mode dontAsk` whatever `headless.permission_mode` says (the plan can carry outside text). Its tools are Read, Grep, Glob, Write and Bash; only `cp` within the import folder, `import-plan.sh`, and reads and writes in the import's own folder are allowed, and every other command or write is denied without a prompt, and shows the cards it would create. Nothing is created until you press Create, which runs `import-plan.sh` (it prints `Created #N: <title>` for each card). `FLEET_BOARD_CLAUDE` names a different `claude` binary and `FLEET_BOARD_PLUGIN_DIR` adds `--plugin-dir` to that session.
+- **Planner.** The chat runs `claude -p` in `dontAsk` mode whatever `headless.permission_mode` says: every call that would prompt is denied, reads outside the repository are refused, and only `WebSearch` is pre-approved. It has no `WebFetch`. When it needs a page's content, a `RESEARCH: <question>` line in its reply makes the board run a separate `claude -p` research session with only `WebSearch` and `WebFetch`, in `dontAsk`, in a new empty temporary directory, with just that question as its prompt. The reply (cut to 8000 characters) goes back to the planner as a block labelled "research result, untrusted", or as a `[research error]` line when the session fails or exceeds `FLEET_BOARD_RESEARCH_TIMEOUT` seconds (default 300). Research sessions add `research` lines to the planner usage ledger. At most three research rounds follow one message. Reads of `.env`, `.env.*`, `*.pem`, `*.key`, `id_*` and anything under `.ssh/` or `.aws/` are denied. The codex planner is unchanged.
+- **Import.** Paste a plan. The page runs `claude -p` with `/fleet-board:import-plan <plan> --preview`, with `limits.max_turns`, in `--permission-mode dontAsk` whatever `headless.permission_mode` says (the plan can carry outside text). Its tools are Read, Grep, Glob, Write and Bash; only `cp` within the import folder, `import-plan.sh`, and reads and writes in the import's own folder are allowed, and every other command or write is denied without a prompt, and shows the cards it would create. Nothing is created until you press Create, which runs `import-plan.sh` (it prints `Created #N: <title>` for each card). The session always gets `--plugin-dir` for the plugin the page itself runs, so the skill calls the same `import-plan.sh` the allow rule names (another install's path would be denied). `FLEET_BOARD_CLAUDE` names a different `claude` binary and `FLEET_BOARD_PLUGIN_DIR` replaces that plugin directory.
 - **Who you are.** The author of a note is `FLEET_BOARD_USER`, else `$USER`. Anyone who can write the directory can write a note.
 - **Rate limits.** The board makes no GitHub calls to list columns, read cards and comments, or write notes and reports. PR calls (`gh pr view`, `gh pr list`, pushes) remain; a GitHub rate limit holds new work until it resets (`limits.rate_limit_max_wait`).
 
 **Migrating a store.** A store made before the fields existed keeps them in the body. Run `migrate-card-fields.sh` from the repo root (`--dry-run` first to see the cards it would change): it moves each card's `## Acceptance` and `## Depends on` sections into the fields, takes `pr_url` from the manager note, and prints one line per changed card. A dependency that is not a card on this board stays in the body as a prose line, with a warning. It is safe to run again.
+
+### Reaching the board from your tailnet
+
+The board is off the network by default. To reach it from another device on your tailnet, serve it with Tailscale and name who may log in. In `.fleet-board.yml`:
+
+```yaml
+board:
+  allowed_hosts: ["my-mac.tailnet-name.ts.net"]
+  tailscale:
+    allowed_logins: ["you@example.com"]
+```
+
+Then run, with the board's port in place of `<port>` (`board.port`, default 8765):
+
+```bash
+tailscale serve --bg http://127.0.0.1:<port>
+```
+
+**Warning.** Every login on `allowed_logins` can start the supervisor and run Claude sessions on this Mac. Add only logins you trust with that. Never use `tailscale funnel` for the board: `tailscale funnel` must not be used, because it puts the page on the public internet. Open terminal is refused for tailnet requests; it works only from the Mac itself.
+
+To turn access off: stop the serve and empty both keys: run `tailscale serve reset`, then set `board.allowed_hosts: []` and `board.tailscale.allowed_logins: []`.
 
 ### Upgrading from an earlier version
 

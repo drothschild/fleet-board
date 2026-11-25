@@ -12,13 +12,23 @@ ALLOWED = frozenset((
     'tick-plan.sh', 'board-read.sh', 'board-list.sh', 'board-move.sh', 'board-comment.sh', 'note.sh', 'worktree.sh',
     'update-branch.sh', 'review-stages.sh', 'merge-reviewed.sh', 'verify-main.sh', 'after-merge.sh',
     'parse-report.sh', 'file-followups.sh', 'human-qa-handoff.sh', 'stage-review.sh',
-    'evidence-review.sh', 'config.sh', 'deps.sh', 'cleanup-done.sh',
+    'evidence-review.sh', 'config.sh', 'deps.sh', 'cleanup-done.sh', 'premise.sh', 'premise-settle.sh', 'stack-land.sh', 'card-lint.sh',
 ))
 
 POST_KILL_WAIT = 5
 OUTPUT_CAP = 65536   # bytes of a spawned child's stdout and stderr read back (the tail)
 
 ScriptResult = namedtuple('ScriptResult', 'rc stdout stderr timed_out')
+
+
+def _child_env(env):
+    """The environment of a script the supervisor runs: its own, the caller's additions, and the actor. The actor
+    is set here and never in os.environ, which every role session copies."""
+    full_env = dict(os.environ)
+    if env:
+        full_env.update(env)
+    full_env['FLEET_BOARD_ACTOR'] = 'supervisor'
+    return full_env
 
 
 def run(root, name, *args, timeout=600, stdin=None, env=None):
@@ -32,9 +42,7 @@ def run(root, name, *args, timeout=600, stdin=None, env=None):
 def run_argv(root, argv, timeout=600, stdin=None, env=None):
     """Run a fixed argv in `root` under the same bounds as `run`. Not allowlisted: the caller passes only
     commands it owns (`gh`, the configured qa_build), never a value taken from the board."""
-    full_env = dict(os.environ)
-    if env:
-        full_env.update(env)
+    full_env = _child_env(env)
     proc = subprocess.Popen(argv, cwd=str(root), env=full_env,
                             stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -110,9 +118,7 @@ def spawn(root, name, *args, env=None):
 
 
 def spawn_argv(root, argv, env=None):
-    full_env = dict(os.environ)
-    if env:
-        full_env.update(env)
+    full_env = _child_env(env)
     out, err = tempfile.TemporaryFile(), tempfile.TemporaryFile()
     try:
         proc = subprocess.Popen(argv, cwd=str(root), env=full_env, stdin=subprocess.DEVNULL, stdout=out,

@@ -219,18 +219,29 @@ def run():
     test_script_actions_ignore_rate_limit_and_global_cap()
     test_script_action_still_waits_for_its_own_active_card()
     test_update_branch_skips_scope_but_takes_capacity()
+    test_land_skips_scope_but_takes_capacity()
     test_read_only_actions_ignore_other_cards_scope()
     test_a_read_only_claim_does_not_block_a_writer()
     test_a_read_only_action_still_waits_for_capacity_and_its_own_card()
     test_has_work_tolerates_mixed_dependency_types()
     test_scope_ignore_drops_version_manifests()
     test_scope_ignore_validated_in_limits()
+    test_a_missing_repo_on_an_active_claim_means_the_home_repo()
+    test_two_claims_with_no_repo_on_the_same_path_conflict()
+    test_without_a_home_repo_a_missing_repo_still_matches_every_repo()
+    test_a_missing_repo_on_a_reservation_means_the_home_repo()
     test_scope_ignore_one_side_wholly_ignored()
     test_scope_ignore_cleans_the_path_side()
     test_glob_segments_and_jq_parity()
     test_one_cards_reviewers_are_admitted_together()
+    test_three_passes_of_one_stage_are_admitted_together()
+    test_one_pass_is_never_run_twice()
+    test_passes_count_toward_global_capacity()
     test_a_writer_and_the_reviewers_of_one_card_exclude_each_other()
     test_a_stacked_child_is_not_held_by_its_ancestors_scope()
+    test_a_parent_fix_is_not_held_by_the_scope_of_a_card_stacked_on_it()
+    test_a_card_is_not_held_by_a_grandchild_stacked_on_its_child()
+    test_a_stacked_child_is_still_held_by_a_siblings_scope()
     test_after_merge_and_merge_refusal_are_not_held_by_another_cards_scope()
     test_a_merge_is_not_held_by_another_cards_scope()
     test_a_merge_still_waits_while_its_own_card_has_a_reviewer_running()
@@ -249,9 +260,9 @@ def admit_one(scheduler, row, **kw):
 def test_every_planned_action_is_classified():
     from supervisor.scheduler import _ACTION_CLASS
     expected = {0: ['continue_implementor', 'fix', 'review', 'review_stage'],
-                1: ['start_review', 'unblock', 'update_branch', 'advance_stage', 'to_human_qa', 'mark_ready',
+                1: ['start_review', 'unblock', 'update_branch', 'land', 'advance_stage', 'to_human_qa', 'mark_ready',
                     'verify_main', 'finish', 'block', 'file_pending', 'merge', 'after_merge', 'merge_refusal',
-                    'move_to_review'],
+                    'move_to_review', 'check_premise', 'draft_followup', 'rerun_checks', 'checks_failed'],
                 2: ['start']}
     for klass, actions in expected.items():
         for action in actions:
@@ -420,6 +431,21 @@ def test_update_branch_skips_scope_but_takes_capacity():
     assert capped['waits'][0]['reason'] == 'global capacity'
     ok = Scheduler(clock=lambda: 0).admit([candidate(3, 'update_branch', 'scripts', paths=['x'])], active=active, limits=LIMITS)
     assert [x['number'] for x in ok['admitted']] == [3] and len(ok['active']) == 2
+
+
+def test_land_skips_scope_but_takes_capacity():
+    # land (stack-land.sh) writes only the child's own branch: like update_branch it reserves no scope,
+    # takes a slot and waits at global capacity
+    held = [{'card': 1, 'paths': ['src/a.py']}]
+    active = [{'number': 1, 'provider': 'claude', 'paths': ['src/a.py'], 'action': 'fix'}]
+    row = candidate(2, 'land', 'scripts', paths=['src/a.py'])
+    result = Scheduler(clock=lambda: 0).admit([row], active=active, reservations=held, limits=LIMITS)
+    assert [x['number'] for x in result['admitted']] == [2], result['waits']
+    assert [x['number'] for x in result['active']] == [1, 2], 'it still occupies a slot'
+    assert result['active'][1]['action'] == 'land'
+    capped = Scheduler(clock=lambda: 0).admit([candidate(3, 'land', 'scripts', paths=['x'])],
+        active=active, limits={'global': 1, 'providers': {'*': 1}, 'per_card': 1})
+    assert capped['admitted'] == [] and capped['waits'][0]['reason'] == 'global capacity', capped
 
 
 def test_read_only_actions_ignore_other_cards_scope():
@@ -595,6 +621,36 @@ def test_one_cards_reviewers_are_admitted_together():
     assert len(r['admitted']) == 2 and r['waits'][0]['reason'] == 'global capacity', r
 
 
+def _pass_row(number, stage, pass_no):
+    return dict(candidate(number, 'review_stage', paths=[]), stage=stage, **{'pass': pass_no})
+
+
+def test_three_passes_of_one_stage_are_admitted_together():
+    rows = [_pass_row(12, 'security', i) for i in (1, 2, 3)]
+    r = Scheduler(clock=lambda: 0).admit(rows, limits=LIMITS)
+    assert [x.get('pass') for x in r['admitted']] == [1, 2, 3], r
+    assert r['waits'] == [], r
+    # a pass already running does not hold the card's other passes back
+    running = [{'number': 12, 'provider': 'claude', 'paths': [], 'action': 'review_stage', 'stage': 'security', 'pass': 1}]
+    r = Scheduler(clock=lambda: 0).admit(rows, active=running, limits=LIMITS)
+    assert [x.get('pass') for x in r['admitted']] == [2, 3], r
+    assert [w['reason'] for w in r['waits']] == ['card already has an active claim'], r
+
+
+def test_one_pass_is_never_run_twice():
+    rows = [_pass_row(12, 'security', 2), _pass_row(12, 'security', 2)]
+    r = Scheduler(clock=lambda: 0).admit(rows, limits=LIMITS)
+    assert len(r['admitted']) == 1, r
+    assert [w['reason'] for w in r['waits']] == ['card capacity'], r
+
+
+def test_passes_count_toward_global_capacity():
+    rows = [_pass_row(12, 'security', i) for i in (1, 2, 3)]
+    r = Scheduler(clock=lambda: 0).admit(rows, limits=dict(LIMITS, **{'global': 2}))
+    assert [x.get('pass') for x in r['admitted']] == [1, 2], r
+    assert [w['reason'] for w in r['waits']] == ['global capacity'], r
+
+
 def test_a_writer_and_the_reviewers_of_one_card_exclude_each_other():
     reviewer = [{'number': 7, 'provider': 'claude', 'paths': [], 'action': 'review_stage'}]
     for name in ('fix', 'update_branch'):
@@ -626,6 +682,39 @@ def test_a_stacked_child_is_not_held_by_its_ancestors_scope():
     plain = Scheduler(clock=lambda: 0).admit([candidate(12, paths=['src/a.py'])],
                                              reservations=[{'card': 11, 'paths': ['src/a.py']}], limits=LIMITS)
     assert plain['waits'][0]['reason'] == 'scope reserved by #11', plain
+
+
+def test_a_parent_fix_is_not_held_by_the_scope_of_a_card_stacked_on_it():
+    fix = candidate(11, 'fix', paths=['src/a.py'])
+    res = [{'card': 12, 'paths': ['src/a.py'], 'ancestors': [11]}]
+    r = Scheduler(clock=lambda: 0).admit([fix], reservations=res, limits=LIMITS)
+    assert [x['number'] for x in r['admitted']] == [11], r['waits']
+    res = [{'card': 20, 'paths': ['src/a.py'], 'ancestors': [30]}]
+    r = Scheduler(clock=lambda: 0).admit([fix], reservations=res, limits=LIMITS)
+    assert r['admitted'] == [] and r['waits'][0]['reason'] == 'scope reserved by #20', r
+    held = [{'number': 12, 'provider': 'claude', 'paths': ['src/a.py'], 'action': 'start', 'ancestors': [11]}]
+    r = Scheduler(clock=lambda: 0).admit([fix], active=held, limits=LIMITS)
+    assert [x['number'] for x in r['admitted']] == [11], r['waits']
+    held[0]['ancestors'] = []
+    r = Scheduler(clock=lambda: 0).admit([fix], active=held, limits=LIMITS)
+    assert r['admitted'] == [] and r['waits'][0]['reason'] == 'scope or card conflict', r
+
+
+def test_a_card_is_not_held_by_a_grandchild_stacked_on_its_child():
+    fix = candidate(11, 'fix', paths=['src/a.py'])
+    res = [{'card': 13, 'paths': ['src/a.py'], 'ancestors': [12, 11]}]
+    r = Scheduler(clock=lambda: 0).admit([fix], reservations=res, limits=LIMITS)
+    assert [x['number'] for x in r['admitted']] == [11], r['waits']
+    held = [{'number': 13, 'provider': 'claude', 'paths': ['src/a.py'], 'action': 'start', 'ancestors': [12, 11]}]
+    r = Scheduler(clock=lambda: 0).admit([fix], active=held, limits=LIMITS)
+    assert [x['number'] for x in r['admitted']] == [11], r['waits']
+
+
+def test_a_stacked_child_is_still_held_by_a_siblings_scope():
+    child = dict(candidate(12, paths=['src/a.py']), stack={'parent': 11, 'base': 'fleet/11-x', 'ancestors': [11]})
+    res = [{'card': 13, 'paths': ['src/a.py'], 'ancestors': [11]}]
+    r = Scheduler(clock=lambda: 0).admit([child], reservations=res, limits=LIMITS)
+    assert r['admitted'] == [] and r['waits'][0]['reason'] == 'scope reserved by #13', r
 
 
 def test_after_merge_and_merge_refusal_are_not_held_by_another_cards_scope():
@@ -661,5 +750,60 @@ def test_an_after_merge_still_takes_a_provider_slot():
     assert r['admitted'] == [] and r['waits'][0]['reason'] == 'global capacity', r
 
 
+def test_a_check_premise_row_is_admitted_beside_a_start_row_whose_scope_overlaps_it():
+    start = candidate(11, 'start', paths=['src/a.sh'])
+    check = candidate(12, 'check_premise', paths=['src/a.sh'])
+    r = Scheduler(clock=lambda: 0).admit([start, check], limits=LIMITS)
+    assert sorted(x['number'] for x in r['admitted']) == [11, 12], (r['admitted'], r['waits'])
+    r = Scheduler(clock=lambda: 0).admit([check], active=[{'number': 11, 'provider': 'claude', 'paths': ['src/a.sh'],
+                                                           'action': 'start'}], limits=LIMITS)
+    assert [x['number'] for x in r['admitted']] == [12], r['waits']
+    r = Scheduler(clock=lambda: 0).admit([candidate(13, 'start', paths=['src/a.sh'])],
+                                         active=[{'number': 12, 'provider': 'claude', 'paths': ['src/a.sh'],
+                                                  'action': 'check_premise'}], limits=LIMITS)
+    assert [x['number'] for x in r['admitted']] == [13], r['waits']
+
+
+def _repo_row(number, repo, action='start'):
+    return dict(candidate(number, action, paths=['src/a.py']), repo=repo)
+
+
+def test_a_missing_repo_on_an_active_claim_means_the_home_repo():
+    home = dict(LIMITS, home_repo='acme/toy')
+    held = [{'number': 9, 'provider': 'claude', 'paths': ['src/a.py']}]
+    other = Scheduler(clock=lambda: 0).admit([_repo_row(1, 'acme/other')], active=held, limits=home)
+    assert [x['number'] for x in other['admitted']] == [1], other['waits']
+    same = Scheduler(clock=lambda: 0).admit([_repo_row(1, 'acme/toy')], active=held, limits=home)
+    assert same['admitted'] == [] and same['waits'][0]['reason'] == 'scope or card conflict', same
+    upper = Scheduler(clock=lambda: 0).admit([_repo_row(1, 'ACME/Toy')], active=held, limits=home)
+    assert upper['admitted'] == [] and upper['waits'][0]['reason'] == 'scope or card conflict', upper
+
+
+def test_two_claims_with_no_repo_on_the_same_path_conflict():
+    home = dict(LIMITS, home_repo='acme/toy')
+    held = [{'number': 9, 'provider': 'claude', 'paths': ['src/a.py']}]
+    for limits in (home, LIMITS):
+        r = Scheduler(clock=lambda: 0).admit([_repo_row(1, None)], active=held, limits=limits)
+        assert r['admitted'] == [] and r['waits'][0]['reason'] == 'scope or card conflict', r
+
+
+def test_without_a_home_repo_a_missing_repo_still_matches_every_repo():
+    held = [{'number': 9, 'provider': 'claude', 'paths': ['src/a.py']}]
+    for home in (None, ''):
+        limits = dict(LIMITS) if home is None else dict(LIMITS, home_repo=home)
+        r = Scheduler(clock=lambda: 0).admit([_repo_row(1, 'acme/other')], active=held, limits=limits)
+        assert r['admitted'] == [] and r['waits'][0]['reason'] == 'scope or card conflict', r
+
+
+def test_a_missing_repo_on_a_reservation_means_the_home_repo():
+    home = dict(LIMITS, home_repo='acme/toy')
+    held = [{'card': 9, 'paths': ['src/a.py']}]
+    other = Scheduler(clock=lambda: 0).admit([_repo_row(1, 'acme/other')], reservations=held, limits=home)
+    assert [x['number'] for x in other['admitted']] == [1], other['waits']
+    same = Scheduler(clock=lambda: 0).admit([_repo_row(1, 'acme/toy')], reservations=held, limits=home)
+    assert same['admitted'] == [] and same['waits'][0]['reason'] == 'scope reserved by #9', same
+
+
 if __name__ == '__main__':
+    test_a_check_premise_row_is_admitted_beside_a_start_row_whose_scope_overlaps_it()
     run()

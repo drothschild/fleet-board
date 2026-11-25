@@ -47,13 +47,26 @@ cat > "$FAKE_CLAUDE" <<'EOF'
 #!/bin/bash
 n=$(( $(wc -l < "$ARGV_LOG") + 1 ))
 printf '%s\037' "$@" | tr '\n' '\036' >> "$ARGV_LOG"; echo >> "$ARGV_LOG"
+printf '%s|%s\n' "$(pwd -P)" "$(ls -A | wc -l | tr -d ' ')" >> "$CWD_LOG"
 while [ -e "$HOLD" ]; do sleep 0.1; done
+last="${@: -1}"
+text="reply $n"
+case "$*" in
+  *WebFetch*)
+    case "$last" in *hang*) sleep 30 ;; *break*) echo "research boom" >&2; exit 1 ;; esac
+    text="research answer: Lima" ;;
+  *)
+    u="${last##*User:$'\n'}"
+    case "$u" in research\ *) text="RESEARCH: ${u#research }" ;; esac ;;
+esac
 printf '{"type":"system","session_id":"sess-%d"}\n' "$n"
-printf '{"type":"assistant","session_id":"sess-%d","message":{"content":[{"type":"text","text":"reply %d"}]}}\n' "$n" "$n"
-printf '{"type":"result","session_id":"sess-%d","result":"reply %d","usage":{"input_tokens":11,"output_tokens":5,"cache_creation_input_tokens":3,"cache_read_input_tokens":2}}\n' "$n" "$n"
+printf '{"type":"assistant","session_id":"sess-%d","message":{"content":[{"type":"text","text":"%s"}]}}\n' "$n" "$text"
+printf '{"type":"result","session_id":"sess-%d","result":"%s","usage":{"input_tokens":11,"output_tokens":5,"cache_creation_input_tokens":3,"cache_read_input_tokens":2}}\n' "$n" "$text"
 EOF
 chmod +x "$FAKE_CLAUDE"
-export FLEET_BOARD_CLAUDE="$FAKE_CLAUDE" ARGV_LOG HOLD
+CWD_LOG="$TMP/cwd.log"
+: > "$CWD_LOG"
+export FLEET_BOARD_CLAUDE="$FAKE_CLAUDE" ARGV_LOG HOLD CWD_LOG FLEET_BOARD_RESEARCH_TIMEOUT=2
 export FLEET_BOARD_TEST_PLANNER_ID=conv1
 
 REPO="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXX")"
@@ -127,7 +140,7 @@ api POST /api/planner/conv1/messages '{"text":"second question"}'
 assert_code 200 "second message accepted"
 wait_idle conv1
 argv2="$(sed -n 2p "$ARGV_LOG" | tr '\037' '\n')"
-if printf '%s\n' "$argv2" | grep -A1 -x -e '--resume' | grep -qx 'sess-1'; then pass "second turn passes --resume sess-1"; else fail "second turn passes --resume sess-1" "$argv2"; fi
+if printf '%s\n' "$argv2" | grep -A1 -x -e '--resume' | grep -cx 'sess-1' >/dev/null; then pass "second turn passes --resume sess-1"; else fail "second turn passes --resume sess-1" "$argv2"; fi
 
 echo "Case: GET returns user and assistant turns in order, running true while a reply is in progress"
 api GET /api/planner/conv1
@@ -193,7 +206,7 @@ model_of() {
   # prints the value following --model in argv line $1, or NONE when the flag is absent
   local a
   a="$(sed -n "${1}p" "$ARGV_LOG" | tr '\037' '\n')"
-  if printf '%s\n' "$a" | grep -qx -e '--model'; then printf '%s\n' "$a" | grep -A1 -x -e '--model' | sed -n 2p; else echo NONE; fi
+  if printf '%s\n' "$a" | grep -cx -e '--model' >/dev/null; then printf '%s\n' "$a" | grep -A1 -x -e '--model' | sed -n 2p; else echo NONE; fi
 }
 LINES_BEFORE="$(wc -l < "$ARGV_LOG" | tr -d ' ')"
 
@@ -221,7 +234,7 @@ if [ "$got" = haiku ]; then pass "changed planner.model haiku -> --model haiku o
 tools_of() {
   local a
   a="$(sed -n "${1}p" "$ARGV_LOG" | tr '\037' '\n')"
-  if printf '%s\n' "$a" | grep -qx -e '--tools'; then printf '%s\n' "$a" | grep -A1 -x -e '--tools' | sed -n 2p; else echo NONE; fi
+  if printf '%s\n' "$a" | grep -cx -e '--tools' >/dev/null; then printf '%s\n' "$a" | grep -A1 -x -e '--tools' | sed -n 2p; else echo NONE; fi
 }
 
 echo "Case: a planner turn's argv limits the built-in tools to Read, Grep, Glob and WebSearch"
@@ -230,7 +243,7 @@ if [ "$got" = "Read,Grep,Glob,WebSearch" ]; then pass "first planner turn passes
 
 echo "Case: a planner turn's argv does not include Bash, Write, Edit or NotebookEdit among its allowed tools"
 got="$(tools_of 1)"
-if [ "$got" != NONE ] && ! printf '%s\n' "$got" | tr ', ' '\n\n' | grep -qxE 'Bash|Write|Edit|NotebookEdit'; then
+if [ "$got" != NONE ] && ! printf '%s\n' "$got" | tr ', ' '\n\n' | grep -cxE 'Bash|Write|Edit|NotebookEdit' >/dev/null; then
   pass "planner turn tool list holds none of Bash, Write, Edit, NotebookEdit"
 else
   fail "planner turn tool list holds none of Bash, Write, Edit, NotebookEdit" "tools: '$got'"
@@ -238,7 +251,7 @@ fi
 
 echo "Case: a resumed planner turn carries the same tool limit as the first turn"
 got="$(tools_of 2)"
-if sed -n 2p "$ARGV_LOG" | tr '\037' '\n' | grep -qx -e '--resume' && [ "$got" = "Read,Grep,Glob,WebSearch" ]; then
+if sed -n 2p "$ARGV_LOG" | tr '\037' '\n' | grep -cx -e '--resume' >/dev/null && [ "$got" = "Read,Grep,Glob,WebSearch" ]; then
   pass "resumed planner turn passes --tools Read,Grep,Glob,WebSearch"
 else
   fail "resumed planner turn passes --tools Read,Grep,Glob,WebSearch" "got '$got'"
@@ -254,7 +267,7 @@ done
 flag_of() {
   local a
   a="$(sed -n "${1}p" "$ARGV_LOG" | tr '\037' '\n')"
-  if printf '%s\n' "$a" | grep -qx -e "$2"; then printf '%s\n' "$a" | grep -A1 -x -e "$2" | sed -n 2p; else echo NONE; fi
+  if printf '%s\n' "$a" | grep -cx -e "$2" >/dev/null; then printf '%s\n' "$a" | grep -A1 -x -e "$2" | sed -n 2p; else echo NONE; fi
 }
 
 echo "Case: the first and the resumed planner turn pass --permission-mode dontAsk"
@@ -281,7 +294,7 @@ echo "Case: both turns carry --disallowedTools naming the secret-file Read rules
 for ln in 1 2; do
   got="$(flag_of $ln --disallowedTools)"
   for rule in 'Read(**/.env)' 'Read(**/.env.*)' 'Read(**/*.pem)' 'Read(**/*.key)' 'Read(~/.ssh/**)' 'Read(~/.aws/**)'; do
-    if printf '%s\n' "$got" | tr ',' '\n' | grep -qxF -e "$rule"; then pass "turn $ln --disallowedTools names $rule"; else fail "turn $ln --disallowedTools names $rule" "got '$got'"; fi
+    if printf '%s\n' "$got" | tr ',' '\n' | grep -cxF -e "$rule" >/dev/null; then pass "turn $ln --disallowedTools names $rule"; else fail "turn $ln --disallowedTools names $rule" "got '$got'"; fi
   done
 done
 
@@ -312,11 +325,75 @@ if [ "$dtools" = "Read,Grep,Glob,Write,Bash" ] && [ "$dmode" = dontAsk ]; then
 else
   fail "draft session argv passes --tools Read,Grep,Glob,Write,Bash in dontAsk" "tools '$dtools', mode '$dmode'"
 fi
-if printf '%s\n' "$dargv" | grep -qE 'WebSearch|WebFetch'; then
+if printf '%s\n' "$dargv" | grep -cE 'WebSearch|WebFetch' >/dev/null; then
   fail "draft session argv names no web tool" "$dargv"
 else
   pass "draft session argv names no web tool"
 fi
+
+echo "Case: a planner reply that asks for research starts a separate research session (card 447)"
+LB="$(wc -l < "$ARGV_LOG" | tr -d ' ')"
+LL="$(wc -l < "$LEDGER" | tr -d ' ')"
+api POST /api/planner/conv1/messages '{"text":"research capital of Peru"}'
+assert_code 200 "research-asking message accepted"
+for _ in $(seq 1 100); do [ "$(wc -l < "$ARGV_LOG" | tr -d ' ')" -ge $((LB + 3)) ] && break; sleep 0.1; done
+wait_idle conv1
+RARGV="$(sed -n "$((LB + 2))p" "$ARGV_LOG" | tr '\037' '\n')"
+rtools="$(printf '%s\n' "$RARGV" | grep -A1 -x -e '--tools' | sed -n 2p)"
+rmode="$(printf '%s\n' "$RARGV" | grep -A1 -x -e '--permission-mode' | sed -n 2p)"
+rallow="$(printf '%s\n' "$RARGV" | grep -A1 -x -e '--allowedTools' | sed -n 2p)"
+if [ "$rtools" = "WebSearch,WebFetch" ]; then pass "research argv passes --tools WebSearch,WebFetch"; else fail "research argv passes --tools WebSearch,WebFetch" "got '$rtools': $RARGV"; fi
+if [ "$rmode" = dontAsk ]; then pass "research argv passes --permission-mode dontAsk"; else fail "research argv passes --permission-mode dontAsk" "got '$rmode'"; fi
+if [ "$rallow" = "WebSearch,WebFetch" ]; then pass "research argv passes --allowedTools for exactly WebSearch and WebFetch"; else fail "research argv passes --allowedTools for exactly WebSearch and WebFetch" "got '$rallow'"; fi
+rcwd="$(sed -n "$((LB + 2))p" "$CWD_LOG")"
+rdir="${rcwd%|*}"; rcount="${rcwd##*|}"
+REAL_REPO="$(cd "$REPO" && pwd -P)"
+case "$rdir" in "$REAL_REPO"|"$REAL_REPO"/*|"") fail "research session's working directory is outside the repository" "cwd '$rdir'" ;; *) pass "research session's working directory is outside the repository" ;; esac
+if [ "$rcount" = 0 ]; then pass "research session's working directory is empty"; else fail "research session's working directory is empty" "entries: '$rcwd'"; fi
+
+echo "Case: the research session's prompt holds the research question and no board context JSON"
+rprompt="$(printf '%s\n' "$RARGV" | tail -n +1)"
+case "$rprompt" in *"capital of Peru"*) pass "research argv holds the planner's question" ;; *) fail "research argv holds the planner's question" "$RARGV" ;; esac
+case "$rprompt" in *'"depends_on"'*|*"Context card"*|*"Board context"*) fail "research argv holds no board context JSON" "$RARGV" ;; *) pass "research argv holds no board context JSON" ;; esac
+
+echo "Case: the following planner turn gets the research reply in an untrusted block and still has no WebFetch"
+FARGV="$(sed -n "$((LB + 3))p" "$ARGV_LOG" | tr '\037' '\n')"
+case "$FARGV" in *"research result, untrusted"*"Lima"*) pass "planner turn holds the reply in a block labelled research result, untrusted" ;; *) fail "planner turn holds the reply in a block labelled research result, untrusted" "$FARGV" ;; esac
+fprompt="$(printf '%s\n' "$FARGV" | grep -v '^$' | tail -n 1)"
+case "$fprompt" in "[research result, untrusted]"*"Lima"*) pass "planner prompt (last argv element) starts with the untrusted research block holding the reply" ;; *) fail "planner prompt (last argv element) starts with the untrusted research block holding the reply" "$fprompt" ;; esac
+ftools="$(printf '%s\n' "$FARGV" | grep -A1 -x -e '--tools' | sed -n 2p)"
+if [ "$ftools" = "Read,Grep,Glob,WebSearch" ] && ! printf '%s\n' "$FARGV" | grep -c WebFetch >/dev/null; then pass "following planner argv has no WebFetch"; else fail "following planner argv has no WebFetch" "tools '$ftools'"; fi
+assert_body "chat is idle after the research round" '.running' 'false'
+
+echo "Case: research sessions add lines to the planner usage ledger"
+if [ "$(wc -l < "$LEDGER" | tr -d ' ')" = $((LL + 3)) ]; then pass "planner turn, research and follow-up add three ledger lines"; else fail "planner turn, research and follow-up add three ledger lines" "ledger: $(tail -n 4 "$LEDGER")"; fi
+if [ "$(jq -s '[.[] | select(.kind=="planner" and .action=="research")] | length' "$LEDGER")" = 1 ]; then pass "one ledger line has kind planner and action research"; else fail "one ledger line has kind planner and action research" "$(tail -n 4 "$LEDGER")"; fi
+
+echo "Case: a research session that fails gives the planner an error line and the chat stays usable"
+LB="$(wc -l < "$ARGV_LOG" | tr -d ' ')"
+api POST /api/planner/conv1/messages '{"text":"research break it"}'
+for _ in $(seq 1 100); do [ "$(wc -l < "$ARGV_LOG" | tr -d ' ')" -ge $((LB + 3)) ] && break; sleep 0.1; done
+wait_idle conv1
+FARGV="$(sed -n "$((LB + 3))p" "$ARGV_LOG" | tr '\037' '\n')"
+case "$FARGV" in *"[research error]"*) pass "planner turn gets a research error line" ;; *) fail "planner turn gets a research error line" "$FARGV" ;; esac
+fprompt="$(printf '%s\n' "$FARGV" | grep -v '^$' | tail -n 1)"
+case "$fprompt" in "[research error]"*) pass "planner prompt (last argv element) is a research error line" ;; *) fail "planner prompt (last argv element) is a research error line" "$fprompt" ;; esac
+case "$fprompt" in *"[research result"*) fail "failed research prompt holds no result block" "$fprompt" ;; *) pass "failed research prompt holds no result block" ;; esac
+assert_body "chat is idle after a failed research" '.running' 'false'
+api POST /api/planner/conv1/messages '{"text":"still there?"}'
+assert_code 200 "chat accepts a message after a failed research"
+wait_idle conv1
+
+echo "Case: a research session that times out gives the planner an error line"
+LB="$(wc -l < "$ARGV_LOG" | tr -d ' ')"
+api POST /api/planner/conv1/messages '{"text":"research hang forever"}'
+for _ in $(seq 1 150); do [ "$(wc -l < "$ARGV_LOG" | tr -d ' ')" -ge $((LB + 3)) ] && break; sleep 0.1; done
+wait_idle conv1
+FARGV="$(sed -n "$((LB + 3))p" "$ARGV_LOG" | tr '\037' '\n')"
+case "$FARGV" in *"[research error]"*) pass "timed-out research gives the planner an error line" ;; *) fail "timed-out research gives the planner an error line" "$FARGV" ;; esac
+fprompt="$(printf '%s\n' "$FARGV" | grep -v '^$' | tail -n 1)"
+case "$fprompt" in "[research error]"*) pass "timed-out research prompt (last argv element) is an error line" ;; *) fail "timed-out research prompt (last argv element) is an error line" "$fprompt" ;; esac
+assert_body "chat is idle after a timed-out research" '.running' 'false'
 
 echo ""
 echo "Results:$PASS passed, $FAIL failed"

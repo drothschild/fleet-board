@@ -989,8 +989,61 @@ done
 for v in '5' '[x]'; do
   invalid_field_case "merge.persona_append rejects $v" $'merge:\n  persona_append: '"$v" "merge.persona_append must be null or a string"
 done
+# implementor.persona / implementor.persona_append: same rules as merge.persona / merge.persona_append
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "implementor.persona defaults to null" '.implementor.persona' 'null'
+assert_stdout_exact_jq "implementor.persona_append defaults to null" '.implementor.persona_append' 'null'
+for v in '""' '/etc/impl.md' '../impl.md' 'a/../b.md' '5' '[x]'; do
+  invalid_field_case "implementor.persona rejects $v" $'implementor:\n  persona: '"$v" "implementor.persona must be null or a non-empty relative path without .."
+done
+for v in '5' '[x]'; do
+  invalid_field_case "implementor.persona_append rejects $v" $'implementor:\n  persona_append: '"$v" "implementor.persona_append must be null or a string"
+done
 invalid_field_case "models.merger empty" 'models: { merger: "" }' "models.merger must be a non-empty string"
 invalid_field_case "models.merger number" 'models: { merger: 5 }' "models.merger must be a non-empty string"
+
+# implementor.provider / implementor.model (card 527)
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" implementor.provider
+assert_stdout_exact "config.sh implementor.provider prints claude by default" "claude"
+run_config "$REPO"
+assert_stdout_exact_jq "implementor.model defaults to null" '.implementor | [has("model"), .model]' '[true,null]'
+REPO="$(printf 'board:\n  repo: a/b\nimplementor: { provider: claude, model: "gpt-5.1:a/b_c" }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" implementor.model
+assert_exit "implementor.model matching the model pattern is accepted" 0
+assert_stdout_exact "config.sh implementor.model prints the value" "gpt-5.1:a/b_c"
+IMPL_CMD='implement_command: "my-cli -C {dir} -m {model}"'
+REPO="$(printf 'board:\n  repo: a/b\nimplementor: { provider: codex }\nproviders:\n  codex:\n    %s\n' "$IMPL_CMD" | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" implementor.provider
+assert_exit "a preset provider with an implement_command is accepted" 0
+assert_stdout_exact "config.sh implementor.provider prints the provider named" "codex"
+REPO="$(printf 'board:\n  repo: a/b\nimplementor: { provider: corp }\nproviders:\n  corp:\n    %s\nsupervisor: { provider_concurrency: { corp: 1 } }\n' "$IMPL_CMD" | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
+assert_exit "a provider with only an implement_command is accepted, with its concurrency cap" 0
+assert_stderr_not_contains "a provider named by implementor.provider is not reported unused" "providers.corp is not used"
+invalid_field_case "implementor set to a string" 'implementor: codex' "implementor must be an object"
+for v in nosuch 5 '""' null; do
+  invalid_field_case "implementor.provider rejects $v" "implementor: { provider: $v }" "implementor.provider"
+done
+for v in '"bad model"' '"-x"' '""' 5 '"a;b"' '"a\nb"'; do
+  invalid_field_case "implementor.model rejects $v" "implementor: { model: $v }" "implementor.model must match ^[A-Za-z0-9][A-Za-z0-9._:/-]*\$"
+done
+invalid_field_case "implementor.provider naming the codex preset, which has no implement_command" 'implementor: { provider: codex }' "providers.codex has no implement_command"
+invalid_field_case "implementor.provider naming an HTTP preset" 'implementor: { provider: openai }' "providers.openai has no implement_command"
+invalid_field_case "implementor.provider naming a defined command provider without implement_command" $'implementor: { provider: corp }\nproviders:\n  corp:\n    command: "my-cli {model}"' "providers.corp has no implement_command"
+for v in '""' 5; do
+  invalid_field_case "providers.corp.implement_command rejects $v" $'providers:\n  corp:\n    implement_command: '"$v" "providers.corp.implement_command must be a non-empty string"
+done
+invalid_field_case "implement_command does not excuse an unsafe base_url" $'providers:\n  corp:\n    implement_command: my-cli\n    base_url: "http://evil.example"' "providers.corp.base_url must start with https://"
+invalid_field_case "a review stage naming a provider with only an implement_command" $'review:\n  stages:\n    - { name: sec, provider: corp, model: m }\nproviders:\n  corp:\n    implement_command: my-cli' "providers.corp.base_url must start with https://"
+for word in '`implementor.provider`' '`implementor.model`' '`implement_command`'; do
+  if grep -F "$word" "${SCRIPT_DIR}/../docs/config.md" >/dev/null; then
+    pass "docs/config.md documents $word"
+  else
+    fail "docs/config.md documents $word" "not found"
+  fi
+done
 
 # merge.ignore_checks: a list of {name, reason, until}; every field required, until a real YYYY-MM-DD
 REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
@@ -1055,16 +1108,33 @@ CLEANUP_DIRS+=("$REPO"); run_config "$REPO" stacking.enabled
 assert_stdout_exact "fb_cfg stacking.enabled prints true with stacking: { enabled: true }" "true"
 check_case "stacking: { enabled: \"yes\" } is refused as a config error" 'stacking: { enabled: "yes" }' 5 "stacking.enabled must be boolean"
 
-# premise_check.enabled defaults to false, accepts true, refuses anything else; models.checker defaults to sonnet
+# premise_check.enabled defaults to true, accepts false, refuses anything else; models.checker defaults to sonnet
 REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" premise_check.enabled
-assert_stdout_exact "fb_cfg premise_check.enabled prints false with no config key" "false"
+assert_stdout_exact "fb_cfg premise_check.enabled prints true with no config key" "true"
 run_config "$REPO" models.checker
 assert_stdout_exact "fb_cfg models.checker prints sonnet with no config key" "sonnet"
 REPO="$(printf 'board:\n  repo: a/b\npremise_check: { enabled: true }\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" premise_check.enabled
 assert_stdout_exact "fb_cfg premise_check.enabled prints true with premise_check: { enabled: true }" "true"
 check_case "premise_check: { enabled: \"yes\" } is refused as a config error" 'premise_check: { enabled: "yes" }' 5 "premise_check.enabled must be true or false"
+
+# followups.auto_ready defaults to bugs and accepts none; followups.auto_ready_cap defaults to 5 and takes a non-negative integer
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" followups.auto_ready
+assert_stdout_exact "fb_cfg followups.auto_ready prints bugs with no config key" "bugs"
+run_config "$REPO" followups.auto_ready_cap
+assert_stdout_exact "fb_cfg followups.auto_ready_cap prints 5 with no config key" "5"
+REPO="$(printf 'board:\n  repo: a/b\nfollowups: { auto_ready: none, auto_ready_cap: 0 }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" followups.auto_ready
+assert_stdout_exact "fb_cfg followups.auto_ready prints none when set to none" "none"
+run_config "$REPO" followups.auto_ready_cap
+assert_stdout_exact "fb_cfg followups.auto_ready_cap prints 0 when set to 0" "0"
+check_case "followups: { auto_ready: all } is refused as a config error" 'followups: { auto_ready: all }' 5 "followups.auto_ready must be bugs or none"
+check_case "followups: { auto_ready: true } is refused as a config error" 'followups: { auto_ready: true }' 5 "followups.auto_ready must be bugs or none"
+check_case "followups: { auto_ready_cap: -1 } is refused as a config error" 'followups: { auto_ready_cap: -1 }' 5 "followups.auto_ready_cap"
+check_case "followups: { auto_ready_cap: 2.5 } is refused as a config error" 'followups: { auto_ready_cap: 2.5 }' 5 "followups.auto_ready_cap"
+check_case "followups: { auto_ready_cap: \"3\" } is refused as a config error" 'followups: { auto_ready_cap: "3" }' 5 "followups.auto_ready_cap"
 
 # Card 289: the per-stage review columns are retired
 REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: security, agent: a } ] }\n' | make_inline_repo)"
@@ -1102,6 +1172,39 @@ repos_case "An entry with no path makes config.sh exit 5" 5 $'    - repo: o/n'
 repos_case "An entry whose path is not absolute makes config.sh exit 5" 5 $'    - repo: o/n\n      path: rel/x'
 repos_case "An entry whose path contains a .. segment makes config.sh exit 5" 5 $'    - repo: o/n\n      path: /abs/../x'
 repos_case "A valid board.repos entry is accepted" 0 $'    - repo: o/n\n      path: /abs/x'
+
+# board.allowed_hosts and board.tailscale.allowed_logins: off by default, validated lists of strings
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" board.allowed_hosts
+assert_stdout_exact "With neither key set, the loaded config has board.allowed_hosts equal to []" '[]'
+run_config "$REPO" board.tailscale.allowed_logins
+assert_stdout_exact "With neither key set, the loaded config has board.tailscale.allowed_logins equal to []" '[]'
+REPO="$(printf 'board:\n  repo: a/b\n  allowed_hosts: ["mac.tail1234.ts.net"]\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" board.allowed_hosts
+assert_stdout_exact "board.allowed_hosts: [mac.tail1234.ts.net] loads, and the value is kept" '["mac.tail1234.ts.net"]'
+REPO="$(printf 'board:\n  repo: a/b\n  tailscale:\n    allowed_logins: ["owner@example.com"]\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" board.tailscale.allowed_logins
+assert_stdout_exact "board.tailscale.allowed_logins: [owner@example.com] loads, and the value is kept" '["owner@example.com"]'
+invalid_field_case "board.allowed_hosts set to a string instead of a list" '  allowed_hosts: "mac.tail1234.ts.net"' "board.allowed_hosts"
+invalid_field_case "board.allowed_hosts entry that is not a string" '  allowed_hosts: [5]' "board.allowed_hosts"
+invalid_field_case "board.allowed_hosts entry that is empty" '  allowed_hosts: [""]' "board.allowed_hosts"
+invalid_field_case "board.allowed_hosts entry holding /" '  allowed_hosts: ["a/b"]' "board.allowed_hosts"
+invalid_field_case "board.allowed_hosts entry holding a space" '  allowed_hosts: ["a b"]' "board.allowed_hosts"
+invalid_field_case "board.allowed_hosts entry holding *" '  allowed_hosts: ["*.ts.net"]' "board.allowed_hosts"
+invalid_field_case "board.tailscale.allowed_logins set to a string instead of a list" $'  tailscale:\n    allowed_logins: "owner@example.com"' "board.tailscale.allowed_logins"
+invalid_field_case "board.tailscale.allowed_logins entry that is not a string" $'  tailscale:\n    allowed_logins: [5]' "board.tailscale.allowed_logins"
+invalid_field_case "board.tailscale.allowed_logins entry that is empty" $'  tailscale:\n    allowed_logins: [""]' "board.tailscale.allowed_logins"
+
+# A review stage calls its provider through base_url or command; review_command is only for models.reviewer
+SEC_STAGE=$'review:\n  stages:\n    - { name: sec, provider: corp, model: m }'
+RC_ONLY=$'providers:\n  corp:\n    review_command: "my-cli -C {dir}"'
+RC_MSG="providers.corp is named by a review stage and needs base_url or command"
+check_case "a review stage naming a provider that has only review_command is rejected" "$SEC_STAGE"$'\n'"$RC_ONLY" 5 "$RC_MSG"
+check_case "a review stage naming a provider with only review_command and implement_command is rejected" "$SEC_STAGE"$'\n'"$RC_ONLY"$'\n    implement_command: my-cli' 5 "$RC_MSG"
+check_case "a review stage naming a provider that has both command and review_command is accepted" "$SEC_STAGE"$'\n'"$RC_ONLY"$'\n    command: "my-cli {model}"' 0
+check_case "a review stage naming the built-in codex preset is accepted" $'review:\n  stages:\n    - { name: sec, provider: codex, model: m }' 0
+check_case "a review_command-only provider used only by models.reviewer, with models.escalation set, is accepted" \
+  "models: { reviewer: { provider: corp, model: m }, escalation: opus }"$'\n'"$RC_ONLY" 0
 
 echo ""
 echo "-----------------------------------"

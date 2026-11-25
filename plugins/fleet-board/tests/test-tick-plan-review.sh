@@ -248,7 +248,7 @@ assert_exit "usage: arguments rejected" 2
 # in reviews.security is not done, and the card is not merged.
 # review_note <note-json>: the parallel-all-reported case on an open, green PR routed to security
 review_note() {
-  setup_case parallel-all-reported "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
+  setup_case parallel-all-reported "$(printf '%s\n%s' "$AUTO" "${REVIEW_YAML:-$STAGES_ADVISORY_YAML}")"
   local d="$FAKE_GH_DIR/routes.d"
   mkdir -p "$d"
   jq -cn --arg note "$1" '[{id: 555, user: {login: "fleet-bot"},
@@ -267,6 +267,15 @@ assert_jq "reviewed_stages vs reviews: a stage in reviewed_stages with a Critica
 assert_jq "reviewed_stages vs reviews: the card is fixed for security's finding, not merged (fix)" "$(card 12 action)" '"fix"'
 review_note "{\"state\":\"in_review\",\"branch\":\"fleet/12-add-subtract\",\"pr\":34,\"round\":1,\"reviewed_stages\":[],\"last_review\":$R_CLEAN,\"reviews\":{\"evidence\":$R_CLEAN,\"security\":{\"round\":1,\"sha\":\"abc1234\",\"critical\":0,\"important\":0,\"stage\":\"security\"}}}"
 assert_jq "reviewed_stages vs reviews: a clean security record at the head still merges" "$(card 12 action)" '"merge"'
+# The fixer is not dispatched for a card whose only open findings are Declared test changes ([Minor])
+R_DECL='{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[{"severity":"Minor","text":"test/x.sh: declared test change"}]}'
+review_note "{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":1,"reviewed_stages":[],"last_review":,"reviews":{"evidence":,"security":{"round":1,"sha":"abc1234","critical":0,"important":0,"stage":"security"}}}"
+assert_jq "Declared-only findings: the fixer is not dispatched (not fix)" "$(card 12 action | sed 's/^/(/; s/$/ != "fix")/')" 'true'
+# The same case with the note built properly: the Declared-only record is the last review and the evidence record
+review_note "{\"state\":\"in_review\",\"branch\":\"fleet/12-add-subtract\",\"pr\":34,\"round\":1,\"reviewed_stages\":[],\"last_review\":$R_DECL,\"reviews\":{\"evidence\":$R_DECL,\"security\":{\"round\":1,\"sha\":\"abc1234\",\"critical\":0,\"important\":0,\"stage\":\"security\"}}}"
+assert_exit "Declared-only note built: exit" 0
+assert_jq "Declared-only note built: a Minor-only review does not dispatch the fixer" "$(card 12 action | sed 's/^/(/; s/$/ != "fix")/')" 'true'
+assert_jq "Declared-only note built: the card merges" "$(card 12 action)" '"merge"'
 
 # ---------------------------------------------------------------------------
 # A clean-reviewed PR whose checks finished red: re-run once, then hand the failure to a fixer
@@ -282,6 +291,19 @@ plan in-review-red-rerun-same "$AUTO"
 assert_jq "red checks: checks_rerun at the PR head plans checks_failed" "$(card 12 action)" '"checks_failed"'
 assert_jq "red checks: the checks_failed reason" "$(card 12 reason)" \
   '"PR #34 checks still red at abc1234 after a re-run (test-suite)"'
+
+# The supervisor admits from --candidates rows, so a red-check row there must carry the red checks the
+# driver re-runs or reports (a row without them failed every rerun_checks with "invalid red_checks: None")
+candidates() { setup_case "$@"; run_check "$SCRIPT" --candidates; }
+crow() { printf '(.candidates[] | select(.number == %d)).%s' "$1" "$2"; }
+candidates in-review-red-first "$AUTO"
+assert_exit "red checks: --candidates exit" 0
+assert_jq "red checks: the --candidates row plans rerun_checks" "$(crow 12 action)" '"rerun_checks"'
+assert_jq "red checks: the --candidates rerun_checks row carries the red check's name" "[$(crow 12 red_checks)[]?.name]" '["test-suite"]'
+assert_jq "red checks: the --candidates rerun_checks row carries the red check's details URL" "[$(crow 12 red_checks)[]? | has(\"detailsUrl\")]" '[true]'
+candidates in-review-red-rerun-same "$AUTO"
+assert_jq "red checks: the --candidates row plans checks_failed" "$(crow 12 action)" '"checks_failed"'
+assert_jq "red checks: the --candidates checks_failed row carries the red check's name" "[$(crow 12 red_checks)[]?.name]" '["test-suite"]'
 
 plan in-review-red-rerun-older "$AUTO"
 assert_jq "red checks: checks_rerun naming an older head plans rerun_checks again" "$(card 12 action)" '"rerun_checks"'
@@ -334,5 +356,79 @@ assert_jq "one fixer pass: after the fix both review and review_stage are planne
 review_note "{$FR_HEAD,\"round\":1,\"last_review\":$R_CLEAN,\"conflicted_files\":[\"src/calc.js\"],\"reviews\":{\"evidence\":$R_CLEAN,\"security\":$SEC_IMP}}"
 assert_jq "one fixer pass: a conflict fix keeps its conflicted-files findings beside a stage finding" \
   "$FIXES[0].findings | map(.text)" '["merge conflict in src/calc.js"]'
+
+# Per-reviewer round limits: a reviewer with findings at the head blocks the card when its own count of
+# finding rounds reaches its max_rounds; a clean reviewer never blocks
+SEC1_YAML="$(printf '%s\n' 'review:' '  stages:' '    - name: security' '      agent: "acme:sec"' '      model: opus' '      max_rounds: 1' \
+  '    - name: ux' '      agent: ux-reviewer' '      model: sonnet' '      advisory: true' '      max_rounds: 1')"
+PERF2_YAML="$(printf '%s\n' 'review:' '  stages:' '    - name: perf' '      agent: "acme:perf"' '      model: opus' '      label: needs-security-review' '      max_rounds: 2')"
+mr_rec() { printf '{"round":%s,"sha":"abc1234","critical":0,"important":%s,%s"findings":[]}' "$1" "$2" "$3"; }
+ACTIONS='[.cards[] | select(.number == 12) | .action]'
+
+REVIEW_YAML="$SEC1_YAML"
+SEC_I1="$(mr_rec 1 1 '"stage":"security",')"
+review_note "{$FR_HEAD,\"round\":1,\"last_review\":$SEC_I1,\"finding_rounds\":{\"security\":{\"count\":1,\"last_round\":1}},\"reviews\":{\"evidence\":$R_CLEAN,\"security\":$SEC_I1}}"
+assert_jq "max_rounds: security (max_rounds 1) with a finding and count 1 plans block" "$ACTIONS" '["block"]'
+assert_jq "max_rounds: the reason names the reviewer and its limit" "$(card 12 reason) | (contains(\"security\") and contains(\"max_rounds 1\"))" 'true'
+
+# an advisory stage with max_rounds 1 and findings never blocks and is not counted
+UX_I1="$(mr_rec 1 1 '"stage":"ux",')"
+review_note "{$FR_HEAD,\"round\":1,\"last_review\":$UX_I1,\"finding_rounds\":{\"ux\":{\"count\":1,\"last_round\":1}},\"reviews\":{\"evidence\":$R_CLEAN,\"security\":$(mr_rec 1 0 '"stage":"security",'),\"ux\":$UX_I1}}" security-ux
+assert_jq "max_rounds: an advisory stage with findings never blocks" "$ACTIONS" '["merge"]'
+
+# a clean security record at the head never blocks, however high its count
+review_note "{$FR_HEAD,\"round\":3,\"last_review\":$(mr_rec 3 0 ''),\"finding_rounds\":{\"security\":{\"count\":5,\"last_round\":2}},\"reviews\":{\"evidence\":$(mr_rec 3 0 ''),\"security\":$(mr_rec 3 0 '"stage":"security",')}}"
+assert_jq "max_rounds: a clean reviewer over its limit plans merge" "$ACTIONS" '["merge"]'
+
+# a stage first routed at round 3 has its own count: below its limit the card is fixed, at the limit it blocks
+REVIEW_YAML="$PERF2_YAML"
+PERF_I3="$(mr_rec 3 1 '"stage":"perf",')"
+review_note "{$FR_HEAD,\"round\":3,\"last_review\":$PERF_I3,\"finding_rounds\":{\"perf\":{\"count\":1,\"last_round\":3}},\"reviews\":{\"evidence\":$(mr_rec 3 0 ''),\"perf\":$PERF_I3}}"
+assert_jq "max_rounds: perf (max_rounds 2) first routed at round 3 with count 1 plans fix" "$ACTIONS" '["fix"]'
+review_note "{$FR_HEAD,\"round\":3,\"last_review\":$PERF_I3,\"finding_rounds\":{\"perf\":{\"count\":2,\"last_round\":3}},\"reviews\":{\"evidence\":$(mr_rec 3 0 ''),\"perf\":$PERF_I3}}"
+assert_jq "max_rounds: perf with count 2 plans block" "$ACTIONS" '["block"]'
+unset REVIEW_YAML
+
+# the evidence reviewer keeps the default limit of 3: round 3 with findings blocks, with or without finding_rounds
+EV_I3="$(mr_rec 3 1 '')"
+review_note "{$FR_HEAD,\"round\":3,\"last_review\":$EV_I3,\"finding_rounds\":{\"evidence\":{\"count\":3,\"last_round\":3}},\"reviews\":{\"evidence\":$EV_I3,\"security\":$(mr_rec 3 0 '"stage":"security",')}}"
+assert_jq "max_rounds: an evidence finding at round 3 with count 3 plans block" "$ACTIONS" '["block"]'
+review_note "{$FR_HEAD,\"round\":3,\"last_review\":$EV_I3,\"reviews\":{\"evidence\":$EV_I3,\"security\":$(mr_rec 3 0 '"stage":"security",')}}"
+assert_jq "max_rounds: an evidence finding at round 3 with no finding_rounds plans block" "$ACTIONS" '["block"]'
+
+# ---------------------------------------------------------------------------
+# Review loops at an unchanged head (card 522). Built-in stages on, merge.policy auto, a red test-suite check
+# at head abc1234...a. The driver counts laps in the note's review_laps {sha, checks, count}.
+LH=abc123400000000000000000000000000000000a
+lp_rec() { printf '{"round":1,"sha":"%s","critical":0,"important":0,"findings":[],"stage":%s}' "$LH" "$1"; }
+LP_STAGES="\"documentation\":$(lp_rec '"documentation"'),\"blast_radius\":$(lp_rec '"blast_radius"')"
+LP_BASE="\"state\":\"in_review\",$BASE_NOTE"
+LP_ROWS='[.cards[] | select(.number == 12) | .action]'
+lp_plan() { TP_KEEP_BUILTINS=1 variant "$1" pr-34-open-red-named.json "$2" "$AUTO"; }
+lp_plan loop-all-clean "{$LP_BASE,\"last_review\":$(lp_rec null),\"reviews\":{\"evidence\":$(lp_rec null),$LP_STAGES},\"checks_rerun\":{\"sha\":\"$LH\",\"checks\":[\"test-suite\"],\"at\":\"2026-11-19T00:00:00Z\"}}"
+assert_exit "review loop: every reviewer clean at the head, re-run red: exit" 0
+assert_jq "review loop: clean evidence and stage records at the head with a re-run red check plan checks_failed only" "$LP_ROWS" '["checks_failed"]'
+# the loop seen on card 478: no evidence record, both stage records clean, laps counted three times at this head
+LP_LOOP="{$LP_BASE,\"last_review\":$(lp_rec '"blast_radius"'),\"reviews\":{$LP_STAGES},\"checks_rerun\":{\"sha\":\"$LH\",\"checks\":[\"test-suite\"],\"at\":\"2026-11-19T00:00:00Z\"}"
+lp_plan loop-three "$LP_LOOP,\"review_laps\":{\"sha\":\"$LH\",\"checks\":[\"test-suite\"],\"count\":3}}"
+assert_jq "review loop: three laps at the head with the same red checks plan one block" "$LP_ROWS" '["block"]'
+assert_jq "review loop: the block reason starts with review loop:" "$(card 12 reason) | startswith(\"review loop:\")" 'true'
+assert_jq "review loop: the block reason names the head and the red check" "$(card 12 reason) | (contains(\"abc1234\") and contains(\"test-suite\"))" 'true'
+assert_jq "review loop: the block row carries the red checks" "[$(card 12 red_checks)[]?.name]" '["test-suite"]'
+lp_plan loop-two "$LP_LOOP,\"review_laps\":{\"sha\":\"$LH\",\"checks\":[\"test-suite\"],\"count\":2}}"
+assert_jq "review loop: two laps still plan the evidence review" "$LP_ROWS" '["review"]'
+lp_plan loop-other-head "$LP_LOOP,\"review_laps\":{\"sha\":\"def5678000000000000000000000000000000000\",\"checks\":[\"test-suite\"],\"count\":5}}"
+assert_jq "review loop: laps counted at another head do not block" "$LP_ROWS" '["review"]'
+lp_plan loop-other-checks "$LP_LOOP,\"review_laps\":{\"sha\":\"$LH\",\"checks\":[\"lint\"],\"count\":5}}"
+assert_jq "review loop: laps counted with other red checks do not block" "$LP_ROWS" '["review"]'
+# the evidence record is clean at the head and only the stages are left: their review_stage rows block too
+lp_plan loop-stages-only "{$LP_BASE,\"last_review\":$(lp_rec null),\"reviews\":{\"evidence\":$(lp_rec null)},\"review_laps\":{\"sha\":\"$LH\",\"checks\":[\"test-suite\"],\"count\":3}}"
+assert_jq "review loop: three laps with only review_stage rows left plan one block" "$LP_ROWS" '["block"]'
+# a hand-edited review_laps whose checks is not a list never fails the plan
+lp_plan loop-bad-checks "$LP_LOOP,\"review_laps\":{\"sha\":\"$LH\",\"checks\":\"test-suite\",\"count\":3}}"
+assert_exit "review loop: review_laps.checks as a string: exit" 0
+assert_jq "review loop: review_laps.checks as a string does not block" "$LP_ROWS" '["review"]'
+lp_plan loop-review-rows "$LP_LOOP}"
+assert_jq "review loop: the evidence review row carries the red checks the driver counts laps by" "[$(card 12 red_checks)[]?.name]" '["test-suite"]'
 
 tp_finish

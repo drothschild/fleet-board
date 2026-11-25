@@ -2,7 +2,7 @@
 # review-drift.sh - tells whether a PR head that moved past the last reviewed
 # sha still counts as reviewed.
 #
-# Usage: review-drift.sh <reviewed-sha> <head-sha> [--also-base <ref>]
+# Usage: review-drift.sh <reviewed-sha> <head-sha> [--landing <parent_head>:<squash>] [--also-base <ref>]
 #
 # With --also-base <ref> (a stacked card passes origin's copy of its parent branch), a clean
 # merge whose second parent is an ancestor of <ref> counts exactly as a clean merge of the
@@ -23,6 +23,12 @@
 # value strictly above the old one (for a merge: the three-way result of the two
 # sides, above both, or sv_resolve(branch; base), the value update-branch.sh
 # keeps); any other "version", such as a nested source pin, must stay as it was (a merge: the three-way result). A repeated key is refused.
+# --landing (a stacked child that landed; the pair is the note's landed.parent_head and landed.squash):
+# a merge commit also counts when its second parent is the squash, the squash is on the base branch,
+# parent_head is an ancestor of its first parent and its tree equals stack-bridge.sh tree <repo>
+# <parent_head> <first parent> <squash> (the bridge commit); and a clean merge whose second parent is
+# an ancestor of parent_head counts (a merge of the parent branch). Without the option, or with a
+# malformed pair, neither counts.
 # Prints "unreviewed" for anything else:
 # a non-merge commit, a merge that needed conflict resolution or carries extra
 # changes, a chain that does not lead back to <reviewed-sha>, or commits git
@@ -36,16 +42,30 @@ set -uo pipefail
 unset CDPATH
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
-USAGE="usage: review-drift.sh <reviewed-sha> <head-sha> [--also-base <ref>]"
-ALSO=""
-if [ $# -eq 4 ] && [ "$3" = --also-base ]; then
-  ALSO="$4"
-  case "$ALSO" in ''|-*|*[!A-Za-z0-9/._-]*) fb_die 2 "--also-base needs a plain ref name, got: $ALSO" ;; esac
-elif [ $# -ne 2 ]; then
-  fb_die 2 "$USAGE"
-fi
-FROM="$1"; HEAD_SHA="$2"
+USAGE="usage: review-drift.sh <reviewed-sha> <head-sha> [--landing <parent_head>:<squash>] [--also-base <ref>]"
+[ $# -ge 2 ] || fb_die 2 "$USAGE"
+FROM="$1"; HEAD_SHA="$2"; shift 2
+ALSO=""; LANDING=""; HAVE_ALSO=0; HAVE_LANDING=0
+while [ $# -gt 0 ]; do
+  [ $# -ge 2 ] || fb_die 2 "$USAGE"
+  case "$1" in
+    --landing) [ "$HAVE_LANDING" = 0 ] || fb_die 2 "$USAGE"; HAVE_LANDING=1; LANDING="$2" ;;
+    --also-base)
+      [ "$HAVE_ALSO" = 0 ] || fb_die 2 "$USAGE"; HAVE_ALSO=1; ALSO="$2"
+      case "$ALSO" in ''|-*|*[!A-Za-z0-9/._-]*) fb_die 2 "--also-base needs a plain ref name, got: $ALSO" ;; esac ;;
+    *) fb_die 2 "$USAGE" ;;
+  esac
+  shift 2
+done
 case "$FROM$HEAD_SHA" in *[!0-9a-fA-F]*|'') fb_die 2 "shas must be hex" ;; esac
+# --landing: the note's landed pair. A malformed pair counts as no pair (the bridge commit then reads unreviewed)
+LPH=""; LSQ=""
+if [ "$HAVE_LANDING" = 1 ]; then
+  case "$LANDING" in
+    *[!0-9a-f:]*|:*|*:|*:*:*|'') ;;
+    *:*) LPH="${LANDING%%:*}"; LSQ="${LANDING##*:}" ;;
+  esac
+fi
 
 fb_load_config
 
@@ -221,6 +241,29 @@ while IFS="$TAB" read -r sha parents subject; do
     echo unreviewed; exit 0
   fi
   [ $# -eq 2 ] || { echo unreviewed; exit 0; }
+  if [ -n "$LPH" ] && [ -n "$LSQ" ]; then
+    # A stacked child's landing (--landing): the bridge to the squash, and a clean merge of the
+    # parent branch below it. Anything that cannot be read fails closed (unreviewed).
+    need "$sha" "$1" "$2" "$LPH" "$LSQ" || { echo unreviewed; exit 0; }
+    lph="$(git rev-parse --verify -q "$LPH^{commit}")" && lsq="$(git rev-parse --verify -q "$LSQ^{commit}")" \
+      && p2full="$(git rev-parse --verify -q "$2^{commit}")" || { echo unreviewed; exit 0; }
+    stree="$(git rev-parse --verify -q "$sha^{tree}")" || { echo unreviewed; exit 0; }
+    if [ "$p2full" = "$lsq" ]; then
+      # the bridge commit: the squash is on the base, the parent's final head is an ancestor of the
+      # first parent, and the tree is the bridge's own (stack-bridge.sh tree)
+      on_base "$lsq" || { echo unreviewed; exit 0; }
+      git merge-base --is-ancestor "$lph" "$1" 2>/dev/null || { echo unreviewed; exit 0; }
+      btree="$(bash "$FLEET_SCRIPTS/stack-bridge.sh" tree "$PWD" "$lph" "$1" "$lsq" 2>/dev/null)" || { echo unreviewed; exit 0; }
+      [ -n "$btree" ] && [ "$btree" = "$stree" ] && continue
+      echo unreviewed; exit 0
+    fi
+    if git merge-base --is-ancestor "$p2full" "$lph" 2>/dev/null; then
+      # a clean merge of the parent branch (before its squash): the tree is git's automatic merge
+      mt="$(git merge-tree --write-tree "$1" "$2" 2>/dev/null)"; mrc=$?
+      [ "$mrc" = 0 ] && [ "$(sed -n 1p <<<"$mt")" = "$stree" ] && continue
+      echo unreviewed; exit 0
+    fi
+  fi
   need "$sha" "$1" "$2" || { echo unreviewed; exit 0; }
   # the subject says main and the second parent is on the base branch; or, for --also-base, the
   # subject says merge and the second parent is on that ref

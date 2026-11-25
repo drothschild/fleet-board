@@ -23,7 +23,7 @@
 #       origin's copy of <start-branch> instead of origin/HEAD; when that is missing the
 #       call exits 1 with "fleet-board: origin/<start-branch> does not exist" and adds no
 #       worktree and no branch. When the branch already exists the argument is ignored.
-#   worktree.sh review <n> <pr> [<stage>] [<base-branch>]
+#   worktree.sh review <n> <pr> [<stage> [--pass <i>]] [<base-branch>]
 #       Fetches the PR head (into refs/fleet-board/pull/<pr>) and puts a
 #       detached worktree <base>/<n>-review on it, creating it (and running
 #       worktrees.setup once) or checking the new head out in it. With
@@ -35,9 +35,19 @@
 #       branch and the head instead; when origin has no such branch the call exits 1.
 #       With a <stage> name ([a-z][a-z0-9_]*, not "copy") the checkout is <base>/<n>-review-<stage> and the
 #       copy <base>/<n>-review-<stage>-copy, so reviewers of one card that run together never share one.
+#       With --pass <i> (i > 1, after a stage) the checkout is <base>/<n>-review-<stage>-<i> and the copy
+#       <base>/<n>-review-<stage>-<i>-copy, so passes of one stage that run together never share one;
+#       pass 1 (or no --pass) keeps <base>/<n>-review-<stage>.
 #       Before preparing its checkout, review removes the card's <n>-review-<stage> checkouts and
 #       copies whose stage is not in the configured review.stages (git worktree remove, then a
 #       prune; a path resolving outside <base> is left in place with a warning).
+#   worktree.sh premise <n>
+#       Fetches origin and puts a detached worktree <base>/<n>-premise_check on the
+#       head of the default branch (origin/HEAD, else origin/main), creating it (and
+#       running worktrees.setup once) or checking the new head out in it. Prints
+#       {"path":..,"head":<40-hex>}. The underscore is deliberate: a card's own worktree
+#       is <base>/<n>-<slug> and a slug is [a-z0-9-], so no title can name this one.
+#       Remove it with the path form of remove, which leaves the card's own worktree.
 #   worktree.sh remove <n> [<worktree-path>]
 #       Removes <worktree-path>, which must be the card's own directory: a
 #       direct child of <base> named <n>-* (as given and after symlinks are
@@ -63,7 +73,7 @@ set -uo pipefail
 unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path)
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
-usage() { fb_die 2 "usage: worktree.sh create <n> <branch> <path> [<start-branch>] | review <n> <pr> [<stage>] [<base-branch>] | remove <n> [<worktree-path>]"; }
+usage() { fb_die 2 "usage: worktree.sh create <n> <branch> <path> [<start-branch>] | review <n> <pr> [<stage> [--pass <i>]] [<base-branch>] | premise <n> | remove <n> [<worktree-path>]"; }
 
 [ $# -ge 2 ] || usage
 CMD="$1"
@@ -74,11 +84,17 @@ case "$CMD" in
     if [ $# -eq 5 ]; then
       [[ "$5" =~ ^fleet/[0-9]+-[a-z0-9-]{1,40}$ ]] || fb_die 2 "start branch must match fleet/<n>-<slug>, got: $5"
     fi ;;
-  review) [ $# -ge 3 ] && [ $# -le 5 ] || usage; fb_valid_number "$3" || fb_die 2 "PR number must be numeric, got: $3"
+  review) [ $# -ge 3 ] && [ $# -le 7 ] || usage; fb_valid_number "$3" || fb_die 2 "PR number must be numeric, got: $3"
     # the arguments after the PR: a base branch (fleet/<n>-<slug>) and/or a stage name, each at most once
-    STAGE=""; BASE_BRANCH=""
+    STAGE=""; BASE_BRANCH=""; PASS=""; WANT_PASS=0
     for a in "${@:4}"; do
-      if [[ "$a" =~ ^fleet/[0-9]+-[a-z0-9-]{1,40}$ ]]; then
+      if [ "$WANT_PASS" = 1 ]; then
+        [[ "$a" =~ ^[1-9][0-9]{0,2}$ ]] || fb_die 2 "pass must be a positive number, got: $a"
+        PASS="$a"; WANT_PASS=0
+      elif [ "$a" = "--pass" ]; then
+        [ -z "$PASS" ] || usage
+        WANT_PASS=1
+      elif [[ "$a" =~ ^fleet/[0-9]+-[a-z0-9-]{1,40}$ ]]; then
         [ -z "$BASE_BRANCH" ] || usage
         BASE_BRANCH="$a"
       else
@@ -88,7 +104,11 @@ case "$CMD" in
         esac
         STAGE="$a"
       fi
-    done ;;
+    done
+    [ "$WANT_PASS" = 0 ] || usage
+    [ -z "$PASS" ] || [ -n "$STAGE" ] || fb_die 2 "--pass needs a stage name"
+    [ "$PASS" != 1 ] || PASS="" ;;
+  premise) [ $# -eq 2 ] || usage ;;
   remove) [ $# -eq 2 ] || [ $# -eq 3 ] || usage ;;
   *) usage ;;
 esac
@@ -202,6 +222,10 @@ case "$CMD" in
     if [ -n "$STAGE" ]; then
       RV="$BASE/$N-review-$STAGE"
       RC="$BASE/$N-review-$STAGE-copy"
+      if [ -n "$PASS" ]; then   # pass i > 1 has its own checkout and copy; pass 1 keeps the stage's
+        RV="$BASE/$N-review-$STAGE-$PASS"
+        RC="$BASE/$N-review-$STAGE-$PASS-copy"
+      fi
     fi
     REF="refs/fleet-board/pull/$PR"
     g fetch -q origin >&2 || fb_die 1 "git fetch origin failed"
@@ -215,6 +239,7 @@ case "$CMD" in
       ST="$(basename "$d")"; ST="${ST#"$N"-review-}"
       IS_COPY=0
       case "$ST" in copy) continue ;; *-copy) IS_COPY=1; ST="${ST%-copy}" ;; esac
+      case "$ST" in *-[0-9]*) ST="${ST%-*}" ;; esac   # a pass checkout belongs to its stage
       case "$CONFIGURED" in *" $ST "*) continue ;; esac
       if ! T="$(resolve_under_base "$d")"; then
         printf 'fleet-board: warning: refusing to remove %s, which resolves outside %s\n' "$d" "$BASE" >&2
@@ -250,6 +275,24 @@ case "$CMD" in
     fb_mark_active "$N"
     jq -nc --arg p "$RV" --arg c "$COPY" --arg s "$SHA" --arg b "$MB" \
       '{path: $p, copy: (if $c == "null" then null else $c end), sha: $s, base: $b}'
+    ;;
+
+  premise)
+    PV="$BASE/$N-premise_check"
+    g fetch -q origin >&2 || fb_die 1 "git fetch origin failed"
+    if g rev-parse --verify --quiet "refs/remotes/origin/HEAD^{commit}" >/dev/null; then START=origin/HEAD
+    elif g rev-parse --verify --quiet "refs/remotes/origin/main^{commit}" >/dev/null; then START=origin/main
+    else fb_die 1 "neither origin/HEAD nor origin/main exists"
+    fi
+    SHA="$(g rev-parse --verify --quiet "$START^{commit}")" || fb_die 1 "cannot resolve $START"
+    if [ -L "$PV" ] || [ -e "$PV" ]; then
+      is_our_worktree "$PV" || fb_die 1 "$PV exists and is not a worktree of this repository"
+      git -C "$PV" checkout -q --force --detach "$SHA" >&2 || fb_die 1 "cannot check out $SHA in $PV"
+    else
+      g worktree add -q --detach "$PV" "$SHA" >&2 || fb_die 1 "cannot add the premise worktree $PV"
+      run_setup "$PV"
+    fi
+    jq -nc --arg p "$PV" --arg s "$SHA" '{path: $p, head: $s}'
     ;;
 
   remove)

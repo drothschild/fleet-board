@@ -136,6 +136,7 @@
   <p id="dr-hold" class="dr-meta dr-hold" hidden></p>
   <p id="dr-accept-err" class="dr-field-err" role="alert" hidden></p>
   <div class="dr-scroll">
+    <section id="dr-premise" class="dr-section dr-premise" aria-label="Premise proposal" hidden></section>
     <section class="dr-section" aria-labelledby="dr-body-h">
       <h3 id="dr-body-h" class="dr-h"><label for="dr-body">Body</label></h3>
       <div class="dr-editor">
@@ -152,6 +153,7 @@
       </div>
     </section>
     <section class="dr-section dr-pair">
+      <div class="dr-col">
       <div class="dr-field" role="group" aria-labelledby="dr-blk-h">
         <h3 id="dr-blk-h" class="dr-h">Blocked by</h3>
         <div class="dr-labels-row">
@@ -159,6 +161,12 @@
           <input id="dr-blk-input" class="dr-label-input dr-blk-input" type="text" inputmode="numeric" placeholder="add #n" aria-label="Add a blocking card by number" aria-describedby="dr-blk-err" autocomplete="off">
         </div>
         <p id="dr-blk-err" class="dr-field-err" role="alert" hidden></p>
+      </div>
+      <div id="dr-stack" class="dr-field dr-stack" role="group" aria-labelledby="dr-stack-h" hidden>
+        <h3 id="dr-stack-h" class="dr-h">Stacked on</h3>
+        <button type="button" id="dr-stack-link" class="text-btn dr-stack-link"></button>
+        <p id="dr-stack-attn" class="dr-stack-attn" hidden></p>
+      </div>
       </div>
       <div id="dr-pr-field" class="dr-field" role="group" aria-labelledby="dr-pr-h">
         <h3 id="dr-pr-h" class="dr-h">Pull request</h3>

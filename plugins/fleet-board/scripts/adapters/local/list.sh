@@ -13,9 +13,13 @@ if [ ! -e "$1" ]; then echo '[]'; exit 0; fi
 # One jq reads every card file. A file that is not a JSON object makes it fail;
 # the slow loop then finds the file to name.
 jq -nc --arg s "$STATE" --arg p "$PORT" '
-  [inputs | if type == "object" then {number, title, state} else error("not a card") end]
+  def followup_draft: .followup as $f
+    | if ($f | type) == "object" and (["pending","done","failed"] | index($f.draft)) != null
+         and (["bug","out_of_scope"] | index($f.kind)) != null and ($f.entry | type) == "object"
+         and ($f.from | type) == "number" then $f.draft else null end;
+  [inputs | if type == "object" then {number, title, state, pr_url, followup_draft: followup_draft} else error("not a card") end]
   | [.[] | select(.state == $s)] | sort_by(.number)
-  | map({number, title, url: ("http://127.0.0.1:" + $p + "/cards/" + (.number | tostring))})' "$@" 2>/dev/null && {
+  | map({number, title, url: ("http://127.0.0.1:" + $p + "/cards/" + (.number | tostring)), state, pr_url: (.pr_url // null), followup_draft})' "$@" 2>/dev/null && {
   # a card whose state is not a string sits in no column: say so on stderr
   jq -r 'select(type == "object" and (.state | type) != "string") | "fleet-board: warning: card #\(.number) has a state that is not a string; it is in no column"' "$@" >&2 2>/dev/null
   exit 0

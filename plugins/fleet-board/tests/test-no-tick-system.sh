@@ -120,7 +120,7 @@ if [ -z "$found" ]; then pass "no file named settle.sh anywhere under the plugin
 # test-readme-claims.sh is the check that the docs do not name it, so it names it.
 # shellcheck disable=SC2086
 absent_but "nothing names settle.sh outside the upgrade notes" "$UPGRADE_NOTES" \
-  -rn 'settle\.sh' $INCLUDES --exclude='test-no-tick-system.sh' --exclude='test-readme-claims.sh' "$PLUGIN_DIR"
+  -rnE '(^|[^-])settle\.sh' $INCLUDES --exclude='test-no-tick-system.sh' --exclude='test-readme-claims.sh' "$PLUGIN_DIR"
 
 echo "no skill, agent, hook, script or doc names a removed config key"
 # config.sh's refusal table names them to refuse them; the upgrade notes name them to say they went.

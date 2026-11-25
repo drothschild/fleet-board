@@ -53,7 +53,7 @@ check "config table has a review.stages row" "$r"
 DOCS_DIR="${SCRIPT_DIR}/../docs"
 GATES="${GATES_FILE:-${DOCS_DIR}/gates.md}"
 # The upgrade notes may say it was removed; nothing else in the README names it.
-r=bad; awk '/^### Upgrading from an earlier version$/{u=1;next} u && /^#/{u=0} !u' "$README" | grep -c 'settle\.sh' >/dev/null || r=ok
+r=bad; awk '/^### Upgrading from an earlier version$/{u=1;next} u && /^#/{u=0} !u' "$README" | grep -cE '(^|[^-])settle\.sh' >/dev/null || r=ok
 check "README does not mention settle.sh outside its upgrade notes" "$r"
 r=bad; grep -q 'settle\.sh' "$GATES" || r=ok
 check "gates.md does not mention settle.sh" "$r"
@@ -102,11 +102,31 @@ check "config.md has an iTerm example [\"open\", \"-a\", \"iTerm\", \"{dir}\"]" 
 r=bad; grep -qF '| `board.terminal_command` |' "$README" && grep -qF 'Open terminal' "$README" && r=ok
 check "README lists board.terminal_command and the Open terminal link" "$r"
 
+# The "Stacked pull requests" section names the switch, the git floor and the three stop cases.
+stack_sec="$(awk '/^#+ Stacked pull requests/{f=1;next} f && /^## /{exit} f' "$README")"
+r=bad; printf '%s\n' "$stack_sec" | grep -cF 'stacking.enabled' >/dev/null && r=ok
+check "README Stacked pull requests section names stacking.enabled" "$r"
+r=bad; printf '%s\n' "$stack_sec" | grep -cF 'git 2.40' >/dev/null && r=ok
+check "README Stacked pull requests section names git 2.40" "$r"
+r=bad; printf '%s\n' "$stack_sec" | grep -ci 'closed unmerged' >/dev/null && r=ok
+check "README names the case: parent closed unmerged" "$r"
+r=bad; printf '%s\n' "$stack_sec" | grep -ci 'never merged' >/dev/null && r=ok
+check "README names the case: child followed commits that never merged" "$r"
+r=bad; printf '%s\n' "$stack_sec" | grep -ci 'conflict' >/dev/null && r=ok
+check "README names the case: a conflict while landing" "$r"
+r=bad; printf '%s\n' "$stack_sec" | grep -cF 'note.sh merge' >/dev/null && r=ok
+check "README says to clear a stop with note.sh merge" "$r"
+
 # The overrides must work: a copy without the chain sentence, or one naming settle.sh, must fail.
 if [ -z "${README_CLAIMS_NESTED:-}" ]; then
   tmp="$(mktemp -d)"
   sed 's/Move the whole chain to Ready/Move it/' "$README" > "$tmp/README_FILE.md"
   { cat "$GATES"; printf '\n`scripts/settle.sh` moves cards.\n'; } > "$tmp/GATES_FILE.md"
+  # A bare scripts/settle.sh outside the upgrade notes must still fail the README check.
+  { cat "$README"; printf '\n`scripts/settle.sh` moves cards.\n'; } > "$tmp/README_BARE.md"
+  r=bad
+  if ! env README_CLAIMS_NESTED=1 "README_FILE=$tmp/README_BARE.md" bash "${BASH_SOURCE[0]:-$0}" >/dev/null 2>&1; then r=ok; fi
+  check "README naming a bare scripts/settle.sh outside its upgrade notes makes the test fail" "$r"
   for var in README_FILE GATES_FILE; do
     r=bad
     if ! env README_CLAIMS_NESTED=1 "$var=$tmp/$var.md" bash "${BASH_SOURCE[0]:-$0}" >/dev/null 2>&1; then r=ok; fi

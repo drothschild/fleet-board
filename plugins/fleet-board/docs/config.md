@@ -28,6 +28,25 @@ Under `human`, the gate blocks every `gh pr merge`, and clean PRs wait to be mer
 
 The supervisor skips the merger session after a successful merge, and records the merger result `{mode: after_merge, status: done}` in the card's note itself, when all of these hold: `merge.persona` is `null` and there is no `.fleet-board/merger.md` (the plugin default persona lists no after-merge steps), `merge.persona_append` is `null`, and the card has no `## After merge` section. The merge lane is then free in the same cycle. A refused merge always starts the merger in refusal mode.
 
+## `implementor.persona` and `implementor.persona_append`
+
+Project rules for the implementor. `implementor.persona` is a path relative to the repo root, with no `..`, under the same rules as `merge.persona`; `null` (the default) adds nothing. `implementor.persona_append` is inline text, not a path; `null` or a blank string adds nothing. Unlike the merger's, the implementor's persona replaces nothing: the built-in implementor always applies, and the file text, then the appended text, are added to its inputs under `## Project rules`. The implementor follows a project rule where it conflicts with a built-in default (for example which Acceptance items get a test), but a rule never changes the report shape, the worktree and branch rules, or the "Never" list. A path that is set but missing is an attention naming the path, and no implementor session starts for the card. For a card of another repo on a multi-repo board, the keys come from that card's repo.
+
+## `implementor.provider` and `implementor.model`
+
+Who runs the implementor. `implementor.provider` defaults to `claude`, a headless Claude session on `models.implementor`. It may also name a provider: an entry under [`providers`](#providers) or a built-in preset. `implementor.model` (default `null`) is the model of a provider implementor; when set it must match `^[A-Za-z0-9][A-Za-z0-9._:/-]*$`. The Claude implementor does not read it. `config.sh` exits 5, naming the key, for a provider that does not exist or a model that does not match, and with `providers.<name> has no implement_command` when the named provider has no `implement_command`. No built-in preset has one, so the provider needs it under `providers`.
+
+```yaml
+implementor:
+  provider: codex
+  model: gpt-6-astra
+providers:
+  codex:
+    implement_command: "my-implementor -C {dir} -m {model}"
+```
+
+**No provider runner exists yet, so `claude` is the only value that runs.** With any other provider the supervisor raises an attention naming `implementor.provider` and starts no implementor session; it never falls back to Claude. To go on, set `implementor.provider: claude`, then clear the card's attention. `supervisor.provider_concurrency` counts an implementor under its provider; that key is read from the home repo's config, so the provider named there must also be `claude` or under the home `providers`. For a card of another repo on a multi-repo board, `implementor.provider` and `implementor.model` come from that card's repo.
+
 ## `merge.ignore_checks`
 
 A list of dated, reasoned exceptions for checks that should not hold up a merge. Each entry has a `name` (a case-sensitive shell glob: `*` is any run of characters, `?` one character), a `reason`, and an `until` date (`YYYY-MM-DD`, valid through that day, UTC). A red check whose name matches an unexpired entry counts as green. An entry that also says `pending: true` covers a matching check that is still running, so the supervisor merges without waiting for it to finish; without it, a pending check is never green. A `pending: true` entry also covers a red check of the same name: it means "don't wait for this check, whatever it says". A check with no name or context is never covered by any entry.
@@ -102,7 +121,7 @@ review:
       max_rounds: 2                   # default: review.max_rounds
       default: false                  # true routes the stage to every card
       enabled: true                   # false never routes it
-      required_passes: 1              # 1 to 5; accepted and validated
+      required_passes: 1              # 1 to 5; passes run side by side
       brief: "Focus on authz, secrets, injection."  # optional; passed verbatim
     - name: compliance
       provider: openai                # instead of agent
@@ -121,7 +140,7 @@ review:
     - {name: blast_radius, enabled: false}
 ```
 
-`default: true` routes a stage to every card; `enabled: false` never routes it. `required_passes` (1 to 5) is accepted and validated; today one clean report meets a stage. A stage is not a board state: a `board.states.review_<name>` key is warned about.
+`default: true` routes a stage to every card; `enabled: false` never routes it. `required_passes` (1 to 5) sets how many clean reports meet a stage: a stage with `required_passes: 3` needs 3 clean reports at the current head. The passes are planned and run side by side, each a fresh session in its own checkout. One pass with findings sends the card to the fixer. A stage is not a board state: a `board.states.review_<name>` key is warned about.
 
 **Routing.** A stage applies to a card when `default: true` is set, the card carries the stage's label, or a file the PR changes matches one of its `paths` globs (the rule `needs-human-qa.sh` uses). A stage with `enabled: false` never applies. `review-stages.sh route <card> <pr>` adds each missing label and never removes one. It runs when the card moves from In Progress to In Review, before the move, so a failure leaves the card in In Progress and the next plan retries. A person can add a label to force a stage. When `gh` lists fewer files than the PR changes, every stage is routed, with a warning.
 
@@ -129,7 +148,9 @@ review:
 
 **Setup.** After adding or changing stages, run `bash <scripts>/review-stages.sh setup` (`init.sh` prints this command when it finishes; it does not run it). On the local store there is nothing to create (routing labels are added to a card when it is routed), so it exits 0.
 
-**Flow.** A card whose evidence review is clean moves to the first routed stage (`advance_stage`) and is reviewed there next. Critical or Important findings go to the fixer and the same stage re-reviews, up to the stage's `max_rounds`; then the card is Blocked. A clean stage moves the card to the next routed stage, then to Human QA, a ready PR or a merge exactly as before.
+**Flow.** A card whose evidence review is clean moves to the first routed stage (`advance_stage`) and is reviewed there next. Critical or Important findings go to the fixer and the stage re-reviews, up to the stage's `max_rounds` of its own rounds with findings; then the card is Blocked. A clean stage moves the card to the next routed stage, then to Human QA, a ready PR or a merge exactly as before.
+
+**Fixer pass and round limits.** One fixer pass gets every reviewer's findings once every routed reviewer has reported, labelled by reviewer. Then every routed reviewer reviews the fixed head. Each reviewer's `max_rounds` counts that reviewer's own rounds with findings (`finding_rounds`), so a stage routed late still gets its full fix attempts. A clean reviewer never blocks a card.
 
 **Advisory.** An `advisory: true` stage posts its report and its findings are read as clean: its findings never send the card to a fixer or block it. A provider stage fails closed even when advisory: a diff over `max_diff_bytes` or with no text hunks (`stage-review.sh` exit 7) blocks the card, and repeated provider failures (exits 1, 3 and 6 count as report errors) block it under the `action_failures` rule like any other stage.
 
@@ -181,6 +202,7 @@ Built-in presets are `openai`, `gemini`, `openrouter`, `ollama` and `codex` (a c
 | `max_tokens_param` | `max_tokens` or `max_completion_tokens`; ignored when `command` is set |
 | `command` | optional string run with `sh -c` instead of an HTTP call, with `{model}` replaced by the stage's `model`. Needs `base_url` and `api_key_env` to be null (`providers.<name> sets both command and base_url`, `providers.<name>.api_key_env must be null when command is set`, both exit 5) |
 | `review_command` | optional command for evidence review in a scratch clone. Requires `{dir}` and supports `{model}`. Exclusive with `base_url`. Sandbox bypass flags and `danger-full-access` are forbidden. |
+| `implement_command` | the command of a provider implementor, a non-empty string. Required when `implementor.provider` names the provider; nothing runs it yet. A provider with it and no `base_url` needs no chat API settings, unless a review stage names it. |
 
 If a stage's `api_key_env` variable is unset or empty, `tick-plan.sh` warns once (`stage <name>: <ENV> is not set; provider reviews will fail`) and plans that stage's `review_stage` as `wait` with the reason `stage <name>: <ENV> is not set`, so the card is not failed on every plan; a card entering the stage still moves, and its review waits until the variable is set. To make the whole plan hold instead, add a preflight check (see [`commands.preflight`](#commandspreflight)): `test -n "$OPENAI_API_KEY"`, and for stage labels `review-stages.sh setup`.
 
@@ -275,6 +297,29 @@ Left empty (the default), none of this runs and every conflict goes to the fixer
 `board.dir` is where the cards live: `<board.dir>/cards/<n>.json`, the `next` counter, and the `active/` markers. The default is `.fleet-board`. It is relative to the repo root, so it cannot be absolute or contain `..`; `config.sh` exits 5 for either.
 
 `board.port` is the port the board page listens on, on `127.0.0.1`. The default is `8765`. It must be an integer from 1024 to 65535. `board-web.sh --port N` overrides it for one run.
+
+## `board.allowed_hosts` and `board.tailscale.allowed_logins`
+
+`board.allowed_hosts` (default `[]`) is a list of host names the board page accepts in the `Host` header besides loopback. With the default only loopback names are accepted.
+
+`board.tailscale.allowed_logins` (default `[]`) is a list of Tailscale logins allowed to use the page through `tailscale serve`. With the default no tailnet request is accepted. Every login on it can start the supervisor and run Claude sessions on this Mac, and Open terminal is refused for tailnet requests. See [Reaching the board from your tailnet](../README.md#reaching-the-board-from-your-tailnet).
+
+## `board.repos`
+
+`board.repos` lets one board hold cards for more than one repository. The default is an empty list: every card belongs to `board.repo`. Each entry is an object with two keys:
+
+```yaml
+board:
+  repo: user/myProject
+  repos:
+    - repo: user/otherProject
+      path: /Users/me/Projects/otherProject
+```
+
+- `repo` is `OWNER/NAME` and must differ from `board.repo`. A repository appears at most once.
+- `path` is the local checkout of that repository. It must be absolute, and it must not contain a `..` segment.
+
+A card names its repository in its `repo` field. A card with no `repo` field belongs to `board.repo`. Set it when you create the card with `board-create.sh <title> <body-file> --repo OWNER/NAME`. `config.sh` exits 5 with the entry's index when `board.repos` is not a list or an entry breaks these rules.
 
 ## `board.terminal_command`
 

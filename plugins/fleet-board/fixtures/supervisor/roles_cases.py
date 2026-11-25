@@ -96,6 +96,19 @@ def with_plans(*plans):
     return deco
 
 
+def test_a_dispatch_with_no_agent_has_no_agent_flag_and_lists_its_tools_before_the_permission_mode():
+    os.environ.pop('FLEET_BOARD_PLUGIN_DIR', None)
+    os.environ['FLEET_BOARD_CLAUDE'] = '/bin/claude-x'
+    try:
+        argv = roles.command(Dispatch('claude', None, 'claude', 'sonnet', False), 'PROMPT', CONFIG, PLUGIN)
+    finally:
+        os.environ.pop('FLEET_BOARD_CLAUDE', None)
+    assert argv == ['/bin/claude-x', '-p', 'PROMPT', '--model', 'sonnet', '--tools', 'Read,Write,Bash,Grep,Glob',
+                    '--permission-mode', 'auto', '--output-format', 'stream-json', '--verbose',
+                    '--max-turns', '200'], argv
+    assert None not in argv and '--agent' not in argv
+
+
 def test_command_line_for_each_runner():
     os.environ.pop('FLEET_BOARD_PLUGIN_DIR', None)
     os.environ['FLEET_BOARD_CLAUDE'] = '/bin/claude-x'

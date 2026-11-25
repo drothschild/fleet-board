@@ -32,6 +32,9 @@ fb_load_config() {
   [ $rc -eq 0 ] || exit $rc
   local common; common="$(fb_git_common_dir .)"
   if [ -n "$common" ]; then FLEET_ROOT="$(dirname "$common")"; else FLEET_ROOT="$(pwd)"; fi
+  # A session the supervisor starts in another repo's checkout has FLEET_BOARD_HOME set to the home
+  # root: the board (cards, active markers) lives there. The config (merge policy) stays the cwd's.
+  if [ -n "${FLEET_BOARD_HOME:-}" ]; then FLEET_ROOT="$FLEET_BOARD_HOME"; fi
   FLEET_REPO="$(jq -r .board.repo <<<"$FLEET_CFG")"
   FLEET_SCRIPTS="$FB_SCRIPTS"
   export FLEET_CFG FLEET_ROOT FLEET_REPO FLEET_SCRIPTS

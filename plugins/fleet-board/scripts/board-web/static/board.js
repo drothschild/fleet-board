@@ -700,6 +700,8 @@ function renderCard(c, repo) {
   if (stuck) id.appendChild(el("span", "card-stuck-badge", "STUCK"));
   const attn = cardAttention(c);
   if (attn) id.appendChild(el("span", "card-attention-badge", "ATTENTION"));
+  if (c.proposal_kind === "rewrite") id.appendChild(el("span", "card-proposal-badge", "Rewrite proposed"));
+  if (c.proposal_kind === "close") id.appendChild(el("span", "card-proposal-badge", "Already built?"));
   if (c.acceptance_count > 0) id.appendChild(el("span", "card-acc", c.acceptance_count + " acceptance"));
   li.appendChild(id);
 
@@ -707,7 +709,16 @@ function renderCard(c, repo) {
   if (c.known === false) li.appendChild(el("div", "card-meta warn card-state", "state: " + c.state));
 
   const note = c.note || null;
-  const open = c.blocked && Array.isArray(c.open_blockers) ? c.open_blockers : [];
+  const stackedOn = Number.isInteger(c.stacked_on) ? c.stacked_on : null;
+  // the stack parent is shown as "stacked on", not as a second blocker
+  const open = (c.blocked && Array.isArray(c.open_blockers) ? c.open_blockers : []).filter(function (b) { return b !== stackedOn; });
+  if (stackedOn !== null) {
+    li.classList.add("stacked");
+    li.appendChild(el("div", "card-meta stacked-on", "stacked on #" + stackedOn));
+    if (typeof c.stack_attention === "string" && c.stack_attention) {
+      li.appendChild(el("div", "card-meta stack-attention", "landing needs attention: " + clean(c.stack_attention, 200)));
+    }
+  }
   if (open.length) {
     li.classList.add("blocked");
     li.appendChild(el("div", "card-meta blocked-by", "blocked by " + open.map(function (b) { return "#" + b; }).join(", ")));
@@ -1084,8 +1095,10 @@ function renderDrawer(card) {
   renderBodyPreview();
   renderDrawerMeta();
   renderHold(card);
+  renderStack(card);
   setAcceptError("");
   syncAccept();
+  renderPremise();
   $("dr-comments-sec").hidden = isNew;
   if (isNew) {
     $("dr-comments").replaceChildren();
@@ -1101,6 +1114,26 @@ function renderHold(card) {
   const hold = card && card.hold && typeof card.hold.reason === "string" ? card.hold : null;
   p.hidden = !hold;
   p.textContent = hold ? "Held: " + hold.reason + (hold.until ? " (until " + hold.until + ")" : "") : "";
+}
+
+// renderStack(card | null): the "Stacked on" field: the parent as a link that opens its drawer, and
+// any landing attention. Shown only for a stacked card.
+function renderStack(card) {
+  const field = $("dr-stack");
+  const on = card && Number.isInteger(card.stacked_on) ? card.stacked_on : null;
+  field.hidden = on === null;
+  const link = $("dr-stack-link");
+  const attn = $("dr-stack-attn");
+  link.textContent = on === null ? "" : "#" + on;
+  link.dataset.n = on === null ? "" : String(on);
+  const text = on !== null && typeof card.stack_attention === "string" && card.stack_attention
+    ? "landing needs attention: " + card.stack_attention : "";
+  attn.textContent = text;
+  attn.hidden = !text;
+  // one plain-text summary for assistive tech and text readers of the whole field
+  let sum = field.querySelector(".dr-stack-summary");
+  if (!sum) { sum = el("span", "sr-only dr-stack-summary"); field.appendChild(sum); }
+  sum.textContent = on === null ? "" : "stacked on #" + on + (text ? " " + text : "");
 }
 
 // fillRepoPicker(): the new-card Repo select, shown only when the board lists other repos.
@@ -1877,6 +1910,114 @@ async function acceptCard() {
   fetchBoard(true);
 }
 
+// --- premise proposal --------------------------------------------------------
+
+// scopeOf(body): the text of the body's ## Scope section, else "".
+function scopeOf(body) {
+  const m = /^#{1,6}\s*scope\s*$/im.exec(body || "");
+  if (!m) return "";
+  const rest = (body || "").slice(m.index + m[0].length);
+  const next = /^#{1,6}\s/m.exec(rest);
+  return (next ? rest.slice(0, next.index) : rest).trim();
+}
+
+function premiseList(items) {
+  const ul = el("ul", "premise-list");
+  items.forEach(function (t) { ul.appendChild(el("li", null, t)); });
+  return ul;
+}
+
+function premiseColumn(title, scope, acceptance) {
+  const col = el("div", "premise-col");
+  col.appendChild(el("h4", "premise-col-h", title));
+  col.appendChild(el("div", "premise-lbl", "Scope"));
+  col.appendChild(el("pre", "premise-pre", scope || "(none)"));
+  col.appendChild(el("div", "premise-lbl", "Acceptance"));
+  col.appendChild(premiseList(acceptance));
+  return col;
+}
+
+// renderPremise(): a Blocked card with a proposal shows it at the top of the drawer, with its buttons.
+function renderPremise() {
+  const d = S.drawer;
+  const sec = $("dr-premise");
+  sec.replaceChildren();
+  const card = d && d.card;
+  const p = card && card.state === "blocked" && card.proposal && typeof card.proposal === "object" ? card.proposal : null;
+  sec.hidden = !p;
+  if (!p) return;
+  const err = el("p", "dr-field-err", "");
+  err.hidden = true;
+  err.setAttribute("role", "alert");
+  const actions = el("div", "premise-actions");
+  const add = function (label, url, body) {
+    const b = el("button", "premise-btn", label);
+    b.type = "button";
+    b.addEventListener("click", function () { return pressPremise(b, actions, err, url, body); });
+    actions.appendChild(b);
+  };
+  const acc = Array.isArray(card.acceptance) ? card.acceptance : [];
+  if (p.kind === "rewrite") {
+    sec.appendChild(el("h3", "dr-h", "Rewrite proposed"));
+    sec.appendChild(el("p", "premise-summary", p.summary || ""));
+    const cols = el("div", "premise-cols");
+    cols.appendChild(premiseColumn("Current", scopeOf(card.body), acc));
+    cols.appendChild(premiseColumn("Proposed", p.scope, Array.isArray(p.acceptance) ? p.acceptance : []));
+    sec.appendChild(cols);
+    add("Approve rewrite", "/api/cards/" + d.n + "/premise/approve", {});
+    add("Reject", "/api/cards/" + d.n + "/premise/reject", {});
+  } else if (p.kind === "close") {
+    sec.appendChild(el("h3", "dr-h", "Already built?"));
+    const ev = Array.isArray(p.evidence) ? p.evidence : [];
+    const ol = el("ol", "premise-evidence");
+    ev.forEach(function (e) {
+      const li = el("li", null);
+      li.appendChild(el("div", "premise-item", typeof acc[e.item - 1] === "string" ? acc[e.item - 1] : "Item " + e.item));
+      li.appendChild(el("pre", "premise-pre", "$ " + e.command));
+      li.appendChild(el("pre", "premise-pre", e.output));
+      ol.appendChild(li);
+    });
+    sec.appendChild(ol);
+    add("Close as built", "/api/cards/" + d.n + "/premise/confirm", {});
+    add("Build it anyway", "/api/cards/" + d.n + "/move", { state: "ready" });
+  } else {
+    sec.hidden = true;
+    return;
+  }
+  sec.appendChild(actions);
+  sec.appendChild(err);
+}
+
+// pressPremise: one POST; every button stays disabled while it is open.
+async function pressPremise(btn, actions, err, url, body) {
+  const d = S.drawer;
+  if (!d || d.premiseBusy) return;
+  d.premiseBusy = true;
+  Array.from(actions.children).forEach(function (b) { b.disabled = true; });
+  err.hidden = true;
+  const r = await writeApi("POST", url, body);
+  d.premiseBusy = false;
+  if (S.drawer !== d) {
+    fetchBoard(true);
+    return;
+  }
+  if (!r.ok) {
+    Array.from(actions.children).forEach(function (b) { b.disabled = false; });
+    err.textContent = errorText(r);
+    err.hidden = false;
+    return;
+  }
+  if (r.data && typeof r.data.state === "string") {
+    d.base.state = r.data.state;
+    d.card = r.data;
+    fillStateSelect(r.data.state);
+    updateDirty();
+  }
+  renderPremise();
+  syncAccept();
+  fetchBoard(true);
+}
+
 // syncDrawer(): after a board poll, refresh the live parts of the drawer.
 function syncDrawer() {
   const d = S.drawer;
@@ -1924,6 +2065,10 @@ function bindDrawer() {
     }
   });
   $("dr-acc-input").addEventListener("input", updateDirty);
+  $("dr-stack-link").addEventListener("click", function () {
+    const n = Number($("dr-stack-link").dataset.n);
+    if (Number.isInteger(n) && n > 0) openDrawer(n, $("dr-stack-link"));
+  });
   $("dr-blk-input").addEventListener("keydown", function (e) {
     if (e.key === "Enter") {
       e.preventDefault();

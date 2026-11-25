@@ -190,6 +190,7 @@ api() {
   [ "${NOHDR:-0}" = 1 ] || args+=(-H 'X-Fleet-Board: 1')
   [ -z "${ORIGIN:-}" ] || args+=(-H "Origin: $ORIGIN")
   [ -z "${HOSTHDR:-}" ] || args+=(-H "Host: $HOSTHDR")
+  [ -z "${LOGINHDR:-}" ] || args+=(-H "Tailscale-User-Login: $LOGINHDR")
   if [ $# -ge 3 ]; then args+=(-H 'Content-Type: application/json' --data-binary "$3"); fi
   : > "$BODY_FILE"
   LAST_CODE="$(curl "${args[@]}" "http://127.0.0.1:$PORT$2")"
@@ -384,7 +385,7 @@ if setup_case; then
   assert_code 200
   api GET /static/index.html
   assert_code 200
-  if grep -q 'id="import-btn"' "$SCRIPTS/board-web/static/index.html" || grep -q 'Import plan' "$SCRIPTS/board-web/static/index.html"; then
+  if grep -q 'id="import-btn"' "$SCRIPTS/board-web/static/index.html" || grep -c 'Import plan' "$SCRIPTS/board-web/static/index.html" >/dev/null; then
     fail "index.html no longer contains the Import plan button" "import-btn or the text Import plan still present"
   else
     pass "index.html no longer contains the Import plan button"
@@ -691,9 +692,14 @@ if setup_case; then
   real_idir="$(python3 -I -c 'import os,sys; print(os.path.realpath(sys.argv[1]).strip("/"))' "$TMP/logs/web/acme-toy/imports/fixed")"
   want_allowed="Bash(cp $TMP/logs/web/acme-toy/imports/fixed/cards.draft.json $TMP/logs/web/acme-toy/imports/fixed/cards.json) Bash(bash $SCRIPTS/import-plan.sh *) Edit(//$real_idir/**) Read(//$real_idir/**)"
   if [ -n "$allowed" ] && [ "$allowed" = "$want_allowed" ] \
-     && ! printf '%s' "$allowed" | grep -q 'mktemp' && ! printf '%s' "$allowed" | grep -q 'Write(' \
-     && ! printf '%s' "$allowed" | grep -qF "Edit(//$(python3 -I -c 'import os,tempfile; print(os.path.realpath(tempfile.gettempdir()).strip("/"))')/**)"; then pass "import allowedTools are exactly the four import-folder rules"; else fail "import allowedTools are exactly the four import-folder rules" "want: $want_allowed; allowed: $allowed"; fi
+     && ! printf '%s' "$allowed" | grep -c 'mktemp' >/dev/null && ! printf '%s' "$allowed" | grep -c 'Write(' >/dev/null \
+     && ! printf '%s' "$allowed" | grep -cF "Edit(//$(python3 -I -c 'import os,tempfile; print(os.path.realpath(tempfile.gettempdir()).strip("/"))')/**)" >/dev/null; then pass "import allowedTools are exactly the four import-folder rules"; else fail "import allowedTools are exactly the four import-folder rules" "want: $want_allowed; allowed: $allowed"; fi
   if grep -q -- '--allowedTools .* --max-turns .* /fleet-board:import-plan' "$FAKE_CLAUDE_DIR/args.log"; then pass "an option follows each variadic list, before the prompt"; else fail "an option follows each variadic list, before the prompt" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
+  ARGV_FILE="$TMP/logs/web/acme-toy/imports/fixed/session.argv"
+  if [ -s "$ARGV_FILE" ] && [ "$(head -1 "$ARGV_FILE")" = "$FAKE_IMPORT_CLAUDE" ] && [ "$(tail -1 "$ARGV_FILE")" = "<prompt>" ] && ! grep -q 'import-plan .*plan.md' "$ARGV_FILE"; then pass "the session argv is written to the import folder with the prompt shortened"; else fail "the session argv is written to the import folder with the prompt shortened" "file: $(cat "$ARGV_FILE" 2>/dev/null)"; fi
+  if grep -qxF "Bash(bash $SCRIPTS/import-plan.sh *)" "$ARGV_FILE" 2>/dev/null; then pass "the session argv holds the import-plan.sh allow rule"; else fail "the session argv holds the import-plan.sh allow rule" "file: $(cat "$ARGV_FILE" 2>/dev/null)"; fi
+  after_allowed="$(awk '/^--allowedTools$/ {f=1; next} f && /^(Bash|Edit|Read)\(/ {next} f {print; exit}' "$ARGV_FILE" 2>/dev/null)"
+  if [ -n "$after_allowed" ] && [ "$(awk '/^--allowedTools$/ {f=1; next} f && /^(Bash|Edit|Read)\(/ {n++; next} f {print n; exit}' "$ARGV_FILE")" = 4 ] && [ "${after_allowed#--}" != "$after_allowed" ]; then pass "an option, not a value, follows the four allowedTools rules in the argv file"; else fail "an option, not a value, follows the four allowedTools rules in the argv file" "next: $after_allowed"; fi
   if grep -q -- '--max-turns 7' "$FAKE_CLAUDE_DIR/args.log"; then pass "max turns from config"; else fail "max turns from config" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
   if grep -q -- '-p --output-format stream-json --verbose' "$FAKE_CLAUDE_DIR/args.log"; then pass "headless stream-json flags"; else fail "headless stream-json flags" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
   api GET /api/import/fixed
@@ -802,14 +808,22 @@ EOF
   if [ "$(tr '\n' ',' < "$FAKE_CREATE_LOG" 2>/dev/null)" = "y,m," ]; then pass "embed_docs false sends m"; else fail "embed_docs false sends m" "stdin: $(tr '\n' ',' < "$FAKE_CREATE_LOG" 2>/dev/null)"; fi
   rm -f "$FAKE_CLAUDE_DIR/fixture"
 
-  # FLEET_BOARD_PLUGIN_DIR adds --plugin-dir to the session's argv; without it there is none.
-  if ! grep -q -- '--plugin-dir' "$FAKE_CLAUDE_DIR/args.log"; then pass "no --plugin-dir without FLEET_BOARD_PLUGIN_DIR"; else fail "no --plugin-dir without FLEET_BOARD_PLUGIN_DIR" "args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
+  # The session loads the plugin the page itself runs (--plugin-dir <the plugin root of the page's scripts>), so the
+  # skill's script path is the one the allow rule names; a session that loaded another install was denied its dry run
+  # (card 501). FLEET_BOARD_PLUGIN_DIR overrides it.
+  PLUGIN_ROOT_OF_SCRIPTS="$(dirname "$SCRIPTS")"
+  # args.log holds one line per session so far: each has exactly one --plugin-dir, and it is that root
+  if [ "$(grep -c . "$FAKE_CLAUDE_DIR/args.log")" = "$(grep -o -- '--plugin-dir [^ ]*' "$FAKE_CLAUDE_DIR/args.log" | grep -c .)" ] \
+     && [ "$(grep -o -- '--plugin-dir [^ ]*' "$FAKE_CLAUDE_DIR/args.log" | sort -u)" = "--plugin-dir $PLUGIN_ROOT_OF_SCRIPTS" ]; then pass "without FLEET_BOARD_PLUGIN_DIR every session gets exactly one --plugin-dir, the plugin root of the page's scripts"; else fail "without FLEET_BOARD_PLUGIN_DIR every session gets exactly one --plugin-dir, the plugin root of the page's scripts" "want $PLUGIN_ROOT_OF_SCRIPTS; args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
+  if grep -qxF -- "--plugin-dir" "$TMP/logs/web/acme-toy/imports/fixed/session.argv" 2>/dev/null && grep -qxF -- "$PLUGIN_ROOT_OF_SCRIPTS" "$TMP/logs/web/acme-toy/imports/fixed/session.argv"; then pass "session.argv records the --plugin-dir"; else fail "session.argv records the --plugin-dir" "file: $(cat "$TMP/logs/web/acme-toy/imports/fixed/session.argv" 2>/dev/null)"; fi
+  if grep -q -- "--plugin-dir $PLUGIN_ROOT_OF_SCRIPTS .*/fleet-board:import-plan" "$FAKE_CLAUDE_DIR/args.log"; then pass "--plugin-dir comes before the prompt"; else fail "--plugin-dir comes before the prompt" "args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
   : > "$FAKE_CLAUDE_DIR/args.log"
   stop_server
   export FLEET_BOARD_TEST_IMPORT_ID=fixed7
   FLEET_BOARD_PLUGIN_DIR=/x start_server "$REPO"
   api POST /api/import '{"plan":"x","status":"backlog"}'; assert_code 200
   wait_for 'api GET /api/import/fixed7; body_is .state ready'
+  if [ "$(grep -c . "$FAKE_CLAUDE_DIR/args.log")" = 1 ] && [ "$(grep -o -- '--plugin-dir [^ ]*' "$FAKE_CLAUDE_DIR/args.log" | tr '\n' '|')" = "--plugin-dir /x|" ]; then pass "FLEET_BOARD_PLUGIN_DIR=/x replaces the default: exactly one --plugin-dir, /x"; else fail "FLEET_BOARD_PLUGIN_DIR=/x replaces the default: exactly one --plugin-dir, /x" "args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
   if grep -q -- '--plugin-dir /x ' "$FAKE_CLAUDE_DIR/args.log"; then pass "FLEET_BOARD_PLUGIN_DIR=/x adds --plugin-dir /x to the session argv"; else fail "FLEET_BOARD_PLUGIN_DIR=/x adds --plugin-dir /x to the session argv" "args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
 
   # A session outliving a server restart is still running, then ready.
@@ -1155,8 +1169,8 @@ PORT="$(free_port)"
 FLEET_BOARD_LOG_DIR="$TMP/launch-logs" "$BASH_EXE" "$SCRIPTS/board-web.sh" --repo "$LOCAL_WT" --port "$PORT" > "$LAUNCH_OUT" 2> "$TMP/launch.err" < /dev/null &
 SERVER_PID=$!
 i=0
-while [ $i -lt 50 ] && ! head -n 1 "$LAUNCH_OUT" | grep -q '^listening on http://127\.0\.0\.1:[0-9][0-9]*$'; do sleep 0.1; i=$((i + 1)); done
-if head -n 1 "$LAUNCH_OUT" | grep -q '^listening on http://127\.0\.0\.1:[0-9][0-9]*$'; then
+while [ $i -lt 50 ] && ! head -n 1 "$LAUNCH_OUT" | grep -c '^listening on http://127\.0\.0\.1:[0-9][0-9]*$' >/dev/null; do sleep 0.1; i=$((i + 1)); done
+if head -n 1 "$LAUNCH_OUT" | grep -c '^listening on http://127\.0\.0\.1:[0-9][0-9]*$' >/dev/null; then
   pass "board-web.sh starts the server"
 else
   fail "board-web.sh starts the server" "stdout: $(cat "$LAUNCH_OUT"); stderr: $(cat "$TMP/launch.err")"
@@ -1629,12 +1643,12 @@ import web_cases as wc  # pops the temp dir off sys.argv, as web_cases does when
 
 class BoardReviewers(wc.SupervisorWebContract):
 
-    def write_review_card(self, n, state, reviews, round_=2):
+    def write_review_card(self, n, state, reviews, round_=2, extra=None, labels=None):
         fence = "`" * 3
-        note = {"round": round_, "pr": 41, "reviews": reviews}
+        note = dict({"round": round_, "pr": 41, "reviews": reviews}, **(extra or {}))
         body = "<!-- fleet-board:manager-note -->\n%sjson\n%s\n%s\n" % (fence, json.dumps(note), fence)
         (self.repo / ".fleet-board" / "cards" / ("%d.json" % n)).write_text(json.dumps(
-            {"number": n, "title": "card %d" % n, "state": state, "labels": [], "body": "",
+            {"number": n, "title": "card %d" % n, "state": state, "labels": labels or [], "body": "",
              "updated_at": "2026-11-11T10:00:00Z", "next_comment_id": 2,
              "comments": [{"id": 1, "author": "web-test", "body": body}]}), encoding="utf-8")
 
@@ -1645,7 +1659,7 @@ class BoardReviewers(wc.SupervisorWebContract):
             "    - name: perf\n      agent: reviewer\n      label: review-perf\n", encoding="utf-8")
         self.write_review_card(1, "in_review", {
             "evidence": {"round": 2, "sha": "abc123", "critical": 0, "important": 0},
-            "security": {"round": 2, "sha": "abc123", "critical": 1, "important": 0}})
+            "security": {"round": 2, "sha": "abc123", "critical": 1, "important": 0}}, labels=["review-perf"])
         self.write_review_card(2, "in_progress", {})
         self.start_web()
         code, body = self.http("GET", "/api/board")
@@ -1659,6 +1673,67 @@ class BoardReviewers(wc.SupervisorWebContract):
         self.assertEqual(got["perf"]["status"], "pending")
         self.assertEqual((got["perf"]["passes"], got["perf"]["required_passes"]), (0, 1))
         self.assertEqual(by_n[2].get("reviewers"), [])
+
+    def test_board_in_review_card_counts_the_clean_pass_records_at_the_head(self):
+        self.config.write_text(
+            "board:\n  repo: acme/toy\nreview:\n  stages:\n"
+            "    - name: security\n      agent: reviewer\n      label: review-security\n      required_passes: 3\n", encoding="utf-8")
+        head = "a" * 40
+        other = "b" * 40
+        rec = lambda i, sha, crit=0: {"pass": i, "round": 2, "sha": sha, "critical": crit, "important": 0}
+        self.write_review_card(1, "in_review", {"security": {"round": 2, "sha": head, "critical": 0, "important": 0, "pass": 2}},
+                               extra={"review_passes": {"security": [rec(1, head), rec(2, head), rec(3, other)]}})
+        self.write_review_card(2, "in_review", {"security": {"round": 2, "sha": head, "critical": 1, "important": 0, "pass": 3}},
+                               extra={"review_passes": {"security": [rec(1, head), rec(2, head), rec(3, head, 1)]}})
+        self.start_web()
+        code, body = self.http("GET", "/api/board")
+        self.assertEqual(code, 200, body)
+        by_n = {c["number"]: c for c in body["cards"]}
+        sec = lambda n: [r for r in by_n[n]["reviewers"] if r["name"] == "security"][0]
+        self.assertEqual({k: sec(1)[k] for k in ("status", "passes", "required_passes")},
+                         {"status": "pending", "passes": 2, "required_passes": 3})
+        self.assertEqual((sec(2)["status"], sec(2)["passes"]), ("findings", 2))
+
+    STAGES_YML = ("board:\n  repo: acme/toy\nreview:\n  stages:\n"
+                  "    - name: docs\n      agent: reviewer\n      default: false\n"
+                  "    - name: blast\n      agent: reviewer\n      default: true\n"
+                  "    - name: sec\n      agent: reviewer\n      label: review-security\n")
+
+    def reviewer_names(self, n, by_n):
+        mine = ("evidence", "docs", "blast", "sec")   # the built-in stages are merged in too; look only at these
+        return {r["name"]: r["status"] for r in by_n[n]["reviewers"] if r["name"] in mine}
+
+    def board_by_n(self):
+        self.start_web()
+        code, body = self.http("GET", "/api/board")
+        self.assertEqual(code, 200, body)
+        return {c["number"]: c for c in body["cards"]}
+
+    def test_board_in_review_card_with_no_stage_label_and_no_record_lists_evidence_and_default_true_stages_only(self):
+        self.config.write_text(self.STAGES_YML, encoding="utf-8")
+        self.write_review_card(1, "in_review", {})
+        got = self.reviewer_names(1, self.board_by_n())
+        self.assertEqual(got, {"evidence": "pending", "blast": "pending"})
+
+    def test_board_in_review_card_carrying_a_default_false_stage_label_lists_that_stage_as_pending(self):
+        self.config.write_text(self.STAGES_YML, encoding="utf-8")
+        self.write_review_card(1, "in_review", {}, labels=["needs-docs-review"])
+        got = self.reviewer_names(1, self.board_by_n())
+        self.assertEqual(got, {"evidence": "pending", "docs": "pending", "blast": "pending"})
+
+    def test_board_in_review_card_with_no_label_and_a_record_from_a_default_false_stage_lists_it_with_the_status_its_record_gives(self):
+        self.config.write_text(self.STAGES_YML, encoding="utf-8")
+        self.write_review_card(1, "in_review", {"docs": {"round": 2, "sha": "abc", "critical": 0, "important": 0}})
+        got = self.reviewer_names(1, self.board_by_n())
+        self.assertEqual(got, {"evidence": "pending", "docs": "clean", "blast": "pending"})
+
+    def test_board_in_review_stage_with_its_own_label_is_listed_for_that_label_and_not_for_needs_name_review(self):
+        self.config.write_text(self.STAGES_YML, encoding="utf-8")
+        self.write_review_card(1, "in_review", {}, labels=["review-security"])
+        self.write_review_card(2, "in_review", {}, labels=["needs-sec-review"])
+        by_n = self.board_by_n()
+        self.assertIn("sec", self.reviewer_names(1, by_n))
+        self.assertNotIn("sec", self.reviewer_names(2, by_n))
 
 
 names = [n for n in dir(BoardReviewers) if n.startswith("test_board_in_review")]
@@ -1717,7 +1792,7 @@ ms_absent "a card outside Merging shows no merge step text" "Merging PR" in_revi
 rm -rf "$MS_TMP"
 
 # Card 409: the card view serves a session log through supervisor/sessiontext.py.
-if grep -rl sessiontext "$SCRIPTS" --include='*.py' | grep -v '/sessiontext\.py$' | grep -q .; then
+if grep -rl sessiontext "$SCRIPTS" --include='*.py' | grep -v '/sessiontext\.py$' | grep -c . >/dev/null; then
   pass "a python script besides sessiontext.py calls sessiontext"
 else
   fail "a python script besides sessiontext.py calls sessiontext" "no caller found under $SCRIPTS"
@@ -1795,6 +1870,71 @@ rt_line() { printf '%s\n' "$RT_OUT" | grep "^$1|" | head -n1; }
 [ "$(rt_line first)" = "first|card-2-fix-5000-1|True" ] && pass "while a supervisor runs, the card's running session appears first, marked running" || fail "while a supervisor runs, the card's running session appears first, marked running" "$RT_OUT"
 [ "$(rt_line later)" = "later|False" ] && pass "ledger sessions are not marked running" || fail "ledger sessions are not marked running" "$RT_OUT"
 [ "$(rt_line dups)" = "dups|1" ] && pass "a session that has ended and reached the ledger is listed once, not twice" || fail "a session that has ended and reached the ledger is listed once, not twice" "$RT_OUT"
+
+# Card 481: a session the list marks running can be opened; its log is read as a snapshot (no ledger line yet).
+echo "Case: a running session's transcript is served, not a 404"
+RS_LOG_DIR="$TMP/logs"; mkdir -p "$RS_LOG_DIR/sessions"
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"still working on it"}]}}' > "$RS_LOG_DIR/sessions/card-2-review-6000-1.jsonl"
+RS_OUT="$(SCRIPTS="$SCRIPTS" RT_REPO="$REPO" SESS="$RS_LOG_DIR/sessions" FLEET_BOARD_LOG_DIR="$RS_LOG_DIR" python3 -I - <<'PYEOF'
+import importlib.util, os
+spec = importlib.util.spec_from_file_location("board_web", os.path.join(os.environ["SCRIPTS"], "board-web.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.APP.update(root=os.environ["RT_REPO"], scripts=os.environ["SCRIPTS"])
+sess = os.environ["SESS"]
+def status(log):
+    return {"phase": "running", "desired_mode": "running", "pid": 1,
+            "active": [{"card": 2, "action": "review", "role": "reviewer", "log": log}]}
+m.supervisor_status = lambda: status(sess + "/card-2-review-6000-1.jsonl")
+listed = [x["id"] for x in m.get_transcripts({"n": 2}, None)[1] if x.get("running")]
+print("listed|%s" % ",".join(listed))
+try:
+    code, body = m.get_transcript({"n": 2, "id": "card-2-review-6000-1"}, None)
+    print("code|%s" % code)
+    print("text|%s" % ("yes" if "still working on it" in str(body) else "no"))
+except m.ApiError as exc:
+    print("code|%s" % exc.code)
+try:
+    m.get_transcript({"n": 1, "id": "card-2-review-6000-1"}, None)
+    print("other|served")
+except m.ApiError as exc:
+    print("other|%s" % exc.code)
+try:
+    m.get_transcript({"n": 2, "id": "card-2-review-9999-1"}, None)
+    print("unknown|served")
+except m.ApiError as exc:
+    print("unknown|%s" % exc.code)
+for odd in ({"active": 7}, {"active": [None, 5, {"card": 2, "log": None}, {"card": 2, "log": 9}]}, ["not", "a", "dict"]):
+    m.supervisor_status = lambda odd=odd: odd
+    try:
+        m.get_transcript({"n": 2, "id": "card-2-review-6000-1"}, None)
+        print("odd|served")
+    except m.ApiError as exc:
+        print("odd|%s" % exc.code)
+outside = os.path.join(os.path.dirname(sess), "elsewhere-2-review-7000-1.jsonl")
+open(outside, "w").write('{"type":"assistant","message":{"content":[{"type":"text","text":"secret"}]}}\n')
+m.supervisor_status = lambda: status(outside)
+try:
+    m.get_transcript({"n": 2, "id": "elsewhere-2-review-7000-1"}, None)
+    print("outside|served")
+except m.ApiError as exc:
+    print("outside|%s" % exc.code)
+m.supervisor_status = lambda: None
+try:
+    m.get_transcript({"n": 2, "id": "card-2-review-6000-1"}, None)
+    print("stopped|served")
+except m.ApiError as exc:
+    print("stopped|%s" % exc.code)
+PYEOF
+)"
+rs_line() { printf '%s\n' "$RS_OUT" | grep "^$1|" | head -n1; }
+[ "$(rs_line listed)" = "listed|card-2-review-6000-1" ] && pass "the list marks the running session" || fail "the list marks the running session" "$RS_OUT"
+[ "$(rs_line code)" = "code|200" ] && pass "a session the list marks running is served with 200" || fail "a session the list marks running is served with 200" "$RS_OUT"
+[ "$(rs_line text)" = "text|yes" ] && pass "its text is the log as read now" || fail "its text is the log as read now" "$RS_OUT"
+[ "$(rs_line other)" = "other|404" ] && pass "another card cannot read a running session of this card" || fail "another card cannot read a running session of this card" "$RS_OUT"
+[ "$(rs_line unknown)" = "unknown|404" ] && pass "an id no running action names is still a 404" || fail "an id no running action names is still a 404" "$RS_OUT"
+[ "$(printf '%s\n' "$RS_OUT" | grep -c '^odd|404$')" = 3 ] && pass "a malformed supervisor status or a null/non-string log is a 404, never a 500" || fail "a malformed supervisor status or a null/non-string log is a 404, never a 500" "$RS_OUT"
+[ "$(rs_line outside)" = "outside|404" ] && pass "a running action whose log is outside the sessions directory is a 404" || fail "a running action whose log is outside the sessions directory is a 404" "$RS_OUT"
+[ "$(rs_line stopped)" = "stopped|404" ] && pass "with no supervisor, a session with no ledger line is a 404" || fail "with no supervisor, a session with no ledger line is a 404" "$RS_OUT"
 
 # Card 426: the board page shows a card's repo and lists the configured repos.
 echo "Case: /api/board card summaries carry repo and the reply lists repos from config"
@@ -1918,6 +2058,221 @@ else
   fail "the stored home-repo card has no repo key" "$(cat "$CR_REPO/.fleet-board/cards/$CR_N.json")"
 fi
 stop_server
+
+echo "Case: card payload has stacked_on and stack_attention"
+ST_REPO="$(new_repo "$LOCAL_YML")"
+mkdir -p "$ST_REPO/.fleet-board/cards" "$ST_REPO/.fleet-board/active"
+echo 4 > "$ST_REPO/.fleet-board/next"
+ST_FENCE='```'
+st_note() {
+  printf '<!-- fleet-board:manager-note -->\n%sjson\n{"round":1,"stack":%s}\n%s\n' "$ST_FENCE" "$1" "$ST_FENCE"
+}
+ST_C1="$(jq -n --arg b "$(st_note '{"parent":11,"base":"fleet/11-parent","start":"0123456789abcdef0123456789abcdef01234567","attention":"parent closed unmerged"}')" '[{id: 1, author: "tester", body: $b, created_at: "2026-01-01T00:00:00Z"}]')"
+REPO="$ST_REPO" seed_card 1 in_progress "Stacked" "b" "$ST_C1"
+REPO="$ST_REPO" seed_card 2 in_progress "Unstacked" "b"
+start_server "$ST_REPO"
+api GET /api/board
+assert_code 200
+assert_body "board payload: stacked_on is 11 for a stacked card" '.cards[]|select(.number==1)|.stacked_on' 11
+assert_body "board payload: stacked_on is null for an unstacked card" '.cards[]|select(.number==2)|.stacked_on|tojson' null
+assert_body "board payload: stack_attention is the text for a stacked card" '.cards[]|select(.number==1)|.stack_attention' 'parent closed unmerged'
+assert_body "board payload: stack_attention is null for an unstacked card" '.cards[]|select(.number==2)|.stack_attention|tojson' null
+api GET /api/cards/1
+assert_body "detail payload: stacked_on is 11 for a stacked card" '.stacked_on' 11
+assert_body "detail payload: stack_attention for a stacked card" '.stack_attention' 'parent closed unmerged'
+api GET /api/cards/2
+assert_body "detail payload: stacked_on is null for an unstacked card" '.stacked_on|tojson' null
+stop_server
+
+# --- premise proposal: payload keys and the three premise routes ---
+PR_REPO="$(new_repo "$LOCAL_YML")"
+mkdir -p "$PR_REPO/.fleet-board/cards" "$PR_REPO/.fleet-board/active"
+echo 10 > "$PR_REPO/.fleet-board/next"
+PR_HEAD="0123456789abcdef0123456789abcdef01234567"
+REPO="$PR_REPO" seed_card 1 blocked "Rewrite me" "b"
+jq --arg h "$PR_HEAD" '.proposal = {kind: "rewrite", scope: "- src/a.sh", acceptance: ["a works"], summary: "tighten", head: $h, at: "2026-01-01T00:00:00Z"}' "$PR_REPO/.fleet-board/cards/1.json" > "$TMP/pr1.json" && mv "$TMP/pr1.json" "$PR_REPO/.fleet-board/cards/1.json"
+REPO="$PR_REPO" seed_card 2 blocked "Already built" "b"
+jq --arg h "$PR_HEAD" '.proposal = {kind: "close", evidence: [{item: 1, command: "ls", output: "x"}], head: $h, at: "2026-01-01T00:00:00Z"}' "$PR_REPO/.fleet-board/cards/2.json" > "$TMP/pr2.json" && mv "$TMP/pr2.json" "$PR_REPO/.fleet-board/cards/2.json"
+REPO="$PR_REPO" seed_card 3 blocked "Malformed proposal" "b"
+jq '.proposal = {kind: "rewrite", scope: 7}' "$PR_REPO/.fleet-board/cards/3.json" > "$TMP/pr3.json" && mv "$TMP/pr3.json" "$PR_REPO/.fleet-board/cards/3.json"
+REPO="$PR_REPO" seed_card 4 ready "No proposal" "b"
+PR_SCRIPTS="$TMP/pr-scripts"
+cp -R "$SCRIPTS" "$PR_SCRIPTS"
+PR_LOG="$TMP/premise-calls.log"
+: > "$PR_LOG"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nif [ "$2" = 7 ]; then echo "card #7 has no close proposal to confirm" >&2; exit 1; fi\nexit 0\n' "$PR_LOG" > "$PR_SCRIPTS/premise-settle.sh"
+SERVER_PY="$PR_SCRIPTS/board-web.py" SCRIPTS="$PR_SCRIPTS" start_server "$PR_REPO"
+api GET /api/cards/1
+assert_body "GET /api/cards/<n> carries the rewrite proposal" '.proposal.kind' rewrite
+assert_body "GET /api/cards/<n> carries premise (null when unset)" 'has("premise")' true
+api GET /api/cards/2
+assert_body "GET /api/cards/<n> carries the close proposal" '.proposal.kind' close
+api GET /api/cards/3
+assert_body "a card with a malformed proposal reports proposal null" '.proposal|tojson' null
+api GET /api/cards/4
+assert_body "a card with no proposal reports proposal null" '.proposal|tojson' null
+api GET /api/board
+assert_body "board summary proposal_kind is rewrite" '.cards[]|select(.number==1)|.proposal_kind' rewrite
+assert_body "board summary proposal_kind is close" '.cards[]|select(.number==2)|.proposal_kind' close
+assert_body "board summary proposal_kind is null for a malformed proposal" '.cards[]|select(.number==3)|.proposal_kind|tojson' null
+assert_body "board summary proposal_kind is null for no proposal" '.cards[]|select(.number==4)|.proposal_kind|tojson' null
+api POST /api/cards/1/premise/approve '{}'
+assert_code 200
+api POST /api/cards/2/premise/confirm '{}'
+assert_code 200
+api POST /api/cards/1/premise/reject '{}'
+assert_code 200
+if [ "$(cat "$PR_LOG")" = "$(printf 'approve 1\nconfirm 2\nreject 1')" ]; then pass "each premise route runs its premise-settle.sh verb once"; else fail "each premise route runs its premise-settle.sh verb once" "log: $(cat "$PR_LOG")"; fi
+REPO="$PR_REPO" seed_card 7 blocked "Settle fails" "b"
+api POST /api/cards/7/premise/confirm '{}'
+assert_code 409
+assert_body "a premise verb that exits non-zero gives its stderr in the 409" '.error' '*has no close proposal to confirm*'
+api POST /api/cards/99/premise/approve '{}'
+assert_code 404
+stop_server
+
+echo "Case: board.allowed_hosts widens the Host and Origin checks"
+# assert_named <code> <desc>: LAST_CODE must equal <code>; the test is named by its Acceptance text.
+assert_named() {
+  if [ "$LAST_CODE" = "$1" ]; then pass "$2 -> $1"; else fail "$2 -> $1" "got $LAST_CODE: $(cat "$BODY_FILE")"; fi
+}
+SAVED_YML="$LOCAL_YML"
+if setup_case; then
+  HOSTHDR="mac.tail1234.ts.net" api GET /api/board
+  assert_named 403 "With board.allowed_hosts empty, a GET with Host: mac.tail1234.ts.net is 403"
+  api GET /api/board
+  assert_code 200
+  stop_server
+fi
+LOCAL_YML='board:
+  repo: acme/toy
+  allowed_hosts: ["mac.tail1234.ts.net"]
+  tailscale:
+    allowed_logins: ["owner@example.com"]
+worktrees:
+  dir: .fw'
+if setup_case; then
+  LOCAL_YML="$SAVED_YML"
+  export LOGINHDR="owner@example.com"
+  HOSTHDR="mac.tail1234.ts.net" api GET /api/board
+  assert_named 200 "With board.allowed_hosts set, a GET to /api/board with Host: mac.tail1234.ts.net passes the Host check"
+  HOSTHDR="mac.tail1234.ts.net.evil.com" api GET /api/board
+  assert_named 403 "With that setting, a GET with Host: mac.tail1234.ts.net.evil.com is 403"
+  HOSTHDR="evil.mac.tail1234.ts.net" api GET /api/board
+  assert_named 403 "With that setting, a GET with Host: evil.mac.tail1234.ts.net is 403"
+  HOSTHDR="mac.tail1234.ts.net" ORIGIN="https://mac.tail1234.ts.net" api POST /api/cards '{"title":"Via tailnet","body":"b"}'
+  assert_named 200 "With that setting, a POST with X-Fleet-Board: 1 and Origin: https://mac.tail1234.ts.net passes the Origin check"
+  HOSTHDR="mac.tail1234.ts.net" ORIGIN="http://mac.tail1234.ts.net" api POST /api/cards '{"title":"Http origin","body":"b"}'
+  assert_named 403 "With that setting, a POST with Origin: http://mac.tail1234.ts.net (http, not https) is 403"
+  HOSTHDR="mac.tail1234.ts.net" NOHDR=1 ORIGIN="https://mac.tail1234.ts.net" api POST /api/cards '{"title":"No header","body":"b"}'
+  assert_named 403 "With that setting, a POST with an allowed Origin but no X-Fleet-Board header is 403"
+  api GET /api/board
+  assert_named 200 "A GET with Host: 127.0.0.1:<port> still passes with allowed_hosts set"
+  stop_server
+  unset LOGINHDR
+fi
+LOCAL_YML="$SAVED_YML"
+
+echo "Case: a tailnet Host needs a loopback peer and an allowed Tailscale login"
+SECRET_LOGIN="mallory-secret@example.com"
+LOCAL_YML='board:
+  repo: acme/toy
+  allowed_hosts: ["mac.tail1234.ts.net"]
+  tailscale:
+    allowed_logins: ["owner@example.com"]
+worktrees:
+  dir: .fw'
+if setup_case; then
+  LOCAL_YML="$SAVED_YML"
+  HOSTHDR="mac.tail1234.ts.net" LOGINHDR="owner@example.com" api GET /api/board
+  assert_named 200 "A request with an allowed Host, a loopback peer and a Tailscale-User-Login in board.tailscale.allowed_logins is served"
+  HOSTHDR="mac.tail1234.ts.net" api GET /api/board
+  assert_named 403 "A request with an allowed Host and no Tailscale-User-Login header is 403"
+  HOSTHDR="mac.tail1234.ts.net" LOGINHDR="$SECRET_LOGIN" api GET /api/board
+  assert_named 403 "A request with an allowed Host and a Tailscale-User-Login that is not in allowed_logins is 403"
+  if grep -qF "$SECRET_LOGIN" "$BODY_FILE"; then fail "The 403 body does not contain the login value that was sent" "$(cat "$BODY_FILE")"; else pass "The 403 body does not contain the login value that was sent"; fi
+  if grep -qF "$SECRET_LOGIN" "$TMP/server.err"; then fail "The board log line for a refused login does not contain the login value that was sent" "$(cat "$TMP/server.err")"; else pass "The board log line for a refused login does not contain the login value that was sent"; fi
+  if grep -q "refused" "$TMP/server.err"; then pass "A refused tailnet login is logged"; else fail "A refused tailnet login is logged" "$(cat "$TMP/server.err")"; fi
+  api GET /api/board
+  assert_named 200 "A request with Host: 127.0.0.1:<port> and no identity header is served as before"
+  stop_server
+fi
+LOCAL_YML='board:
+  repo: acme/toy
+  allowed_hosts: ["mac.tail1234.ts.net"]
+worktrees:
+  dir: .fw'
+if setup_case; then
+  LOCAL_YML="$SAVED_YML"
+  HOSTHDR="mac.tail1234.ts.net" LOGINHDR="owner@example.com" api GET /api/board
+  assert_named 403 "A request with an allowed Host and an empty allowed_logins is 403, whatever login it sends"
+  stop_server
+fi
+LOCAL_YML="$SAVED_YML"
+# A non-loopback peer cannot be made with curl against a loopback listener, so call the gate directly.
+PEER_OUT="$(python3 - "$SCRIPTS/board-web.py"<<'PY' 2>/dev/null
+import importlib.util, sys, tempfile, pathlib
+spec = importlib.util.spec_from_file_location("bw", sys.argv[1])
+bw = importlib.util.module_from_spec(spec); spec.loader.exec_module(bw)
+root = pathlib.Path(tempfile.mkdtemp())
+(root / ".fleet-board.yml").write_text('board:\n  repo: acme/toy\n  allowed_hosts: ["mac.tail1234.ts.net"]\n  tailscale:\n    allowed_logins: ["owner@example.com"]\n')
+bw.APP["root"] = root; bw.APP["scripts"] = pathlib.Path(sys.argv[1]).parent; bw.APP["port"] = 1
+class H:
+    def __init__(s, peer):
+        s.client_address = (peer, 5555)
+        s.headers = {"Host": "mac.tail1234.ts.net", "Tailscale-User-Login": "owner@example.com"}
+for peer in ("127.0.0.1", "10.0.0.5"):
+    try:
+        bw.check_access(H(peer)); print(peer, "served")
+    except bw.ApiError as e:
+        print(peer, e.code)
+PY
+)"
+if [ "$PEER_OUT" = "$(printf '127.0.0.1 served\n10.0.0.5 403')" ]; then pass "A request with an allowed Host and an allowed login whose peer address is not loopback (10.0.0.5) is 403 -> 403"; else fail "A request with an allowed Host and an allowed login whose peer address is not loopback (10.0.0.5) is 403 -> 403" "$PEER_OUT"; fi
+
+echo "Case: a tailnet user can start and stop the supervisor; Open terminal is refused for them"
+SAVED_YML="$LOCAL_YML"
+TT_LOG="$TMP/tt-term.log"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$TT_LOG" > "$TMP/tt-stub.sh"
+chmod +x "$TMP/tt-stub.sh"
+TT_YML="board:
+  repo: acme/toy
+  allowed_hosts: [\"mac.tail1234.ts.net\"]
+  tailscale:
+    allowed_logins: [\"owner@example.com\"]
+  terminal_command:
+    - \"$TMP/tt-stub.sh\"
+    - --open
+    - \"{dir}\"
+worktrees:
+  dir: .fw"
+TT_REPO="$(new_repo "$TT_YML")"
+mkdir -p "$TT_REPO/.fleet-board/cards" "$TT_REPO/wt-here"
+echo 4 > "$TT_REPO/.fleet-board/next"
+REPO="$TT_REPO" seed_card 1 in_progress "Has dir" "b" "$(jq -n --arg b "$(wt_note "$TT_REPO/wt-here")" '[{id: 1, author: "tester", body: $b, created_at: "2026-01-01T00:00:00Z"}]')"
+start_server "$TT_REPO"
+if [ "$(head -n 1 "$TMP/server.out")" = "listening on http://127.0.0.1:$PORT" ]; then pass "With board.allowed_hosts non-empty, the first stdout line is still listening on http://127.0.0.1:<port>"; else fail "With board.allowed_hosts non-empty, the first stdout line is still listening on http://127.0.0.1:<port>" "$(cat "$TMP/server.out")"; fi
+if grep -qF "mac.tail1234.ts.net" "$TMP/server.err" && grep -qF "owner@example.com" "$TMP/server.err"; then pass "With board.allowed_hosts non-empty, stderr at start names each allowed host and each allowed login"; else fail "With board.allowed_hosts non-empty, stderr at start names each allowed host and each allowed login" "$(cat "$TMP/server.err")"; fi
+export LOGINHDR="owner@example.com"
+HOSTHDR="mac.tail1234.ts.net" ORIGIN="https://mac.tail1234.ts.net" api POST /api/supervisor/stop '{}'
+if [ "$LAST_CODE" != 403 ]; then pass "A POST /api/supervisor/stop with an allowed tailnet Host, loopback peer, allowed login, X-Fleet-Board and https Origin reaches the stop handler: the response is not 403 -> $LAST_CODE"; else fail "A POST /api/supervisor/stop from an allowed tailnet identity reaches the stop handler" "got 403: $(cat "$BODY_FILE")"; fi
+HOSTHDR="mac.tail1234.ts.net" ORIGIN="https://mac.tail1234.ts.net" api POST /api/supervisor/start '{}'
+if [ "$LAST_CODE" != 403 ]; then pass "The same request to POST /api/supervisor/start reaches the start handler: the response is not 403 -> $LAST_CODE"; else fail "The same request to POST /api/supervisor/start reaches the start handler" "got 403: $(cat "$BODY_FILE")"; fi
+: > "$TT_LOG"
+HOSTHDR="mac.tail1234.ts.net" ORIGIN="https://mac.tail1234.ts.net" api POST /api/cards/1/terminal '{}'
+assert_named 403 "POST /api/cards/<n>/terminal from an allowed tailnet identity is 403"
+if [ ! -s "$TT_LOG" ]; then pass "POST /api/cards/<n>/terminal from an allowed tailnet identity does not run board.terminal_command"; else fail "board.terminal_command is not run for a tailnet identity" "log: $(cat "$TT_LOG")"; fi
+unset LOGINHDR
+: > "$TT_LOG"
+HOSTHDR="127.0.0.1:$PORT" api POST /api/cards/1/terminal '{}'
+assert_named 200 "POST /api/cards/<n>/terminal with Host: 127.0.0.1:<port> still runs board.terminal_command"
+if [ "$(cat "$TT_LOG")" = "--open $TT_REPO/wt-here" ]; then pass "POST /api/cards/<n>/terminal with Host: 127.0.0.1:<port> ran board.terminal_command once with the directory"; else fail "loopback terminal runs the command" "log: $(cat "$TT_LOG")"; fi
+stop_server
+LOCAL_YML="$SAVED_YML"
+if setup_case; then
+  if grep -qi "tailnet\|tailscale\|allowed" "$TMP/server.err"; then fail "With board.allowed_hosts empty, stderr at start has no tailnet warning" "$(cat "$TMP/server.err")"; else pass "With board.allowed_hosts empty, stderr at start has no tailnet warning"; fi
+  stop_server
+fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

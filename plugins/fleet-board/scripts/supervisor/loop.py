@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from . import candidates, errors, markers, merging, resolver, roles, scopes, scripts, stuck, usage
+from . import repos as _repos
 from .scheduler import SCOPE_FREE_ACTIONS
 from .state import DUPLICATE_ADMISSION, ledger_column
 
@@ -50,6 +51,20 @@ def config_loader(root, run=scripts.run):
     return load
 
 
+def row_provider(root, config, row, run=scripts.run, loaded=None):
+    """The provider a candidate row runs under: an implementor's comes from the card's own repo. A repo that
+    cannot be resolved counts under the home config (the card's action then fails with the reason). `loaded`
+    caches the repo configs across the rows of one pass."""
+    card_config, repo = None, row.get('repo')
+    home = (config.get('board') or {}).get('repo')
+    if row.get('action') in resolver.IMPLEMENT and repo and str(repo).lower() != str(home or '').lower():
+        loaded = {} if loaded is None else loaded
+        if repo not in loaded:
+            loaded[repo] = _repos.resolve(root, config, repo, lambda r: config_loader(r, run=run)()).config
+        card_config = loaded[repo]
+    return resolver.provider_for(config, row, card_config)
+
+
 def _clean(value):
     return re.sub(r'[\x00-\x1f\x7f]', ' ', str(value))[:300]
 
@@ -65,6 +80,7 @@ class Supervisor:
     def __init__(self, root, *, config_loader, state, driver, scheduler, fetch=candidates.fetch,
                  fetch_card=candidates.fetch_card, clock=time.time, mono=time.monotonic, run=scripts.run, merge_lane=None, ignored=None):
         self.root = Path(root)
+        self._claim_ancestors = {}   # card -> the cards it is stacked on (a stacked child's ancestors)
         self._claim_repo = {}   # card -> the repo its admitted row named; state keeps paths only
         self.config_loader = config_loader
         self.state = state
@@ -523,6 +539,7 @@ class Supervisor:
         return {'global': lim.get('concurrency', 6), 'providers': dict(sup.get('provider_concurrency') or {}),
                 'per_card': 1, 'aging_seconds': sup.get('aging_seconds', 900),
                 'scope_ignore': list(sup.get('scope_ignore') or []),
+                'home_repo': (config.get('board') or {}).get('repo') or '',
                 'max_rate_wait': lim.get('rate_limit_max_wait', 3600),
                 'rate_limit_wait': {name: health['until'] for name, health in
                                     self.state.provider_health.items() if 'until' in health}}
@@ -582,12 +599,30 @@ class Supervisor:
             self._last_attention = attention
             if attention:
                 self.state.event('attention', cards=[{'number': n, 'reason': r} for n, r in attention])
+        self._trace_unadmitted(rows, result, limit_waits)
         for row in result['admitted']:
             # A begin can be slow: apply a pause that arrived meanwhile before launching the next row.
             self._drain_commands()
             if self.state.mode != 'running' or self._stop_mode:
                 break
             self._begin(row)
+
+    def _trace_unadmitted(self, rows, result, limit_waits):
+        """A planned role or script action that was not admitted this cycle leaves a `not_admitted` event naming the
+        card, the action and the reason (once per change), so an ATTENTION badge is never the only trace."""
+        actions = {r.get('number'): r.get('action') for r in rows}
+        now = {}
+        for w in result['waits'] + limit_waits:
+            if w.get('reason') != ACTIVE_CLAIM_REASON:
+                now[w.get('number')] = w.get('reason')
+        for a in result['attention']:
+            now[a.get('number')] = a.get('reason')
+        before = getattr(self, '_last_unadmitted', {})
+        for number, reason in now.items():
+            action = actions.get(number)
+            if action and before.get(number) != (action, reason):
+                self.state.event('not_admitted', card=number, action=action, reason=_clean(reason))
+        self._last_unadmitted = {n: (actions.get(n), r) for n, r in now.items()}
 
     def _pass_done(self, began):
         """A board-wide pass just ended: record it for the status, and hold the next one back for the longer of
@@ -602,12 +637,12 @@ class Supervisor:
         """The planner's rows as the scheduler takes them: provider resolved, capped and retry-held cards left out
         (the latter reported as limit waits)."""
         capped = self._capped_cards()
-        rows, limit_waits = [], []
+        rows, limit_waits, repo_configs = [], [], {}
         for original in candidate_rows:
             if not isinstance(original, dict) or original.get('number') in self.ignored:
                 continue
             row = dict(original)
-            row['provider'] = resolver.provider_for(config, row)
+            row['provider'] = row_provider(self.root, config, row, self.run_script, repo_configs)
             if row.get('number') in capped and row['provider'] != 'scripts':
                 limit_waits.append({'number': row.get('number'), 'reason': CARD_LIMIT_WAIT, 'source': 'limit'})
                 continue
@@ -767,10 +802,12 @@ class Supervisor:
     def _active_claims(self):
         """The running actions as the scheduler sees them; `action` lets a read-only one leave scope free."""
         claims = [{'number': a.card, 'provider': a.provider, 'paths': list(a.paths), 'action': a.action,
-                   'stage': a.stage}
+                   'stage': a.stage, **({'pass': a.review_pass} if a.review_pass is not None else {})}
                   for a in self.state.all_actions()]
         for claim in claims:
             self._with_repo(claim, claim['number'])
+            if self._claim_ancestors.get(claim['number']):
+                claim['ancestors'] = list(self._claim_ancestors[claim['number']])
         return claims
 
     def _reservations(self):
@@ -778,6 +815,8 @@ class Supervisor:
         held = [{'card': card, 'paths': list(paths)} for card, paths in list(self.state.reservations.items())]
         for item in held:
             self._with_repo(item, item['card'])
+            if self._claim_ancestors.get(item['card']):
+                item['ancestors'] = list(self._claim_ancestors[item['card']])
         return held
 
     def _with_repo(self, claim, card):
@@ -799,7 +838,7 @@ class Supervisor:
             return
         if name == 'after_merge':
             self._merger_hold.discard(number)   # its session (an active action) holds the lane from here
-        free = row.get('provider') == 'scripts' and name != 'update_branch'
+        free = row.get('provider') == 'scripts' and name not in ('update_branch', 'land')
         reserved = False
         if not free and name in SCOPE_FREE_ACTIONS:
             # Reads files or writes only its own branch: it holds a slot (state.active) but no scope.
@@ -819,8 +858,13 @@ class Supervisor:
             ancestors = stack.get('ancestors') if isinstance(stack, dict) else None
             exempt = tuple(a for a in ancestors if isinstance(a, int)) if isinstance(ancestors, list) else ()
             # only a stacked child passes `exempt`: every other call is the one it always was
-            held = self.state.reserve(number, scope, ignore=ignore, exempt=exempt) if exempt \
-                else self.state.reserve(number, scope, ignore=ignore)
+            repos = dict(repo=row.get('repo'), home_repo=self._repo())
+            held = self.state.reserve(number, scope, ignore=ignore, exempt=exempt, ancestors=exempt, **repos) if exempt \
+                else self.state.reserve(number, scope, ignore=ignore, **repos)
+            if exempt:
+                self._claim_ancestors[number] = list(exempt)
+            else:
+                self._claim_ancestors.pop(number, None)
             if held is not None:
                 return
             reserved = True

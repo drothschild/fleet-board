@@ -32,6 +32,7 @@ class Action:
     marker: Any = None  # the card's active marker path once a session or merge child was launched
     pgid: Any = None    # the process group this action owns; end() removes a marker naming it or no usable pgid
     stage: Any = None   # a review_stage action's stage name: one card's reviewers run together, one per stage
+    review_pass: Any = None  # a review_stage action's pass of required_passes: two passes of one stage run together
     work_column: Any = None  # the column the card is in while the role session runs; set in _launch and by the merge lane
 
 
@@ -44,6 +45,7 @@ def ledger_column(action):
 # The token counts the budget limits count: cache reads are left out (owner decision, 0.27.0).
 BUDGET_KEYS = ('input', 'output', 'cache_write')
 BUDGET_LABEL = 'counted toward limits.max_tokens'
+PREMISE_COUNTS = ('checked', 'go', 'needs', 'built', 'stale', 'drafted', 'failed')
 SNAPSHOT_EVENTS = 50   # the snapshot carries the newest of the 500 events kept
 
 
@@ -58,6 +60,8 @@ class State:
         self._also = {}         # card -> its further running reviewer actions (see REVIEWER_ACTIONS)
         self._retired = {}      # card -> {marker, pgids} of the card's reviewers that already ended
         self.reservations = {}
+        self.reservation_ancestors = {}   # card -> the cards it is stacked on
+        self.reservation_repos = {}   # card -> repo of its reservation ('' or absent: the home repo)
         self.lane = None
         self.provider_health = {}
         self.holds = {}   # card number (str) -> {reason, source, until}: why the last cycle held each card back
@@ -76,6 +80,13 @@ class State:
         self.queue = {'ready': None, 'waiting': None}   # the last planning cycle: cards that could start, cards held
         self.global_cap = None  # limits.concurrency as the loop last read it
         self.last_plan = None   # the last board-wide pass: {ended_at (epoch seconds), seconds}
+        # follow-up drafts sent to Ready in this run (followups.auto_ready_cap bounds it); a new State starts at 0, so
+        # a restarted supervisor counts afresh. `_auto_ready_cap` is the cap the last take_auto_ready call saw.
+        self.followups_auto_ready = 0
+        self._auto_ready_cap = None
+        # premise verdicts settled in this run: checked (a check ended with a verdict), go, needs, built, stale,
+        # drafted (a follow-up draft written), failed (a check that ended without a usable verdict)
+        self.premise = dict.fromkeys(PREMISE_COUNTS, 0)
         self._sequence = 0
         self._lock = threading.RLock()
 
@@ -206,26 +217,40 @@ class State:
             markers.clear(marker, action.pgid, also=(retired or {}).get('pgids') or ())
         return action
 
-    def reserve(self, card, paths, ignore=None, exempt=()):
+    def reserve(self, card, paths, ignore=None, exempt=(), repo=None, home_repo=None, ancestors=()):
         """Reserve `paths` for `card`; they must already be `scopes.normalize()` output.
 
         `ignore` is `supervisor.scope_ignore`: matching paths are dropped from both sides
         before the overlap check, as the scheduler does. Owners in `exempt` (a stacked
-        child's ancestors) are not overlap-checked."""
+        child's ancestors) are not overlap-checked. A missing `repo` (the card's, or a held
+        reservation's) is `home_repo`; with no `home_repo` it matches every repo."""
         with self._lock:
             mine = scopes.drop_ignored(paths, ignore)
             for owner, held in self.reservations.items():
-                if owner != card and owner not in exempt and scopes.overlap(mine, scopes.drop_ignored(held, ignore)):
+                if owner != card and owner not in exempt \
+                        and card not in self.reservation_ancestors.get(owner, ()) \
+                        and scopes.same_repo(repo, self.reservation_repos.get(owner), home_repo) \
+                        and scopes.overlap(mine, scopes.drop_ignored(held, ignore)):
                     return owner
             held = set(self.reservations.get(card, ())) | set(paths)
             # Union like the store did; '' (whole repo) absorbs everything.
             self.reservations[card] = [''] if '' in held else sorted(held)
+            if ancestors:
+                self.reservation_ancestors[card] = tuple(ancestors)
+            else:
+                self.reservation_ancestors.pop(card, None)
+            if repo:
+                self.reservation_repos[card] = repo
+            else:
+                self.reservation_repos.pop(card, None)
             self._bump()
             return None
 
     def release(self, card):
         with self._lock:
             self.reservations.pop(card, None)
+            self.reservation_repos.pop(card, None)
+            self.reservation_ancestors.pop(card, None)
             self._bump()
 
     def set_health(self, provider, entry):
@@ -299,6 +324,21 @@ class State:
             entry['also'] = also   # the card's further reviewer actions
         return entry
 
+    def count_premise(self, key):
+        with self._lock:
+            self.premise[key] += 1
+            self._bump()
+
+    def take_auto_ready(self, cap):
+        """True, and counts one, while fewer than `cap` follow-up drafts went to Ready in this run. The check and
+        the count are one step under the lock, so two drafts settling together never pass a cap with one place left."""
+        with self._lock:
+            self._auto_ready_cap = cap
+            if self.followups_auto_ready >= cap:
+                return False
+            self.followups_auto_ready += 1
+            return True
+
     def snapshot(self):
         with self._lock:
             return copy.deepcopy({
@@ -318,4 +358,6 @@ class State:
                 'run_tokens': self.run_tokens,
                 'run_budget': {'tokens': self.run_budget, 'partial': self.budget_unknown > 0, 'cap': self.budget_cap,
                                'label': BUDGET_LABEL},
+                'followups_auto_ready': {'count': self.followups_auto_ready, 'cap': self._auto_ready_cap},
+                'premise': self.premise,
             })

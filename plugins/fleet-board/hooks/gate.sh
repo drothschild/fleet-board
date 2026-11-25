@@ -12,6 +12,8 @@
 #       reference (pr-closing-check.sh); raw merges blocked
 #   G3  board-move N ready needs a non-empty acceptance field on the card and
 #       a Scope section that names at least one path
+#   G4  no Bash command runs premise-settle.sh approve, confirm or reject: only a
+#       person decides a premise proposal (propose is the supervisor's, allowed)
 #
 # A block is exit 2 with one line on stderr. Within the shapes it recognizes,
 # the hook never lets a real call through: when a gated command is present and
@@ -100,7 +102,7 @@ OUT="$(jq -r '
   | (if .tool_name == "Bash" then (.tool_input.command // "" | tostring) else "" end) as $c
   | ($c | split("\\\n") | join("") | split($q) | join("") | split("\"") | join("")
         | split("\\") | join("") | ascii_downcase) as $f
-  | if ($f | contains("board-move") or contains("gh") or contains("merge") or contains("move.sh"))
+  | if ($f | contains("board-move") or contains("gh") or contains("merge") or contains("move.sh") or contains("premise-settle"))
        or ($c | contains("$" + $q))
     then "K" + $c
     elif ($f | contains("?") or contains("*") or contains("[")
@@ -297,6 +299,14 @@ parse_gh() {
       fi ;;
   esac
   return 0
+}
+
+# parse_settle I: premise-settle[.sh] VERB ...: only propose is allowed (G4). Any other verb, a
+# verb the hook cannot read, or words that xargs appends, make a settle shape, which blocks.
+parse_settle() {
+  local verb="${TOK[$1+1]:-}"
+  if [ "$verb" = propose ] && [ "$OPEN" != 1 ]; then return 0; fi
+  add_shape "settle${US}${verb}"
 }
 
 # card_like WORD: WORD may be a card number: 14, #14, an issue URL, a word
@@ -510,6 +520,7 @@ while IFS= read -r line; do
       [Gg][Hh]) parse_gh $i 1 ;;
       [Bb][Oo][Aa][Rr][Dd]-[Mm][Oo][Vv][Ee]|[Bb][Oo][Aa][Rr][Dd]-[Mm][Oo][Vv][Ee].[Ss][Hh]) parse_move $i ;;
       [Mm][Oo][Vv][Ee].[Ss][Hh]) case "$LOW" in *adapters*) parse_move $i ;; esac ;;
+      [Pp][Rr][Ee][Mm][Ii][Ss][Ee]-[Ss][Ee][Tt][Tt][Ll][Ee]|[Pp][Rr][Ee][Mm][Ii][Ss][Ee]-[Ss][Ee][Tt][Tt][Ll][Ee].[Ss][Hh]) parse_settle $i ;;
       [Cc][Uu][Rr][Ll]) API=1; API_DIRS="$API_DIRS$NL$CUR_DIRS"; [ -n "$CUR_DYN" ] && API_DYN="$CUR_DYN" ;;
       [Xx][Aa][Rr][Gg][Ss]) OPEN=1 ;;
       '{') BR=$((BR + 1)) ;;
@@ -747,7 +758,7 @@ check_pr() {
 # moved past the note's last_review.sha by anything but clean merges of main
 # (review-drift.sh): such a head has not been reviewed
 check_reviewed() {
-  local ref="$1" repo="$2" name oid n from
+  local ref="$1" repo="$2" name oid n from landing
   local args=(pr view "$ref")
   [ -n "$repo" ] && args+=(-R "$repo")
   args+=(--json headRefName,headRefOid)
@@ -763,11 +774,16 @@ check_reviewed() {
   from="$(jq -r '.last_review.sha // "" | strings' <<<"$LOOKUP_OUT" 2>/dev/null)" \
     || block "could not verify the manager note of card #$n; blocking to be safe"
   [ -n "$from" ] && [ -n "$oid" ] || return 0
-  # A stacked card also counts clean merges of its parent branch (origin's copy of stack.base)
-  local also=() sbase
+  # a stacked child that landed: the note's landed pair lets review-drift.sh count the landing's commits;
+  # a stacked card also counts clean merges of its parent branch (origin's copy of stack.base)
+  local also=() sbase landing
+  landing="$(jq -r 'if (.landed | type) == "object" and (.landed.parent_head | type) == "string" and (.landed.squash | type) == "string"
+                    then "\(.landed.parent_head):\(.landed.squash)" else "" end' <<<"$LOOKUP_OUT" 2>/dev/null)" \
+    || block "could not verify the manager note of card #$n; blocking to be safe"
+  [ -z "$landing" ] || also=(--landing "$landing")
   sbase="$(jq -r '.stack.base // "" | strings' <<<"$LOOKUP_OUT" 2>/dev/null)" \
     || block "could not verify the manager note of card #$n; blocking to be safe"
-  [ -z "$sbase" ] || also=(--also-base "origin/$sbase")
+  [ -z "$sbase" ] || also+=(--also-base "origin/$sbase")
   lookup "the commits of PR $ref since its last review" bash "$S/review-drift.sh" "$from" "$oid" ${also[@]+"${also[@]}"}
   [ "$LOOKUP_OUT" = reviewed ] \
     || block "PR $ref head ${oid:0:7} has commits after the last review at ${from:0:7} that are not clean merges of main; review it before merging"
@@ -833,6 +849,8 @@ while [ $k -lt ${#SHAPES[@]} ]; do
         [ "$f5" = 1 ] && block "could not verify which PR gh pr merge merges under xargs; blocking to be safe"
         is_dyn "$f1" && block "could not verify PR $f1; blocking to be safe"
         is_dyn "$f3" && block "could not verify the repo of PR $f1 ($f3); blocking to be safe" ;;
+      settle)
+        block "only a person approves or confirms a premise proposal; run it in a terminal or use the board page" ;;
       move)
         is_dyn "$f1" && block "could not verify card #$f1; blocking to be safe"
         is_dyn "$f2" && block "could not verify the state card #$f1 moves to ($f2); blocking to be safe" ;;

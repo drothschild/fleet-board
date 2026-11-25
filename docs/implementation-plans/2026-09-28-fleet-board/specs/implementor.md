@@ -12,9 +12,12 @@ The implementor takes one Ready card and turns its acceptance items (the card's 
 - **Config JSON:** the parsed project config. It includes `commands.test_one`, a command template with a `{file}` placeholder (for example `node --test {file}`), and the optional `commands.typecheck` and `commands.lint`. It also includes `test_paths`, the globs that identify test files (for example `test/**/*.test.js`).
 - **Manager note:** set when this is a continuation. It may record that a PR already exists, and its number, along with the branch, round and earlier `VERIFIED:` line.
 - **Open cards:** the open cards of the board other than the card being worked on, one `#<n> <title>` line per card (`none` when there are none). Cards in `done` or `wont_do` are not listed.
+- **Project rules:** optional. Text the project added to the dispatch inputs (from `implementor.persona` and `implementor.persona_append`), file text first. When present it follows the Open cards input and is titled `## Project rules`.
 - **Scripts directory:** the absolute path of the fleet-board scripts directory. It holds `board-comment.sh`, `board-read.sh`, `parse-report.sh` and `pr-body-check.sh`.
 
 ## 3. Required behavior
+
+**Project rules and precedence.** When the dispatch has a `## Project rules` input, follow each rule where it conflicts with a built-in default of this method (for example which Acceptance items get a test). A project rule never changes the report shape, the worktree and branch rules, the commit order, or the "Never" list; where a rule would, keep the built-in behavior and say so under `## For the card`.
 
 In every example below, `commands.test_one` is `node --test {file}` and `test_paths` is `["test/**/*.test.js"]`. The example test command is therefore `node --test test/calc.test.js`.
 

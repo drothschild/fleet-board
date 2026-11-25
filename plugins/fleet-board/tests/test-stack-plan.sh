@@ -322,6 +322,47 @@ run_check "$SCRIPT"
 assert_jq "no candidate: a plain ready card starts" "$(card 12 action)" '"start"'
 assert_eq "no candidate: the fake gh log holds no pr view --json state call" "$(call_count pr view 33 --repo acme/toy --json state)" 0
 
+echo "Test: land row (card 391)"
+# land_board <child column> <child note JSON> [<parent column>] [<config>]: parent 11, stacked child 12
+land_board() {
+  setup_case ready-start "${4-$ON}"
+  mk 11 "${3:-done}" - - "$(note "${3:-done}" 11)"
+  mk 12 "$1" 'src/child.sh' - "$2"
+  routes
+}
+LAND_REASON='"land #11 merged; land on main"'
+land_of() { printf '%s+" "+%s' "$(card 12 action)" "$(card 12 reason)"; }
+
+land_board in_review "$(note in_review 12 "$(stack_of 11)")"
+run_check "$SCRIPT"
+assert_exit "land: exit" 0
+assert_jq "land: a stacked child whose parent card is done" "$(land_of)" "$LAND_REASON"
+
+land_board in_review "$(note in_review 12 "$(stack_of 11),\"conflicted_files\":[\"src/child.sh\"]")"
+run_check "$SCRIPT"
+assert_jq "land: a stale conflicted_files does not stop it" "$(land_of)" "$LAND_REASON"
+
+land_board in_progress "{\"state\":\"in_progress\",\"branch\":\"fleet/12-card\",\"pr\":null,\"round\":1$(stack_of 11)}"
+printf 'pr list --repo acme/toy --head fleet/12-card --state open --json number\t0\t%s/common/empty.json\n' "$TICK" >> "$DIR/routes"
+run_check "$SCRIPT"
+assert_jq "land: in in_progress with no PR" "$(land_of)" "$LAND_REASON"
+
+stack_attn() { printf ',"stack":{"parent":11,"base":"fleet/11-card","start":"%s","attention":"%s"}' "$START40" "the child followed commits of #11 that never merged"; }
+land_board in_review "$(note in_review 12 "$(stack_attn)")"
+run_check "$SCRIPT"
+assert_jq "land: not planned while stack.attention is set" "$(card 12 action) != \"land\"" 'true'
+
+land_board in_review "$(note in_review 12 "$(stack_of 11)")" in_review
+run_check "$SCRIPT"
+assert_jq "land: not planned while the parent card is in review" "$(card 12 action) != \"land\"" 'true'
+
+land_board in_review "$(note in_review 12 "$(stack_of 11)")" done ""
+run_check "$SCRIPT"
+assert_jq "land: stacking off, the row is not planned" "$(card 12 action) != \"land\"" 'true'
+
+assert_eq "tick-plan.sh passes --landing to review-drift.sh" "$([ "$(grep -c -- '--landing' "$SCRIPTS_ABS/tick-plan.sh")" -ge 1 ] && echo yes || echo no)" yes
+assert_eq "the gate passes --landing to review-drift.sh" "$([ "$(grep -c -- '--landing' "$SCRIPTS_ABS/../hooks/gate.sh")" -ge 1 ] && echo yes || echo no)" yes
+
 # --- Rows for a card whose note has stack (390) ---
 CLEAN_LR=',"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]}'
 stack_att() { printf ',"stack":{"parent":%s,"base":"fleet/%s-card","start":"%s","attention":"%s"}' "$1" "$1" "$START40" "$2"; }

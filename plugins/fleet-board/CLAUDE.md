@@ -31,7 +31,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   Card JSON keys: `number`, `title`, `body` (prose only), `state` (canonical, else read as
   null with a warning), `labels`, `acceptance` (array of strings), `blocked_by` (array of
   card numbers on this board), `pr_url`, `pr_url_source` (`note`, `person` or null),
-  `created_at`, `updated_at`, `next_comment_id`, `comments`, `premise` (null, or `{sha, at, by}` stamped by create, edit of acceptance or Scope, move into ready, or `premise.sh stamp`; `FLEET_BOARD_ACTOR=supervisor` stops edit and move stamping). Every write goes through
+  `created_at`, `updated_at`, `next_comment_id`, `comments`, `proposal` (null, or `{kind: rewrite|close, head, at, ...}` set by `premise-settle.sh propose`), `premise` (null, or `{sha, at, by}` stamped by create, edit of acceptance or Scope, move into ready, or `premise.sh stamp`; `FLEET_BOARD_ACTOR=supervisor` stops edit and move stamping). Every write goes through
   `fl_write_card` under `fb_lock`. `fl_split_body` moves `## Acceptance` and `## Depends on`
   sections out of a body into the fields (first real heading wins, not inside a fence);
   `read` returns the stored prose and the fields side by side, never a rendered section.
@@ -56,13 +56,19 @@ no file here. The gate's residual bypasses and false positives are listed in the
   note; `merge` refuses to overwrite a stored invalid one. Review-stage fields: `stage`
   (null or a stage name), `reviewed_stages` (list of names), `last_review.stage` and
   `last_review.provider` (null for an In Review or agent-stage record), each validated
-  against `^[a-z][a-z0-9_]*$` (`provider` also allows `-`). `reviews` (null or an object) keeps
+  against `^[a-z][a-z0-9_]*$` (`provider` also allows `-`). `review_passes` (null or an object) counts, per
+  reviewer, the clean passes at the current head; `finding_rounds` (null or an object) counts, per reviewer,
+  its own rounds with findings. `reviews` (null or an object) keeps
   each reviewer's latest report beside `last_review`, keyed `evidence` (the In Review evidence reviewer) or
   the stage name, so parallel reviewers at one head never overwrite each other. In in_review the planner
   and the driver (`driver.review_for`) judge a stage on `reviews[<stage>]` and the evidence reviewer on
   `last_review`, unless that holds a stage's record, then on `reviews.evidence`. An accept.sh baseline
   or a refused merge's record in `last_review` is therefore kept. A conflict resolution and a refused
-  merge reset `reviews`.
+  merge reset `reviews`. `review_laps` (null or `{sha, checks, count, seen}`) counts review laps at one head:
+  each reviewer report at a 40-hex head adds its key (`evidence`, the stage name, or `<stage>#<pass>`) to
+  `seen`; a key already in `seen` ends the lap (`count + 1`, `seen` restarts with it); another head or another
+  set of red checks (the row's `red_checks` names) restarts at 1; every fixer report and a review-loop block
+  set it to null.
   Stacking fields (config `stacking.enabled`, default false, boolean): `stack` (null, else
   `parent` positive integer, `base` a `fleet/<n>-<slug>` branch, `start` 40-hex, `attention` null
   or at most 300 characters without a control character) and `landed` (null, else `parent`
@@ -75,12 +81,12 @@ no file here. The gate's residual bypasses and false positives are listed in the
 - **Tick plan** (`scripts/tick-plan.sh`). Prints one JSON plan: an action per card from a
   single jq decision table (start, continue_implementor, start_review, review, fix,
   mark_ready, merge, verify_main, finish, after_merge, merge_refusal, rerun_checks, checks_failed, to_human_qa, file_pending, block, unblock,
-  skip, skip_no_acceptance, skip_card_lint, wait, advance_stage, review_stage, check_premise). A clean, current review in In Review
+  skip, skip_no_acceptance, skip_card_lint, wait, advance_stage, review_stage, check_premise, draft_followup). With `premise_check.enabled` it also lists Backlog and keeps only the rows whose `followup_draft` is `pending` before any per-card read; such a card plans `draft_followup` (reason `follow-up awaits a draft`; `skip` once `action_failures` reaches `review.max_rounds`). A clean, current review in In Review
   with `merge.policy: auto`, a non-draft PR, no human QA need, no pending check and a red check that
   `merge.ignore_checks` does not cover plans `rerun_checks` (no `checks_rerun` for the PR head: the driver runs
   `gh run rerun <id> --failed` per red check and notes `checks_rerun {sha, checks, at}`) or, with `checks_rerun.sha`
-  at the head, `checks_failed` (the driver records the red checks as one Important finding in `last_review`, so the
-  planner plans `fix`). Neither starts an agent. Precedence: failed lookup, invalid note, file_pending,
+  at the head, `checks_failed` (the driver records the red checks as one Important finding in `last_review` and as the
+  evidence record in `reviews`, keeping every other reviewer's record, so the planner plans `fix`). Both rows, in the plan and in `--candidates` (from which the supervisor admits), carry `red_checks` (each red check's `name` and `detailsUrl`), as do `review` and `review_stage` rows (the checks a lap is counted against); a `review_stage` row there also carries its `pass`. Neither starts an agent. Review loop: an in_review card whose planned rows hold a `review` or `review_stage` while `review_laps.count` is 3 or more at the PR head with the same red check names plans one `block` instead (reason `review loop: reviewed <count> times at <sha7> with no fixer between; red checks: <names or none>`, carrying `red_checks`); the driver moves it to Blocked, clears `review_laps` and posts one comment naming the full head sha, each red check and its URL, and how to release the card (fix the cause on the PR branch, then move it back to In Review). Precedence: failed lookup, invalid note, file_pending,
   the `action_failures` rules, then the table. `action_failures` bound: at `max_rounds`
   consecutive no-progress actions the card is blocked; at `2*max_rounds` (or `max_rounds`
   for a blocked card awaiting unblock) it is skipped for a person, who clears it with
@@ -100,16 +106,33 @@ no file here. The gate's residual bypasses and false positives are listed in the
   automatic merge only that way. Only the top-level `version` and `plugins[].version` may
   change, each to semver strictly above the old value (a merge: the three-way result, or above both sides);
   every other `"version"` must equal the three-way result, and no key may be repeated
-  (`scripts/review-drift.sh <reviewed-sha> <head-sha>` prints `reviewed` or `unreviewed`;
-  a failed check reads as unreviewed). `update-branch.sh` keeps `last_review` as it is.
-- **Premise check** (`premise_check.enabled`, default false; `models.checker`, default sonnet).
+  (`scripts/review-drift.sh <reviewed-sha> <head-sha> [--landing <parent_head>:<squash>]` prints `reviewed` or
+  `unreviewed`; a failed check reads as unreviewed). With `--landing` (the pair from the note's `landed`; `tick-plan.sh`
+  and the gate pass it) two more kinds of merge count: the bridge commit (second parent the squash, the squash on the
+  default branch, `parent_head` an ancestor of its first parent, its tree equal to `stack-bridge.sh tree <repo>
+  <parent_head> <first parent> <squash>`) and a clean merge whose second parent is an ancestor of `parent_head`;
+  a malformed pair counts as none. `update-branch.sh` keeps `last_review` as it is.
+- Every script the supervisor runs (`scripts.run_argv`, `spawn_argv`) sees `FLEET_BOARD_ACTOR=supervisor`; it is
+  never set in `os.environ`, which every role session copies. `board-list.sh` rows carry `state` and `pr_url`.
+- **Premise check** (`premise_check.enabled`, default true; `models.checker`, default sonnet).
   With it on, a Ready card that would plan a non-stacked `start` (acceptance, lint clean, no unmet
   dependency) asks `premise.sh moved <n>` and plans `check_premise` instead when it returns
   `moved` true, with its reason (`ground moved: <path>`, `no premise stamp`, `premise stamp commit is
   unknown`) as the plan reason. `moved` is false with no default head (no `origin`). The `Scope lists
-  no paths` wait still comes first and the Scope-overlap wait does not apply. Until the card that
-  handles the verdicts lands, the scheduler does not run `check_premise`. `tests/tick-plan-lib.sh`
-  `setup_case` writes `premise_check.enabled: false` unless the case's extra YAML sets the key.
+  no paths` wait still comes first, and the Scope-overlap wait applies too: a card held by an open card's Scope plans `wait` (`Scope overlaps #<n>`), not `check_premise`, until the holder is gone. The supervisor runs
+  `check_premise` (`CardDriver._do_check_premise`): `worktree.sh premise <n>` makes a detached checkout
+  `<base>/<n>-premise_check` of the default branch, and a session with no agent file (`Read,Write,Bash,Grep,Glob`
+  through `--tools`, placed before `--permission-mode`; `models.checker`) gets the instructions in
+  `scripts/supervisor/defaults/premise-check-prompt.md`. Its final reply is checked with `parse-report.sh --role
+  checker --mode check`; the driver posts an accepted report and `_settle_premise` acts on it. `go` stamps
+  `premise.sh stamp <n> --by check --sha <head worktree.sh printed>` and records note `premise_check`
+  `{head, verdict, at}`. `needs` (`_premise_needs`) reads the named card with `board-read.sh`: when it is in flight (`ready`, `in_progress`, `in_review`, any `review_*`, `merging`, `human_qa`), not already in `blocked_by`, and neither it nor a card it depends on (any depth) depends on this card, the driver runs `premise.sh add-dep <n> <m>`, comments `Premise check: needs #<m>, which is <state>. Added as a dependency.` and leaves the card Ready with no stamp. Otherwise (`backlog`, `done`, `wont_do`, missing, the card itself, already listed, or a cycle) `_premise_question` moves the card to Blocked, writes the note `blocked_from: ready` with `action_failures` 0, and comments `Waiting for a person: the premise check could not settle this card.` plus the reason. `built` and `stale` reach the owner as one proposal: the driver stores it with `premise-settle.sh propose <n> <file>` (the only call it makes to that script), moves the card to Blocked (`blocked_from: ready`), and comments `Waiting for a person: close as already built?` (a `close` proposal, only when the evidence covers every acceptance item and names none the card lacks, listing each item with its command and output) or `Waiting for a person: approve this rewrite?` (a `rewrite` proposal from a `stale` verdict that has one: the summary, then the current and proposed Scope and acceptance). A `built` verdict with missing or unknown items, and a `stale` one with no proposal, ask `Waiting for a person: the premise check could not settle this card.` with the reason and store nothing. Only `go` writes a stamp. The fleet never moves a card to done or rewrites its Scope or acceptance on a verdict: `premise-settle.sh approve <n>` (Blocked, `rewrite` proposal whose Scope names a path: replaces the body's `## Scope` and the acceptance, keeps `blocked_by`, clears `proposal`, moves to ready, stamps `by approve` with the proposal's `head`), `confirm <n>` (Blocked, `close` proposal: label `fleet:closed-as-built`, done) and `reject <n>` are run by a person (gate rule G4); `confirm` and `reject` append `{card, decision, at}` to `<board.dir>/premise-decisions.jsonl`, and a person's move out of Blocked (not `FLEET_BOARD_ACTOR=supervisor`) clears the proposal as a `reject`. An empty reply, a twice-rejected report
+  and any other failure count one `action_failures` with the error `premise check failed: <first line>; move the
+  card to Ready to start it without a check`. A digest of the card's state, body, acceptance and `blocked_by`
+  is kept at launch and compared at the end: a change drops the verdict (one `premise` event, no stamp, no move,
+  no failure); a comment or note write is not a change. A checker's `Out of scope:` and `Bugs found:` lines file
+  nothing. `tests/tick-plan-lib.sh` `setup_case` writes `premise_check.enabled: false` unless the case's extra YAML sets the key.
+- **Follow-up drafts** (`premise_check.enabled`). `file-followups.sh` files every new card in Backlog (whatever `followups.status` says) with `--followup-file`, which `board-create.sh` and `adapters/local/create.sh` store as the card's `followup`: `{draft: pending|done|failed, kind: bug|out_of_scope, entry: <the parsed item>, from: <card number>}`, and posts neither "Filed in Backlog" comment. With the check off the card is filed as before and has no `followup` field. `board-read.sh` returns `followup` (a record of another shape reads as `null`) and `board-list.sh` rows carry `followup_draft`. `draft_followup` (`CardDriver._do_draft_followup`, role `checker`, mode `draft`) runs the check session with the entry, the filing card's number and a `#<n> <state> <title>` line for every other card, closed ones included. `_settle_draft` acts on the verdict: `duplicate` #n (must exist and not be the card; else a failed draft) and `fixed` move the card to Won't do with `Follow-up draft: duplicate of #<n>.` or `Follow-up draft: already fixed on the default branch.` plus the evidence; `drafted` runs `premise.sh apply-draft <n> <file>` (writes `## Why` and `## Scope`, replaces the acceptance, sets `followup.draft` done, no stamp), `card-lint.sh <n>` (via `c.soft`: exit 1 is a lint failure) and `premise.sh stamp <n> --by check --sha <head>`. The card goes to Ready only for `followup.kind: bug`, a repro result `failed`, a passing lint, `followups.auto_ready: bugs` (`none` keeps every draft in Backlog) and `State.take_auto_ready(followups.auto_ready_cap)` (default 5, counted per supervisor run and shown in the snapshot as `followups_auto_ready: {count, cap}`); else one comment `Drafted; left in Backlog: <reason>.` names the first reason. A draft that fails (`action_failures`) `review.max_rounds` times runs `premise.sh set-followup <n> failed` and comments `Follow-up draft failed after <count> attempts; left as filed. A person writes the criteria and moves it to Ready.`; the card is then not planned again.
 - **Declared Scope parsing.** `tick-plan.sh` reads a card's `## Scope` section for backticked
   spans and plain-text path tokens (no whitespace, holding a `/` or ending in an extension;
   leading `(` and trailing `.,:;)` stripped). A token ending in `/` is a directory scope.
@@ -118,7 +141,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   paths hold new starts, while existing work can continue. Selected starts reserve
   scope in ascending card-number order; a waiting card reserves nothing. Normalized
   directory scopes cover descendants with path-boundary matching. `start_review`, `review`,
-  `review_stage`, `update_branch`, `after_merge`, `merge_refusal`, `merge`, `rerun_checks` and `checks_failed` (`scheduler.SCOPE_FREE_ACTIONS`) reserve no scope and are never
+  `review_stage`, `update_branch`, `land`, `after_merge`, `merge_refusal`, `merge`, `rerun_checks`, `checks_failed`, `check_premise` and `draft_followup` (`scheduler.SCOPE_FREE_ACTIONS`) reserve no scope and are never
   scope-checked against other cards; they still take a slot and one action per card, except that one card's
   reviewer actions (`scheduler.REVIEWER_ACTIONS`: `start_review`, `review`, `review_stage`) run together, one per
   reviewer (the evidence reviewer, one per stage): the scheduler holds a running reviewer's own row, and holds
@@ -170,7 +193,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   and the gate pass `--also-base origin/<stack.base>` for a card whose note has `stack`.
   `worktree.sh review <n> <pr> [<stage>] [<base-branch>]`: a `fleet/<n>-<slug>` argument makes `base` the
   merge-base of origin's copy of that branch and the head (exit 1 when origin lacks it); the driver passes
-  `stack.base` for a card with `stack`. Suites: `tests/test-stack-plan.sh`, `test-review-drift.sh`,
+  `stack.base` for a card with `stack`. `update-branch.sh` retargets a stacked card's PR to `stack.base` (`gh pr edit --base`) when the PR targets another branch and origin has `stack.base` (never under `--lane-bump`), and then merges that as its base, so the fixer, which merges the PR's base, merges the branch the update merges; its conflict error names the ref that conflicted. Suites: `tests/test-stack-plan.sh`, `test-review-drift.sh`,
   `test-worktree.sh`, `test-gate.sh`, `driver_cases.py`.
 - **Stack bridge** (`scripts/stack-bridge.sh tree|commit`, pure git, never pushes). `tree <repo>
   <parent-head> <ours> <theirs>` prints the `git merge-tree --write-tree --merge-base` tree;
@@ -178,7 +201,34 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `git commit-tree`) and moves the branch with `git merge --ff-only`, printing the new head. Exit 0 ok,
   3 conflict (paths on stdout), 4 git older than 2.40, 1 other failure (parent head not an
   ancestor of HEAD, changes to tracked files), 2 usage; on 3 or 4 nothing changes. A squash already in
-  HEAD prints HEAD and adds no commit. Nothing calls it yet.
+  HEAD prints HEAD and adds no commit. `stack-land.sh` calls it.
+- **Stack landing** (`scripts/stack-land.sh <n> <pr-or-dash> <branch> <worktree>`; never rebases, never
+  force-pushes). Exit 0 landed (or nothing to do: no `stack` in the note), 3 wait (nothing changed), 4 attention
+  (nothing pushed, `stack.attention` set, one comment on the card), 1 failure, 2 usage. Steps: the parent's PR
+  (`gh pr view --json state,headRefOid,mergeCommit`) not MERGED, or the squash not an ancestor of the default branch
+  (`origin/HEAD`, else `origin/main`) after `git fetch origin` and a fetch of `refs/pull/<parent pr>/head`: 3; a merge
+  commit on the first-parent chain down to `stack.start` whose second parent is neither an ancestor of the parent's
+  final head nor on the default branch: 4 (`the child followed commits of #<parent> that never merged`); the final
+  head not in HEAD: `git merge --no-edit` it (a conflict aborts it: 4, `merging the final head of #<parent> conflicts
+  in <files>`); `stack-bridge.sh commit` (its 3: 4 `landing on <default> conflicts in <files>`, its 4: 4 `stacking
+  needs git 2.40 or later`, the branch put back); a plain push, a fetch and a check that origin has the head (a
+  rejected push resets the branch with `git reset --keep` to the head before the merge: 1); with a PR `gh pr edit <pr>
+  --repo <repo> --base <default>`; the note gets `stack` null and `landed` `{parent, parent_head, squash, sha}`
+  (`sha` the bridge commit); with a PR `update-branch.sh` with the same four arguments, whose code is the exit.
+  The plan row `land` (reason `#<parent> merged; land on <default>`) is planned, with `stacking.enabled`, for an
+  in_progress or review-state card whose note has `stack` with no `attention` when the parent card's state is done,
+  before the conflict, fix, update_branch, start_review and review rows (a stale `conflicted_files` does not stop it).
+  `land` is a script action that takes a slot, reserves no scope and is never run synchronously in the driver
+  (`scheduler`, `driver.SCRIPT_ACTIONS`, `loop._begin`, as `update_branch`): the driver runs `worktree.sh create`
+  then `stack-land.sh`; exits 3 and 4 are not action failures, any other non-zero exit counts one. A landing (exit 0) and a clean `update_branch` clear the note's `conflicted_files`, since the branch then holds every merge. Suite:
+  `tests/test-stack-land.sh`.
+- **Stacking display** (no new note field). `status.sh` appends ` · stacked on #<stack.parent>` to a card's
+  line when its note has `stack`, then ` · landing needs attention: <stack.attention>` when that is a string; a
+  card without `stack` prints as before. The board server's card summary and detail carry `stacked_on` (the
+  parent number or null) and `stack_attention` (string or null) from the note's `stack`; the drawer's
+  `dr-stack` line shows `stacked on #<parent>` and the attention text, hidden when `stacked_on` is null.
+  README "Stacked pull requests" documents the feature and the three stops (checked by
+  `tests/test-readme-claims.sh`).
 - **Version files** (`supervisor.version_files`, default `[]`, `scripts/versions.jq`,
   `scripts/version-lib.sh`). Off when empty. `update-branch.sh` resolves conflicts in
   matching JSON files whose hunks hold only pairwise-identical `"version"` lines, each
@@ -196,6 +246,11 @@ no file here. The gate's residual bypasses and false positives are listed in the
   after its own `review.stages`. A project stage of the same name replaces the built-in; a
   stage entry `{name: <built-in>, enabled: false}` removes it and is itself dropped. `enabled`
   must be boolean. With a provider `models.reviewer` the built-ins carry model `sonnet`.
+- **Required passes, fixer pass, round limits.** A stage with `required_passes: N` is met at N clean
+  reports at the current head, planned and run side by side. One pass with findings sends the card to the
+  fixer. One fixer pass gets every reviewer's findings once every routed reviewer has reported, then every
+  routed reviewer reviews the new head. Each reviewer's `max_rounds` limits its own `finding_rounds`; a
+  clean reviewer never blocks.
 - **Review stages** (`scripts/review-stages.sh route|match|next|setup`). `route <n> <pr>` adds
   each stage's routing label (path glob match or the label already on the card; never
   removes one) and prints the routed stage names; exit 1 on a failed read. The driver runs
@@ -255,6 +310,20 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `models.reviewer`) is ignored.
   A provider entry with `command` (the `codex` preset) runs `chat.sh --command` instead of curl: prompt on stdin, repo root as cwd, stdout is the reply, tokens `null` (unknown); `base_url` and `api_key_env` must be null with it. `tick-plan.sh` warns when a provider stage's key variable is unset and holds
   `review_stage` in that stage as `wait` (`stage <name>: <ENV> is not set`).
+- **Provider guard** (`scripts/providers/guard/`; tests `tests/test-provider-guard.sh`). Holds a provider session (such as
+  Codex) to a Claude role's limits outside the model. `start.sh <card> <root> <worktree> <branch> <tmpdir> -- <command>` runs
+  `sandbox-flags.sh` (`--sandbox workspace-write -C <worktree> --add-dir <tmpdir>`; a `{flags}` word in the command is replaced by
+  them), `install.sh` (shims `gh`, `git`, `curl`, `board-move`, `board-move.sh`, `premise-settle.sh` in `<tmpdir>/guard-shims`)
+  and `post-run.sh snapshot`, then runs the command with the shims first on ITS PATH only (nothing else gets that PATH; no Claude
+  role is started through it) and `post-run.sh check`. Each shim builds a PreToolUse payload and runs `hooks/gate.sh` (the hook
+  needed no change), then applies the implementor's rules: no card move, no premise decision, no `gh pr merge` or `gh pr ready`,
+  no `git push` except of the card's branch and never forced, no git command with a `-C` or cwd outside the worktree or with
+  `--git-dir`/`--work-tree`, no git write to `.fleet-board.yml` or `.fleet-board/`, no write request by `curl` to a loopback host.
+  A block is exit 2 with the gate's line. Fails closed: when flags, shims or the snapshot cannot be made, the command does not run,
+  the card gets one comment, stdout is `{"attention": ..., "differences": []}`, exit 2. `post-run.sh check` compares
+  `.fleet-board.yml`, files under `.fleet-board/` other than board runtime data, the card state, origin's branch heads and files
+  changed in the root outside the worktree; a difference is exit 3 with that JSON (`start.sh` posts the comment). A script called
+  by absolute path does not pass a shim; the sandbox and the post-run check are the backstop. No runner uses the guard yet.
 - **Dependency gate** (`scripts/deps.sh parse|check`). `parse-card` reads a card's `blocked_by`
   card numbers (`parse` still reads a body file's `## Depends on` bullets); `check` looks
   each up in the local store and prints `{unmet, warnings}`; a failed lookup exits 1 and names its command on stderr as
@@ -266,14 +335,15 @@ no file here. The gate's residual bypasses and false positives are listed in the
   moves a card out of human_qa. G2: `gh pr merge` blocked under `merge.policy: human`;
   under `auto` only explicit, non-draft, green, non-`--admin`, and, for a `fleet/<n>-*`
   branch, a head whose commits after the note's `last_review.sha` are all clean merges of
-  main (`review-drift.sh`; otherwise blocked as unreviewed), and, for a `fleet/<n>-*` branch, no
+  main (`review-drift.sh`, given `--landing` from the note's `landed` when set; otherwise blocked as unreviewed), and, for a `fleet/<n>-*` branch, no
   closing keyword before an issue reference in the title, body or a commit message
   (`pr-closing-check.sh --json`, also run by `merge-reviewed.sh` before every merge, keyed
   form after `pending_merge` so the lane classifies it `refused`), and a PR base that is
   the default branch (`origin/HEAD` without the prefix, else main; `merge-reviewed.sh`
   refuses the same with `PR #<pr> targets <base>, not <default>; not merged`; an unreadable
   base is a refusal in both). G3: moving to ready needs a non-empty
-  `acceptance` field on the card. Fails closed on anything it cannot resolve. It is a text check:
+  `acceptance` field on the card. G4: `premise-settle.sh approve`, `confirm` and `reject` are blocked
+  (`propose` is allowed). Fails closed on anything it cannot resolve. It is a text check:
   documented residual bypasses (scripts run from files, other HTTP clients, push-merges,
   obfuscation) and false positives are listed in the plan's `rehearsal-notes.md`
   (Phase 4). Policy: add a residual to that list, do not claim the hook covers it.
@@ -335,7 +405,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
     else `{running: false, run: null, all_time, planner, columns}` (ledger totals); `pause|resume|stop` with
     none running is 409 `not_running`; Start launches one, treats a stopping supervisor as not
     running (waits for it to go), sends `resume` to a paused one, and when a CLI start won the run
-    lock first reports that supervisor. `GET /api/usage` and `/api/cards/<n>/usage` read the ledger
+    lock first reports that supervisor. `GET /api/cards/<n>` carries `proposal` (null when absent or malformed) and `premise`, and the `/api/board` card summary carries `proposal_kind` (`rewrite`, `close` or null). `POST /api/cards/<n>/premise/approve|confirm|reject` runs `premise-settle.sh <verb> <n>` through `board_write`; a non-zero exit is a 409 carrying its stderr. The drawer of a Blocked card with a proposal shows it at the top: `Approve rewrite` / `Reject`, or `Close as built` / `Build it anyway` (a move to Ready); the tile shows `Rewrite proposed` or `Already built?`. `GET /api/usage` and `/api/cards/<n>/usage` read the ledger
     here (no supervisor needed; unknown counts stay `unknown`). `GET /api/stuck` and the `stuck`
     and `activity` fields of `/api/board` run `stuck.find` in the board server only while no
     supervisor answers (never in the supervisor loop; while one runs no card is stuck, because the
@@ -358,8 +428,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
     the supervisor's running ones first (`running: true`, `ended_at: null`), then this repo's usage-ledger entries
     newest first; a log outside the sessions directory is left out. `GET /api/cards/<n>/transcripts/<id>` answers
     the session's rendered log as plain text (`<id>` is the log's file stem). It is 404 `no such session for card <n>: <id>`
-    when no ledger line of that card has that stem, and 404 `the log file is missing for session <id>` when the
-    line exists but its file does not. A running session's text is a snapshot of the log as read at that request. The supervisor status carries `log` on each running action (`active[]`), the
+    when neither a ledger line of that card nor a running action of that card has that stem, and 404 `the log file is missing for session <id>` when
+    the line or running action exists but its file does not. A running session's text is a snapshot of the log as read at that request: `get_transcript` looks in the ledger first, and only when it has no such session for the card asks the supervisor status for a running action of that card whose `log` has that stem inside the sessions directory. The supervisor status carries `log` on each running action (`active[]`), the
     path of that session's log, or null when it has none; the list reads it to find running sessions. Status is
     `Service.status_view()`; `tests/test-supervisor-ui.sh` feeds real service output
     (`fixtures/supervisor/dump_real_shapes.py`) to the DOM harness so UI and service cannot drift.
@@ -410,13 +480,16 @@ no file here. The gate's residual bypasses and false positives are listed in the
 
 ## Invariants
 
+- Fixer test rule: the fixer may edit a test file that the PR adds or modifies against the merge base to resolve a finding, including a CI finding, with no weakening of what the test checks. It still may not edit a test file unchanged relative to the base branch (a failure there is fixed in the code), and its report names each test file it edited and why. The reviewer's weakened-test check still runs every round.
 - Headless merges happen only in `scripts/merge-reviewed.sh`, a plain shell step outside any
   Claude session that the supervisor's merge lane runs. It merges only under
   `merge.policy: auto`, for a clean-reviewed, non-draft, green PR that needs no Human QA (it asks
   `tick-plan.sh --settle-merge`); under `human` it makes no call. It binds each merge to its
   planned head and requires literal `main_check.ok == true`. No role session merges, and nothing
   adds permission rules or `--dangerously-skip-permissions`. Worktree removal runs in
-  `cleanup-done.sh`, by hand, outside any Claude session. It reads a done card's note only when
+  `cleanup-done.sh`, by hand, outside any Claude session, and in the supervisor's driver for one checkout only:
+  the premise check's `<n>-premise_check` (`worktree.sh remove <n> <path>`, the path form, which leaves the
+  card's own worktree). It reads a done card's note only when
   the worktrees base holds a `<n>-*` entry (a local prefilter), so its cost scales with the local
   dirs, not the Done column; keep any new per-card network call behind that prefilter.
 - `ROLE_ISOLATION: none` (decided Phase 5); nothing reads `FLEET_BOARD_ISOLATE`.
@@ -450,12 +523,18 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `test-tick-plan-merging.sh` (merging, update_branch, settle mode, merge only reviewed heads),
   `test-tick-plan-followups.sh` (blocked, pending follow-ups, lookup and action failures),
   `test-tick-plan-scope.sh` (scope overlap, version bumps, base fetch, the candidates cost pass),
-  `test-tick-plan-stages.sh` (review stages and their gates).
+  `test-tick-plan-stages.sh` (review stages and their gates),
+  `test-tick-plan-repos.sh` (a card of another repo: PR lookups and review stages come from that repo).
   `test-tick-plan-split.sh` pins that shape; add a new scenario to the suite for its area and a
   new helper to the lib, never a copy into a suite. `test-tick-plan.sh` holds no scenario: it
   runs all six and prints their combined total, for the whole planner or a card that names it.
   Its second line marks it as an aggregate runner, so CI's `.github/scripts/run-suites.sh`
   skips it and no suite runs twice.
+- `test-supervisor-allowlist.sh` reads every literal `*.sh` name the supervisor package passes to
+  `run`, `soft`, `step`, `spawn` or the script helpers and fails for any name missing from
+  `scripts.ALLOWED`. Driver tests stub scripts by name, so they never run the real allowlist: add a
+  new script to `ALLOWED` when the supervisor first calls it, and raise the `ALLOWED` count that
+  `fixtures/supervisor/candidates_cases.py` pins.
 - After any change under this directory: `bash plugins/fleet-board/tests/test-clean-room.sh`
   must pass.
 - `behavioral-*.sh` are live: they run real headless sessions against `SANDBOX_REPO` and

@@ -81,7 +81,7 @@ It first lists the worktrees directory locally and reads the board only for done
 | Variable | Default | Purpose |
 |---|---|---|
 | `FLEET_BOARD_CLAUDE` | `claude` | the Claude Code binary |
-| `FLEET_BOARD_PLUGIN_DIR` | unset | when set, passed as `--plugin-dir` (for a checkout that is not installed) |
+| `FLEET_BOARD_PLUGIN_DIR` | the plugin root of the page's scripts | passed as `--plugin-dir` to the Draft cards session; set it to use another plugin directory |
 | `FLEET_BOARD_LOG_DIR` | `$HOME/.fleet-board/runs` | the log directory: `supervisor.log`, role logs, the run lock |
 | `FLEET_BOARD_SOCKET_DIR` | `/tmp/fleet-board-<uid>` | where the supervisor's private socket lives |
 | `FLEET_BOARD_LIST_LIMIT` | 1000 | how many issues or project items `import-github.sh` asks `gh` for. A reply of exactly this many may be truncated, so the import stops (exit 1); raise this variable and run it again. Nothing else reads it |

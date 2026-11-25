@@ -183,6 +183,24 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(s.reserve(13, ['src/b/x'], exempt=(11,)), 20)
         self.assertNotIn(13, s.reservations)
 
+    def test_reserve_succeeds_when_the_only_overlapping_owner_is_stacked_on_the_card(self):
+        s = self.state
+        self.assertIsNone(s.reserve(12, ['src/a'], ancestors=(11,)))
+        self.assertIsNone(s.reserve(11, ['src/a/x']))
+        self.assertEqual(s.reservations[11], ['src/a/x'])
+
+    def test_reserve_succeeds_past_a_grandchild_stacked_on_the_card(self):
+        s = self.state
+        self.assertIsNone(s.reserve(13, ['src/a'], ancestors=(12, 11)))
+        self.assertIsNone(s.reserve(11, ['src/a']))
+
+    def test_reserve_still_refuses_a_sibling_or_an_unrelated_card(self):
+        s = self.state
+        self.assertIsNone(s.reserve(12, ['src/a'], ancestors=(10,)))
+        self.assertEqual(s.reserve(13, ['src/a'], ancestors=(10,)), 12)
+        self.assertEqual(s.reserve(14, ['src/a']), 12)
+        self.assertEqual(s.reserve(10, ['src/a'], ancestors=(9,)), None)
+
     def test_reserve_drops_scope_ignore_paths_on_both_sides(self):
         s = self.state
         ignore = ['plugins/*/.claude-plugin/plugin.json']
@@ -214,6 +232,14 @@ class Lifecycle(unittest.TestCase):
         s.reserve(3, ['a'])
         s.reserve(3, [''])
         self.assertEqual(s.reservations[3], [''])
+
+    def test_reserve_reads_a_missing_repo_as_the_home_repo(self):
+        s = self.state
+        self.assertIsNone(s.reserve(1, ['src/a.py']))   # no repo: the home repo
+        self.assertEqual(s.reserve(2, ['src/a.py'], repo='acme/toy', home_repo='acme/toy'), 1)
+        self.assertIsNone(s.reserve(3, ['src/a.py'], repo='acme/other', home_repo='acme/toy'))
+        # unknown home repo: a missing repo still matches every repo
+        self.assertEqual(s.reserve(4, ['src/a.py'], repo='acme/zed'), 1)
 
     def test_begin_rejects_an_unknown_kind(self):
         with self.assertRaises(ValueError):
@@ -291,13 +317,40 @@ class Lifecycle(unittest.TestCase):
         snap = self.state.snapshot()
         self.assertEqual(set(snap), {'run_id', 'mode', 'pause_reason', 'revision', 'active',
                                      'lane', 'provider_health', 'holds', 'run_tokens', 'run_budget',
-                                     'events', 'attention', 'queue', 'limits', 'last_plan'})
+                                     'events', 'attention', 'queue', 'limits', 'last_plan',
+                                     'followups_auto_ready', 'premise'})
         self.assertEqual(snap['run_id'], 'run1')
         self.assertEqual(snap['active'][1]['card'], 1)
         self.assertEqual(snap['lane']['card'], 1)
         self.assertNotIn('session', snap['active'][1])
         import json
         json.dumps(snap)
+
+    def test_the_snapshot_counts_premise_verdicts_for_the_run(self):
+        zero = {'checked': 0, 'go': 0, 'needs': 0, 'built': 0, 'stale': 0, 'drafted': 0, 'failed': 0}
+        self.assertEqual(self.state.snapshot()['premise'], zero)
+        for key in ('checked', 'go', 'checked', 'built', 'failed', 'drafted', 'drafted'):
+            self.state.count_premise(key)
+        self.assertEqual(self.state.snapshot()['premise'],
+                         dict(zero, checked=2, go=1, built=1, failed=1, drafted=2))
+        self.assertEqual(State('run2').snapshot()['premise'], zero)
+
+    def test_take_auto_ready_counts_up_to_the_cap_and_the_snapshot_shows_it(self):
+        self.assertEqual(self.state.followups_auto_ready, 0)
+        self.assertEqual(State('run2').followups_auto_ready, 0)
+        self.assertEqual([self.state.take_auto_ready(2) for _ in range(3)], [True, True, False])
+        self.assertEqual(self.state.followups_auto_ready, 2)
+        self.assertEqual(self.state.snapshot()['followups_auto_ready'], {'count': 2, 'cap': 2})
+
+    def test_take_auto_ready_with_a_cap_of_zero_never_admits(self):
+        self.assertFalse(self.state.take_auto_ready(0))
+        self.assertEqual(self.state.followups_auto_ready, 0)
+
+    def test_a_new_state_starts_the_auto_ready_count_at_zero(self):
+        self.state.take_auto_ready(5)
+        fresh = State('run2')
+        self.assertEqual(fresh.followups_auto_ready, 0)
+        self.assertEqual(fresh.snapshot()['followups_auto_ready']['count'], 0)
 
     def test_a_running_role_action_in_the_status_reply_has_a_log_field_holding_the_session_jsonl_path(self):
         act = action(1)

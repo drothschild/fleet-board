@@ -1017,6 +1017,20 @@ class PlanGap(LoopCase):
         self.assertLessEqual(abs(plan['ended_at'] - self.clock()), 2)
 
 
+class HomeRepo(LoopCase):
+    def test_board_repo_reaches_the_limits_as_home_repo(self):
+        self.assertEqual(self.sup._limits(dict(self.b.config, board={'repo': 'acme/toy'}))['home_repo'], 'acme/toy')
+
+    def test_home_repo_reaches_the_reservation(self):
+        self.sup.config = dict(self.b.config, board={'repo': 'acme/toy'})
+        seen = []
+        row = dict(number=12, action='fix', provider='claude', declared_paths=['src/a.py'], actual_paths=[], repo='acme/other')
+        with mock.patch.object(self.sup.state, 'reserve', side_effect=lambda n, p, **kw: seen.append(kw) or 99):
+            self.sup._begin(row)
+        self.assertEqual(seen[0].get('home_repo'), 'acme/toy')
+        self.assertEqual(seen[0].get('repo'), 'acme/other')
+
+
 class ScopeIgnore(LoopCase):
     def test_scope_ignore_reaches_the_scheduler_and_the_reservation(self):
         config = dict(self.b.config, supervisor=dict(SUP, scope_ignore=['plugins/*/.claude-plugin/plugin.json']))
@@ -1028,7 +1042,8 @@ class ScopeIgnore(LoopCase):
                    actual_paths=['plugins/fleet-board/.claude-plugin/plugin.json'])
         with mock.patch.object(self.sup.state, 'reserve', side_effect=lambda n, p, **kw: seen.append((p, kw)) or 99):
             self.sup._begin(row)
-        self.assertEqual(seen, [(['src/a.py'], {'ignore': ['plugins/*/.claude-plugin/plugin.json']})],
+        self.assertEqual(seen, [(['src/a.py'], {'ignore': ['plugins/*/.claude-plugin/plugin.json'],
+                                 'repo': None, 'home_repo': 'acme/toy'})],
                          'the reservation leaves the ignored manifest out and filters the held scopes too')
 
 
@@ -1099,6 +1114,126 @@ class ReadOnlyScope(LoopCase):
                               'stage': None}])
         finally:
             self.sup.state.active.pop(77, None)
+
+
+class StackedAncestors(LoopCase):
+    """The loop hands a stacked card's ancestors to the scheduler (characterization: the code predates these)."""
+
+    def row(self, number=12, **extra):
+        return dict(number=number, action='fix', provider='claude', declared_paths=['src/%d.py' % number],
+                    actual_paths=[], **extra)
+
+    def begin(self, row):
+        with mock.patch.object(self.sup.driver, 'begin', return_value=mock.Mock(kind='session')):
+            self.sup._begin(row)
+
+    def test_a_stacked_row_reserves_with_exempt_and_ancestors_and_a_plain_row_without(self):
+        calls = []
+        with mock.patch.object(self.sup.state, 'reserve', side_effect=lambda n, p, **kw: calls.append((n, kw))):
+            self.begin(self.row(12, stack={'ancestors': [11, 10]}))
+            self.begin(self.row(13))
+        stacked, plain = calls
+        self.assertEqual(stacked[0], 12)
+        self.assertEqual(stacked[1]['exempt'], (11, 10))
+        self.assertEqual(stacked[1]['ancestors'], (11, 10))
+        self.assertEqual(self.sup._claim_ancestors[12], [11, 10])
+        self.assertEqual(plain[0], 13)
+        self.assertNotIn('exempt', plain[1])
+        self.assertNotIn('ancestors', plain[1])
+        self.assertNotIn(13, self.sup._claim_ancestors)
+
+    def test_reservations_carry_the_ancestors_and_a_card_without_has_no_ancestors_key(self):
+        self.begin(self.row(12, stack={'ancestors': [11, 10]}))
+        self.begin(self.row(13))
+        held = {r['card']: r for r in self.sup._reservations()}
+        self.assertEqual(held[12]['ancestors'], [11, 10])
+        self.assertNotIn('ancestors', held[13])
+
+    def test_active_claims_carry_the_ancestors_and_another_card_has_no_ancestors_key(self):
+        from supervisor.state import Action
+        self.begin(self.row(12, stack={'ancestors': [11, 10]}))
+        for n in (12, 77):
+            self.sup.state.active[n] = Action(card=n, action='fix', column='in_progress', role='implementor',
+                                              provider='claude', paths=['src/a.py'], started_at=0.0,
+                                              started_mono=0.0)
+        try:
+            claims = {c['number']: c for c in self.sup._active_claims()}
+        finally:
+            self.sup.state.active.pop(12, None)
+            self.sup.state.active.pop(77, None)
+        self.assertEqual(claims[12]['ancestors'], [11, 10])
+        self.assertNotIn('ancestors', claims[77])
+
+    def test_a_next_row_without_stack_ancestors_drops_the_recorded_ancestors(self):
+        self.begin(self.row(12, stack={'ancestors': [11, 10]}))
+        self.assertEqual({r['card']: r for r in self.sup._reservations()}[12]['ancestors'], [11, 10])
+        self.sup.state.release(12)
+        self.begin(self.row(12))
+        self.assertNotIn(12, self.sup._claim_ancestors)
+        self.assertNotIn('ancestors', {r['card']: r for r in self.sup._reservations()}[12])
+
+
+class PlannedActionsRun(LoopCase):
+    HEAD = 'abc1234' + '0' * 33
+    RED = [{'name': 'offline-suites (ubuntu-latest)', 'detailsUrl': 'https://github.com/acme/toy/actions/runs/123/job/456'}]
+
+    def test_a_clean_review_with_a_red_check_is_rerun_within_a_tick(self):
+        self.in_review(12)
+        self.b.put_note({'last_review': {'round': 1, 'sha': self.HEAD, 'critical': 0, 'important': 0}}, 12)
+
+        def rows():
+            kw = dict(number=12, state='in_review', branch=BRANCH[12], worktree=self.b.worktree, declared_paths=['p12'],
+                      head_sha=self.HEAD, pr=34)
+            if self.b.note(12).get('checks_rerun'):
+                return [dc.candidate('skip', **kw)]
+            return [dc.candidate('rerun_checks', red_checks=self.RED, **kw)]
+        self.rows = rows
+        self.start()
+        self.until(lambda: self.b.note(12).get('checks_rerun'), what='the re-run to be recorded')
+        self.assertIn(('run', 'rerun', '123', '--failed', '--repo', 'acme/toy'), self.b.gh_calls)
+        self.assertEqual(self.b.note(12)['checks_rerun']['sha'], self.HEAD)
+        self.sup.request_stop('drain')
+        self.assertEqual(self.finished(), 0)
+
+    def test_a_planned_action_that_is_not_admitted_leaves_an_event_naming_card_action_and_reason(self):
+        self.sup.scheduler = self.sched
+        self.b.config['limits'] = dict(self.b.config['limits'], concurrency=1)
+        self.in_progress(12)
+        self.in_review(13)
+        self.b.plans({'report': 'implementor-ok', 'post': False, 'sleep': 6})
+        self.rows = lambda: [
+            dc.candidate('continue_implementor', number=12, state='in_progress', branch=BRANCH[12],
+                         worktree=self.b.worktree, declared_paths=['p12']),
+            dc.candidate('fix', number=13, state='in_review', branch=BRANCH[13], worktree=self.b.worktree,
+                         declared_paths=['p13'])]
+        self.start()
+
+        def event():
+            return [e for e in list(self.b.state.events)
+                    if e['type'] == 'not_admitted' and e['payload'].get('card') == 13]
+        found = self.until(event, what='a not_admitted event for card 13')
+        self.assertEqual(found[0]['payload'].get('action'), 'fix')
+        self.assertEqual(found[0]['payload'].get('reason'), 'global capacity')
+        self.sup.request_stop('cancel')
+        self.finished()
+
+
+class TraceUnadmitted(LoopCase):
+    def _events(self):
+        return [e['payload'] for e in list(self.b.state.events) if e['type'] == 'not_admitted']
+
+    def test_a_card_first_held_leaves_its_event_that_cycle_and_a_repeat_or_a_change_is_counted_once(self):
+        rows = [{'number': 13, 'action': 'fix'}]
+
+        def result(reason):
+            return {'waits': [{'number': 13, 'reason': reason}], 'attention': []}
+        self.sup._trace_unadmitted(rows, result('global capacity'), [])
+        self.assertEqual([(e['card'], e['action'], e['reason']) for e in self._events()],
+                         [(13, 'fix', 'global capacity')])
+        self.sup._trace_unadmitted(rows, result('global capacity'), [])
+        self.assertEqual(len(self._events()), 1)
+        self.sup._trace_unadmitted(rows, result('provider capacity'), [])
+        self.assertEqual([e['reason'] for e in self._events()], ['global capacity', 'provider capacity'])
 
 
 if __name__ == '__main__':
