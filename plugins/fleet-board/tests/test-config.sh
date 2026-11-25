@@ -1195,6 +1195,17 @@ invalid_field_case "board.tailscale.allowed_logins set to a string instead of a 
 invalid_field_case "board.tailscale.allowed_logins entry that is not a string" $'  tailscale:\n    allowed_logins: [5]' "board.tailscale.allowed_logins"
 invalid_field_case "board.tailscale.allowed_logins entry that is empty" $'  tailscale:\n    allowed_logins: [""]' "board.tailscale.allowed_logins"
 
+# A review stage calls its provider through base_url or command; review_command is only for models.reviewer
+SEC_STAGE=$'review:\n  stages:\n    - { name: sec, provider: corp, model: m }'
+RC_ONLY=$'providers:\n  corp:\n    review_command: "my-cli -C {dir}"'
+RC_MSG="providers.corp is named by a review stage and needs base_url or command"
+check_case "a review stage naming a provider that has only review_command is rejected" "$SEC_STAGE"$'\n'"$RC_ONLY" 5 "$RC_MSG"
+check_case "a review stage naming a provider with only review_command and implement_command is rejected" "$SEC_STAGE"$'\n'"$RC_ONLY"$'\n    implement_command: my-cli' 5 "$RC_MSG"
+check_case "a review stage naming a provider that has both command and review_command is accepted" "$SEC_STAGE"$'\n'"$RC_ONLY"$'\n    command: "my-cli {model}"' 0
+check_case "a review stage naming the built-in codex preset is accepted" $'review:\n  stages:\n    - { name: sec, provider: codex, model: m }' 0
+check_case "a review_command-only provider used only by models.reviewer, with models.escalation set, is accepted" \
+  "models: { reviewer: { provider: corp, model: m }, escalation: opus }"$'\n'"$RC_ONLY" 0
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
