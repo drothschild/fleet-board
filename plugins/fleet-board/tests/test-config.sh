@@ -1003,6 +1003,48 @@ done
 invalid_field_case "models.merger empty" 'models: { merger: "" }' "models.merger must be a non-empty string"
 invalid_field_case "models.merger number" 'models: { merger: 5 }' "models.merger must be a non-empty string"
 
+# implementor.provider / implementor.model (card 527)
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" implementor.provider
+assert_stdout_exact "config.sh implementor.provider prints claude by default" "claude"
+run_config "$REPO"
+assert_stdout_exact_jq "implementor.model defaults to null" '.implementor | [has("model"), .model]' '[true,null]'
+REPO="$(printf 'board:\n  repo: a/b\nimplementor: { provider: claude, model: "gpt-5.1:a/b_c" }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" implementor.model
+assert_exit "implementor.model matching the model pattern is accepted" 0
+assert_stdout_exact "config.sh implementor.model prints the value" "gpt-5.1:a/b_c"
+IMPL_CMD='implement_command: "my-cli -C {dir} -m {model}"'
+REPO="$(printf 'board:\n  repo: a/b\nimplementor: { provider: codex }\nproviders:\n  codex:\n    %s\n' "$IMPL_CMD" | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" implementor.provider
+assert_exit "a preset provider with an implement_command is accepted" 0
+assert_stdout_exact "config.sh implementor.provider prints the provider named" "codex"
+REPO="$(printf 'board:\n  repo: a/b\nimplementor: { provider: corp }\nproviders:\n  corp:\n    %s\nsupervisor: { provider_concurrency: { corp: 1 } }\n' "$IMPL_CMD" | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
+assert_exit "a provider with only an implement_command is accepted, with its concurrency cap" 0
+assert_stderr_not_contains "a provider named by implementor.provider is not reported unused" "providers.corp is not used"
+invalid_field_case "implementor set to a string" 'implementor: codex' "implementor must be an object"
+for v in nosuch 5 '""' null; do
+  invalid_field_case "implementor.provider rejects $v" "implementor: { provider: $v }" "implementor.provider"
+done
+for v in '"bad model"' '"-x"' '""' 5 '"a;b"' '"a\nb"'; do
+  invalid_field_case "implementor.model rejects $v" "implementor: { model: $v }" "implementor.model must match ^[A-Za-z0-9][A-Za-z0-9._:/-]*\$"
+done
+invalid_field_case "implementor.provider naming the codex preset, which has no implement_command" 'implementor: { provider: codex }' "providers.codex has no implement_command"
+invalid_field_case "implementor.provider naming an HTTP preset" 'implementor: { provider: openai }' "providers.openai has no implement_command"
+invalid_field_case "implementor.provider naming a defined command provider without implement_command" $'implementor: { provider: corp }\nproviders:\n  corp:\n    command: "my-cli {model}"' "providers.corp has no implement_command"
+for v in '""' 5; do
+  invalid_field_case "providers.corp.implement_command rejects $v" $'providers:\n  corp:\n    implement_command: '"$v" "providers.corp.implement_command must be a non-empty string"
+done
+invalid_field_case "implement_command does not excuse an unsafe base_url" $'providers:\n  corp:\n    implement_command: my-cli\n    base_url: "http://evil.example"' "providers.corp.base_url must start with https://"
+invalid_field_case "a review stage naming a provider with only an implement_command" $'review:\n  stages:\n    - { name: sec, provider: corp, model: m }\nproviders:\n  corp:\n    implement_command: my-cli' "providers.corp.base_url must start with https://"
+for word in '`implementor.provider`' '`implementor.model`' '`implement_command`'; do
+  if grep -F "$word" "${SCRIPT_DIR}/../docs/config.md" >/dev/null; then
+    pass "docs/config.md documents $word"
+  else
+    fail "docs/config.md documents $word" "not found"
+  fi
+done
+
 # merge.ignore_checks: a list of {name, reason, until}; every field required, until a real YYYY-MM-DD
 REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
@@ -1152,6 +1194,17 @@ invalid_field_case "board.allowed_hosts entry holding *" '  allowed_hosts: ["*.t
 invalid_field_case "board.tailscale.allowed_logins set to a string instead of a list" $'  tailscale:\n    allowed_logins: "owner@example.com"' "board.tailscale.allowed_logins"
 invalid_field_case "board.tailscale.allowed_logins entry that is not a string" $'  tailscale:\n    allowed_logins: [5]' "board.tailscale.allowed_logins"
 invalid_field_case "board.tailscale.allowed_logins entry that is empty" $'  tailscale:\n    allowed_logins: [""]' "board.tailscale.allowed_logins"
+
+# A review stage calls its provider through base_url or command; review_command is only for models.reviewer
+SEC_STAGE=$'review:\n  stages:\n    - { name: sec, provider: corp, model: m }'
+RC_ONLY=$'providers:\n  corp:\n    review_command: "my-cli -C {dir}"'
+RC_MSG="providers.corp is named by a review stage and needs base_url or command"
+check_case "a review stage naming a provider that has only review_command is rejected" "$SEC_STAGE"$'\n'"$RC_ONLY" 5 "$RC_MSG"
+check_case "a review stage naming a provider with only review_command and implement_command is rejected" "$SEC_STAGE"$'\n'"$RC_ONLY"$'\n    implement_command: my-cli' 5 "$RC_MSG"
+check_case "a review stage naming a provider that has both command and review_command is accepted" "$SEC_STAGE"$'\n'"$RC_ONLY"$'\n    command: "my-cli {model}"' 0
+check_case "a review stage naming the built-in codex preset is accepted" $'review:\n  stages:\n    - { name: sec, provider: codex, model: m }' 0
+check_case "a review_command-only provider used only by models.reviewer, with models.escalation set, is accepted" \
+  "models: { reviewer: { provider: corp, model: m }, escalation: opus }"$'\n'"$RC_ONLY" 0
 
 echo ""
 echo "-----------------------------------"

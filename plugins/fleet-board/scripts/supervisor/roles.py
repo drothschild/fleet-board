@@ -36,6 +36,8 @@ def command(dispatch, prompt, config, plugin_dir, stage_args=()):
     if dispatch.runner in ('stage-review', 'evidence-review'):
         script = Path(plugin_dir) / 'scripts' / (dispatch.runner + '.sh')
         return ['bash', str(script)] + [str(a) for a in stage_args]
+    if dispatch.runner != 'claude':   # a provider implementor never falls back to a Claude session
+        raise ValueError('implementor.provider %s has no runner' % dispatch.provider)
     argv = [os.environ.get('FLEET_BOARD_CLAUDE') or 'claude', '-p', prompt]
     if dispatch.agent is not None:
         argv += ['--agent', dispatch.agent]

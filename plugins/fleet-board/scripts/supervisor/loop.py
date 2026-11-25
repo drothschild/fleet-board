@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from . import candidates, errors, markers, merging, resolver, roles, scopes, scripts, stuck, usage
+from . import repos as _repos
 from .scheduler import SCOPE_FREE_ACTIONS
 from .state import DUPLICATE_ADMISSION, ledger_column
 
@@ -48,6 +49,20 @@ def config_loader(root, run=scripts.run):
             raise ValueError('config.sh printed no configuration')
         return data
     return load
+
+
+def row_provider(root, config, row, run=scripts.run, loaded=None):
+    """The provider a candidate row runs under: an implementor's comes from the card's own repo. A repo that
+    cannot be resolved counts under the home config (the card's action then fails with the reason). `loaded`
+    caches the repo configs across the rows of one pass."""
+    card_config, repo = None, row.get('repo')
+    home = (config.get('board') or {}).get('repo')
+    if row.get('action') in resolver.IMPLEMENT and repo and str(repo).lower() != str(home or '').lower():
+        loaded = {} if loaded is None else loaded
+        if repo not in loaded:
+            loaded[repo] = _repos.resolve(root, config, repo, lambda r: config_loader(r, run=run)()).config
+        card_config = loaded[repo]
+    return resolver.provider_for(config, row, card_config)
 
 
 def _clean(value):
@@ -622,12 +637,12 @@ class Supervisor:
         """The planner's rows as the scheduler takes them: provider resolved, capped and retry-held cards left out
         (the latter reported as limit waits)."""
         capped = self._capped_cards()
-        rows, limit_waits = [], []
+        rows, limit_waits, repo_configs = [], [], {}
         for original in candidate_rows:
             if not isinstance(original, dict) or original.get('number') in self.ignored:
                 continue
             row = dict(original)
-            row['provider'] = resolver.provider_for(config, row)
+            row['provider'] = row_provider(self.root, config, row, self.run_script, repo_configs)
             if row.get('number') in capped and row['provider'] != 'scripts':
                 limit_waits.append({'number': row.get('number'), 'reason': CARD_LIMIT_WAIT, 'source': 'limit'})
                 continue

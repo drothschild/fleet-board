@@ -750,8 +750,10 @@ class CardDriver:
         config = self.config_loader()
         row = dict(candidate)
         number = row.get('number')
+        from .loop import row_provider
         action = Action(card=number, action=action_name, column=row.get('state'), role=_ROLE_OF.get(action_name),
-                        provider=resolver.provider_for(config, row), paths=list(row.get('declared_paths') or []),
+                        provider=row_provider(self.root, config, row, self.run),
+                        paths=list(row.get('declared_paths') or []),
                         started_at=self.clock(), started_mono=time.monotonic(),
                         stage=(row['stage'].get('name') if isinstance(row.get('stage'), dict) else row.get('stage')),
                         review_pass=row.get('pass') if _posint(row.get('pass')) else None,
@@ -1046,8 +1048,8 @@ class CardDriver:
     def _dispatch_role(self, c, prior=None, conflict=None):
         """Launch the role for the action `c` just prepared and record it as `action.session`."""
         name = c.row['action']
-        dispatch = resolver.resolve(c.config, c.row)
         role = _ROLE_OF[name]
+        dispatch = resolver.resolve(c.config, c.row, c.checkout()[1] if role == 'implementor' else None)
         stage = c.row.get('stage') if name == 'review_stage' else None
         if name == 'review_stage' and not isinstance(stage, dict):
             raise _Invalid('stage', stage)
@@ -1056,6 +1058,9 @@ class CardDriver:
         rules = None
         if role == 'implementor':
             try:
+                if dispatch.runner == resolver.PROVIDER_IMPLEMENTOR:
+                    raise _Attention('implementor.provider is %s, which has no implementor runner yet: set '
+                                     'implementor.provider to claude' % _first_line(str(dispatch.provider)))
                 rules = self._implementor_rules(c)
             except _Attention as exc:
                 reason = str(exc)
