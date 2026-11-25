@@ -404,8 +404,86 @@ function renderBoard(board, force) {
   }
   renderUnknown(unknown.sort(function (a, b) { return a.number - b.number; }), board.repo, force);
   renderColumnTokens();
+  renderColTabs(board, byState);
   if (S.sup && S.sup.seen) renderTokens(); // the All time tooltip depends on whether the Unknown group is shown
   restoreFocus(focus);
+}
+
+// --- column tabs (phone only: the tablist is hidden until the phone media query shows it) ---
+
+// snapTarget(key): the element that scroll-snaps for a column: its stack, when it sits in one.
+function snapTarget(key) {
+  const c = S.cols[key];
+  if (!c) return null;
+  const p = c.el.parent || c.el.parentNode;
+  return p && p.classList && p.classList.contains("stack") ? p : c.el;
+}
+
+// selectColTab(key, scroll): marks one tab selected (the others not), keeps the
+// URL hash on it, and scrolls its column into view when asked.
+function selectColTab(key, scroll) {
+  S.selCol = key;
+  for (const t of $("col-tabs").children) {
+    const on = t.dataset.state === key;
+    t.setAttribute("aria-selected", on ? "true" : "false");
+    t.setAttribute("tabindex", on ? "0" : "-1");
+  }
+  if (scroll) {
+    const target = snapTarget(key);
+    if (target && target.scrollIntoView) target.scrollIntoView({ container: "nearest", inline: "start", block: "nearest" });
+  }
+}
+
+function setColHash(key) {
+  const url = "#" + key;
+  if (location.hash !== url) history.replaceState(null, "", location.pathname + url);
+}
+
+// renderColTabs(board, byState): one tab per column with its name and card count;
+// the selection survives a re-render and starts from the URL hash.
+function renderColTabs(board, byState) {
+  const bar = $("col-tabs");
+  const keys = board.states.map(function (s) { return s.key; });
+  const first = S.selCol === undefined;
+  if (first) {
+    const m = /^#(.+)$/.exec(location.hash || "");
+    S.selCol = m && keys.indexOf(m[1]) >= 0 ? m[1] : null;
+  }
+  if (keys.indexOf(S.selCol) < 0) S.selCol = keys[0] || null;
+  const frag = document.createDocumentFragment();
+  for (const s of board.states) {
+    const t = el("button", "col-tab");
+    t.type = "button";
+    t.dataset.state = s.key;
+    t.setAttribute("role", "tab");
+    t.appendChild(el("span", null, s.name));
+    t.appendChild(el("span", "col-tab-count", String(byState[s.key].length)));
+    t.addEventListener("click", function () { selectColTab(s.key, true); setColHash(s.key); });
+    frag.appendChild(t);
+  }
+  bar.replaceChildren(frag);
+  if (!S.colTabsBound) {
+    S.colTabsBound = true;
+    $("board").addEventListener("scroll", onBoardScroll);
+  }
+  selectColTab(S.selCol, first && /^#/.test(location.hash || ""));
+}
+
+// onBoardScroll: the column nearest the left edge becomes the selected tab.
+function onBoardScroll() {
+  const b = $("board");
+  let best = null;
+  let bestD = Infinity;
+  for (const key of Object.keys(S.cols)) {
+    const t = snapTarget(key);
+    if (!t || !isNum(t.offsetLeft)) continue;
+    const d = Math.abs(t.offsetLeft - (b.scrollLeft || 0));
+    if (d < bestD) { best = key; bestD = d; }
+  }
+  if (best && best !== S.selCol) {
+    selectColTab(best, false);
+    setColHash(best);
+  }
 }
 
 // renderUnknown: the "Unknown state" group at the end of the board, for cards
